@@ -12,7 +12,7 @@ import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signa
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 
-const VERSION = '0.3.1';
+const VERSION = '0.3.2';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -727,18 +727,24 @@ async function runRecv(args, options) {
 
   // 3. Probar si alguna IP es accesible directamente por TCP (misma red local o VPN)
   const localIPs = getLocalIPs();
-  const candidateIP = ips.find((rip) => {
-    if (rip === '127.0.0.1' || rip === '::1') return true;
-    const rsub = rip.split('.').slice(0, 3).join('.');
-    return localIPs.some((lip) => lip.split('.').slice(0, 3).join('.') === rsub);
-  }) || ips[0];
+  function scoreIP(ip) {
+    if (ip === '127.0.0.1' || ip === '::1') return 100;
+    const rsub = ip.split('.').slice(0, 3).join('.');
+    if (localIPs.some((lip) => lip.split('.').slice(0, 3).join('.') === rsub)) return 90;
+    if (ip.startsWith('192.168.')) return 80;
+    if (ip.startsWith('10.')) return 70;
+    if (ip.startsWith('172.')) return 60;
+    return 10;
+  }
+  const candidateIPs = port ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
 
-  if (candidateIP && port) {
+  for (const candidateIP of candidateIPs) {
     process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con ${candidateIP}:${port}...${c.reset}`);
     try {
       const received = await receiveFiles(candidateIP, port, token, outputDir, (current, total, speed) => {
         renderProgressBar(current, total, speed);
       }, 1500);
+      process.stdout.write('\r\x1b[K');
       if (ws) ws.close();
       if (received.stats) {
         renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -751,7 +757,7 @@ async function runRecv(args, options) {
         return askRetry(err, () => runRecv(args, options));
       }
       process.stdout.write('\r\x1b[K');
-      // Si falla por timeout o error de conexión (NAT/Internet), pasamos a Relay
+      // Si falla por timeout o error de conexión, probamos la siguiente IP o pasamos a Relay
     }
   }
 

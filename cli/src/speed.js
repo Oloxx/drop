@@ -817,36 +817,50 @@ export async function runSpeedGuest(input, options = {}) {
 
   // 3. Probar si alguna IP responde por TCP directo si no se fuerza relay
   const localIPs = getLocalIPs();
-  const candidateIP = !forceRelay ? (ips.find((rip) => {
-    if (rip === '127.0.0.1' || rip === '::1') return true;
-    const rsub = rip.split('.').slice(0, 3).join('.');
-    return localIPs.some((lip) => lip.split('.').slice(0, 3).join('.') === rsub);
-  }) || ips[0]) : null;
+  function scoreIP(ip) {
+    if (ip === '127.0.0.1' || ip === '::1') return 100;
+    const rsub = ip.split('.').slice(0, 3).join('.');
+    if (localIPs.some((lip) => lip.split('.').slice(0, 3).join('.') === rsub)) return 90;
+    if (ip.startsWith('192.168.')) return 80;
+    if (ip.startsWith('10.')) return 70;
+    if (ip.startsWith('172.')) return 60;
+    return 10;
+  }
+  const candidateIPs = !forceRelay && port ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
 
   let tcpSocket = null;
-  if (!forceRelay && candidateIP && port) {
-    process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con ${candidateIP}:${port}...${c.reset}`);
-    tcpSocket = await new Promise((resolve) => {
-      const sock = net.connect({ host: candidateIP, port });
-      const timer = setTimeout(() => {
-        sock.destroy();
-        resolve(null);
-      }, 1500);
-      sock.on('connect', () => {
-        clearTimeout(timer);
-        resolve(sock);
+  let connectedIP = null;
+  if (!forceRelay && port && candidateIPs.length > 0) {
+    for (const testIP of candidateIPs) {
+      process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con ${testIP}:${port}...${c.reset}`);
+      const sock = await new Promise((resolve) => {
+        const s = net.connect({ host: testIP, port });
+        const timer = setTimeout(() => {
+          s.destroy();
+          resolve(null);
+        }, 1500);
+        s.on('connect', () => {
+          clearTimeout(timer);
+          resolve(s);
+        });
+        s.on('error', () => {
+          clearTimeout(timer);
+          resolve(null);
+        });
       });
-      sock.on('error', () => {
-        clearTimeout(timer);
-        resolve(null);
-      });
-    });
+      process.stdout.write('\r\x1b[K');
+      if (sock) {
+        tcpSocket = sock;
+        connectedIP = testIP;
+        break;
+      }
+    }
   }
 
   if (tcpSocket) {
     process.stdout.write('\r\x1b[K');
     if (ws) ws.close();
-    const pathDesc = `Directa TCP (${candidateIP}:${port})`;
+    const pathDesc = `Directa TCP (${connectedIP}:${port})`;
     console.log(`  ${c.green}✔ Conectado por TCP directo:${c.reset} ${pathDesc}\n`);
     const channel = new TcpSpeedChannel(tcpSocket, token, false, pathDesc);
 

@@ -22,6 +22,27 @@ export function getLocalIPs() {
   return ips;
 }
 
+// Obtiene todas las direcciones de difusión (broadcast) calculadas por interfaz
+export function getBroadcastAddresses() {
+  const targets = new Set(['255.255.255.255']);
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name] || []) {
+      if (iface.family === 'IPv4' && !iface.internal && iface.address && iface.netmask) {
+        try {
+          const ipParts = iface.address.split('.').map(Number);
+          const maskParts = iface.netmask.split('.').map(Number);
+          if (ipParts.length === 4 && maskParts.length === 4) {
+            const bcast = ipParts.map((p, i) => (p | (~maskParts[i] & 255))).join('.');
+            targets.add(bcast);
+          }
+        } catch {}
+      }
+    }
+  }
+  return [...targets];
+}
+
 /**
  * Emite periódicamente pings de descubrimiento en la subred local (UDP broadcast).
  */
@@ -47,10 +68,14 @@ export function startBroadcasting(token, tcpPort) {
       p: tcpPort,
     }));
 
+    const targets = getBroadcastAddresses();
+
     timer = setInterval(() => {
-      try {
-        socket.send(payload, 0, payload.length, BROADCAST_PORT, '255.255.255.255');
-      } catch {}
+      for (const target of targets) {
+        try {
+          socket.send(payload, 0, payload.length, BROADCAST_PORT, target);
+        } catch {}
+      }
     }, 600);
   });
 
