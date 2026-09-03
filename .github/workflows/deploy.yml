@@ -35,6 +35,6 @@ jobs:
             docker compose up -d --build drop
 
             echo "==> Comprobando estado del servicio..."
-            sleep 2
-            curl -f http://localhost:3000/healthz || exit 1
+            sleep 3
+            curl -sf https://drop.oloxx.dev/healthz || docker compose exec -T drop node -e "fetch('http://localhost:3000/healthz').then(r => process.exit(r.ok ? 0 : 1))"
             echo "==> ¡Despliegue completado con éxito!"
