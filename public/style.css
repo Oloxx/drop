@@ -1,0 +1,376 @@
+/* JetBrains Mono, la fuente por defecto de Omarchy. Servida desde este mismo
+   dominio: ni una peticion a terceros. */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-500-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-500-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-700-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-700-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* -----------------------------------------------------------------------------
+   Paleta Tokyo Night y JetBrains Mono, como en Omarchy. Sin adornos: una sola
+   columna, jerarquia por tamano y color, y nada que no diga algo.
+   -------------------------------------------------------------------------- */
+
+:root {
+  --bg:      #1a1b26;
+  --sunken:  #16161e;
+  --raised:  #1f2335;
+  --hl:      #292e42;
+  --border:  #2f334d;
+  --fg:      #c0caf5;
+  --fg-dim:  #a9b1d6;
+  --muted:   #565f89;
+  --blue:    #7aa2f7;
+  --cyan:    #7dcfff;
+  --green:   #9ece6a;
+  --red:     #f7768e;
+
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+  --col: 44rem;
+}
+
+* { box-sizing: border-box; }
+
+/* Varios bloques ocultos usan display:flex, asi que [hidden] tiene que ganar. */
+[hidden] { display: none !important; }
+
+html { color-scheme: dark; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: 1.25rem clamp(1rem, .5rem + 2vw, 2rem) 4rem;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--blue); color: var(--sunken); }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* ------------------------------------------------------------- cabecera */
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  max-width: var(--col);
+  margin: 0 auto 2.5rem;
+  padding-bottom: .75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  color: var(--fg);
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.nav {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: .78rem;
+}
+.nav:hover { color: var(--blue); }
+
+.metrics {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: .45rem 1.75rem;
+  margin: 0;
+  padding: 1.1rem;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: .85rem;
+}
+.metrics dt {
+  color: var(--muted);
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  align-self: center;
+}
+.metrics dd {
+  margin: 0;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.metrics dd.pending { color: var(--muted); }
+
+.status {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: .78rem;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status.live { color: var(--green); }
+.status.bad  { color: var(--red); }
+
+/* --------------------------------------------------------------- vistas */
+
+main { max-width: var(--col); margin: 0 auto; }
+
+.view { display: none; flex-direction: column; gap: 1.25rem; }
+body[data-view="send"] .view[data-name="send"],
+body[data-view="recv"] .view[data-name="recv"] { display: flex; }
+
+h1 {
+  margin: 0;
+  font-size: clamp(1.15rem, 1rem + .7vw, 1.5rem);
+  font-weight: 700;
+  letter-spacing: -.01em;
+  line-height: 1.35;
+}
+
+.prompt { color: var(--green); }
+
+.lead  { margin: 0; color: var(--muted); font-size: .88rem; }
+.hint  { margin: 0; color: var(--muted); font-size: .78rem; }
+.error { margin: 0; color: var(--red); font-size: .85rem; }
+
+.label {
+  margin: 0;
+  color: var(--muted);
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+}
+
+/* ------------------------------------------------------------- botones */
+
+button {
+  font: inherit;
+  font-family: var(--mono);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: .45rem 1rem;
+  transition: background .12s, border-color .12s, color .12s;
+}
+
+.primary {
+  background: var(--blue);
+  border: 1px solid var(--blue);
+  color: var(--sunken);
+  font-weight: 700;
+}
+.primary:hover { background: var(--cyan); border-color: var(--cyan); }
+.primary:disabled { opacity: .4; cursor: default; background: var(--blue); }
+
+.ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.ghost:hover { color: var(--fg); border-color: var(--muted); }
+
+.row { display: flex; gap: .5rem; flex-wrap: wrap; }
+
+/* -------------------------------------------------------- zona de soltar */
+
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .25rem;
+  padding: 2.75rem 1rem;
+  cursor: pointer;
+  background: var(--sunken);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  transition: border-color .12s, background .12s;
+}
+.drop:hover, .drop.over { border-color: var(--blue); background: var(--hl); }
+.drop-glyph { color: var(--blue); letter-spacing: .15em; }
+.drop strong { font-weight: 500; }
+.drop small { color: var(--muted); font-size: .78rem; }
+
+/* ------------------------------------------------------------- ficheros */
+
+.files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.files li {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  padding: .45rem .7rem;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: .82rem;
+}
+.files .name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg-dim);
+}
+.files .size { color: var(--muted); font-variant-numeric: tabular-nums; }
+.files .drop-one {
+  padding: 0 .25rem;
+  background: none;
+  border: none;
+  color: var(--muted);
+  line-height: 1;
+}
+.files .drop-one:hover { color: var(--red); }
+
+/* ----------------------------------------------------------- recepcion */
+
+#offer {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+#offer .label {
+  margin-bottom: -0.5rem;
+}
+#offer .hint {
+  margin-top: -0.5rem;
+}
+
+/* -------------------------------------------------------------- enlace */
+
+.ticket {
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+  align-items: flex-start;
+  padding: 1.1rem;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.ticket .link-box, .ticket .hint { width: 100%; }
+
+.link-box { display: flex; gap: .5rem; }
+.link-box input {
+  flex: 1; min-width: 0;
+  padding: .45rem .6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--cyan);
+  font-family: var(--mono);
+  font-size: .85rem;
+  text-overflow: ellipsis;
+}
+.link-box input:focus { outline: none; border-color: var(--blue); }
+
+/* ------------------------------------------------------------ progreso */
+
+.peers { display: flex; flex-direction: column; gap: .5rem; }
+
+.peer {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  padding: .7rem .8rem;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.peer.done   { border-color: #3d4a30; }
+.peer.failed { border-color: #4a2b36; }
+
+.peer-head {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  font-size: .8rem;
+}
+.peer-head .who { color: var(--fg-dim); }
+.peer-head .state {
+  margin-left: auto;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.peer.done .peer-head .state   { color: var(--green); }
+.peer.failed .peer-head .state { color: var(--red); }
+
+.bar {
+  height: 6px;
+  background: var(--hl);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--blue);
+  transition: width .2s linear;
+}
+.peer.done .bar > i   { background: var(--green); }
+.peer.failed .bar > i { background: var(--red); }
+
+.peer-file {
+  display: flex;
+  gap: .5rem;
+  font-size: .74rem;
+  color: var(--muted);
+}
+.peer-file .grow {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.peer-file .rate { font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

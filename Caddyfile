@@ -1,0 +1,5 @@
+# Caddy pide y renueva el certificado solo. Los WebSockets pasan sin configurar nada.
+{$DROP_DOMAIN} {
+	encode gzip
+	reverse_proxy drop:3000
+}

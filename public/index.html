@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>drop · peer to peer</title>
+<link rel="preload" href="fonts/jetbrains-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-view="send">
+
+<header class="head">
+  <a class="brand" href="./">drop</a>
+  <a class="nav" href="speed">speed test</a>
+  <span id="status" class="status">·</span>
+</header>
+
+<main>
+
+  <!-- ---------- Enviar (pantalla por defecto) ---------- -->
+  <section class="view" data-name="send">
+    <h1><span class="prompt">❯</span> no middleman</h1>
+    <p class="lead">Browser to browser, encrypted end to end. No account, no cloud,
+      no copy left on a server.</p>
+
+    <label class="drop" id="drop">
+      <input type="file" id="file-input" multiple hidden>
+      <span class="drop-glyph">[ + ]</span>
+      <strong>drop payload here</strong>
+      <small>or click to select</small>
+    </label>
+
+    <ul class="files" id="file-list"></ul>
+
+    <div class="row" id="send-actions" hidden>
+      <button class="primary" id="create-link">open channel</button>
+      <button class="ghost" id="clear-files">clear</button>
+    </div>
+
+    <div class="ticket" id="ticket" hidden>
+      <p class="label">one-time link</p>
+      <div class="link-box">
+        <input id="link-out" readonly spellcheck="false" aria-label="Link to share">
+        <button class="primary" id="copy-link">copy</button>
+      </div>
+      <p class="hint">Keep this tab open until the transfers finish. Any number of peers can ride
+        the same link, each on its own channel.</p>
+      <button class="ghost" id="restart">new payload</button>
+    </div>
+
+    <div class="peers" id="peers"></div>
+  </section>
+
+  <!-- ---------- Recibir (solo se llega abriendo un enlace) ---------- -->
+  <section class="view" data-name="recv">
+    <h1><span class="prompt">❯</span> <span id="recv-title">handshake…</span></h1>
+    <p class="error" id="join-error" hidden></p>
+
+    <div id="offer" hidden>
+      <p class="label" id="offer-title">inbound</p>
+      <ul class="files" id="offer-list"></ul>
+      <div class="row">
+        <button class="primary" id="accept">receive</button>
+      </div>
+      <p class="hint" id="offer-hint"></p>
+    </div>
+
+    <div class="peers" id="recv-progress"></div>
+  </section>
+
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

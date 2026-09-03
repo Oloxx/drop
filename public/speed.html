@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>drop · link speed</title>
+<link rel="preload" href="fonts/jetbrains-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-view="send">
+
+<header class="head">
+  <a class="brand" href="./">drop</a>
+  <a class="nav" href="./">transfer</a>
+  <span id="status" class="status">·</span>
+</header>
+
+<main>
+  <section class="view" data-name="send">
+
+    <h1><span class="prompt">❯</span> <span id="title">link speed</span></h1>
+    <p class="lead" id="lead">Open a channel, send the link to whoever you want to measure
+      against. Payload runs both ways over the same connection a transfer would use.</p>
+
+    <div class="row" id="start-row">
+      <button class="primary" id="start">open channel</button>
+    </div>
+
+    <div class="ticket" id="ticket" hidden>
+      <p class="label">one-time link</p>
+      <div class="link-box">
+        <input id="link-out" readonly spellcheck="false" aria-label="Link to share">
+        <button class="primary" id="copy-link">copy</button>
+      </div>
+      <p class="hint">Keep this tab open. The test starts on its own when the other side lands.</p>
+    </div>
+
+    <p class="error" id="error" hidden></p>
+
+    <div class="peer" id="live" hidden>
+      <div class="peer-head">
+        <span class="who" id="live-label">warming up</span>
+        <span class="state" id="live-rate"></span>
+      </div>
+      <div class="bar"><i id="live-bar"></i></div>
+      <div class="peer-file"><span class="grow" id="live-note"></span></div>
+    </div>
+
+    <dl class="metrics" id="metrics" hidden>
+      <dt>path</dt>      <dd class="pending" id="m-path">—</dd>
+      <dt>latency</dt>   <dd class="pending" id="m-rtt">—</dd>
+      <dt>outbound</dt>  <dd class="pending" id="m-out">—</dd>
+      <dt>inbound</dt>   <dd class="pending" id="m-in">—</dd>
+    </dl>
+
+    <p class="hint" id="verdict" hidden></p>
+
+    <div class="row" id="again-row" hidden>
+      <button class="ghost" id="again">run again</button>
+    </div>
+
+  </section>
+</main>
+
+<script type="module" src="speed.js"></script>
+</body>
+</html>
