@@ -2,6 +2,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
+import readline from 'node:readline';
 import { c, fmtBytes, renderProgressBar } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
@@ -10,6 +12,109 @@ import { createSenderServer, receiveFiles } from './transfer.js';
 const VERSION = '0.2.0';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
+function getInstallDir() {
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || 'C:\\', 'AppData', 'Local');
+    return path.join(localAppData, 'Programs', 'drop');
+  }
+  const home = process.env.HOME || process.env.USERPROFILE || '/tmp';
+  return path.join(home, '.local', 'bin');
+}
+
+function isInstalled() {
+  try {
+    const installDir = getInstallDir();
+    const currentDir = path.dirname(process.execPath);
+    return path.resolve(installDir).toLowerCase() === path.resolve(currentDir).toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+async function installSelf() {
+  console.log(`\n${c.bold}======================================================${c.reset}`);
+  console.log(`  ${c.cyan}Drop CLI — Instalador de Sistema${c.reset} (${c.bold}v${VERSION}${c.reset})`);
+  console.log(`${c.bold}======================================================${c.reset}\n`);
+
+  const installDir = getInstallDir();
+  const exeName = process.platform === 'win32' ? 'drop.exe' : 'drop';
+  const targetPath = path.join(installDir, exeName);
+
+  console.log(`  ${c.dim}Instalando en:${c.reset} ${targetPath}`);
+
+  try {
+    fs.mkdirSync(installDir, { recursive: true });
+
+    if (path.resolve(process.execPath).toLowerCase() === path.resolve(targetPath).toLowerCase()) {
+      console.log(`  ${c.green}✔ Drop ya está ubicado en este directorio.${c.reset}`);
+    } else {
+      fs.copyFileSync(process.execPath, targetPath);
+      console.log(`  ${c.green}✔ Archivo copiado a la carpeta de programas.${c.reset}`);
+    }
+
+    if (process.platform === 'win32') {
+      const psCommand = `
+        $dir = '${installDir.replace(/'/g, "''")}';
+        $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User');
+        if ($userPath -notlike ('*' + $dir + '*')) {
+            $newPath = ($userPath.TrimEnd(';') + ';' + $dir).Trim(';');
+            [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User');
+            Write-Output 'ADDED';
+        } else {
+            Write-Output 'EXISTS';
+        }
+      `.replace(/\r?\n\s*/g, ' ');
+
+      const out = execSync(`powershell -NoProfile -Command "${psCommand}"`, { encoding: 'utf-8' }).trim();
+      if (out.includes('ADDED')) {
+        console.log(`  ${c.green}✔ Carpeta añadida permanentemente a tu variable de entorno PATH.${c.reset}`);
+      } else {
+        console.log(`  ${c.green}✔ La ruta ya está configurada en tu variable PATH.${c.reset}`);
+      }
+    } else {
+      try { fs.chmodSync(targetPath, 0o755); } catch {}
+      console.log(`  ${c.green}✔ Permisos de ejecución configurados.${c.reset}`);
+    }
+
+    console.log(`\n  ${c.bold}${c.green}✔ ¡Drop se ha instalado con éxito en tu sistema!${c.reset}`);
+    console.log(`\n  Ya puedes abrir cualquier terminal (${c.cyan}PowerShell, CMD o Terminal${c.reset}) y usar:`);
+    console.log(`    ${c.yellow}drop send <archivo>${c.reset}`);
+    console.log(`    ${c.yellow}drop recv <código>${c.reset}\n`);
+
+  } catch (err) {
+    console.error(`\n  ${c.red}Error durante la instalación:${c.reset} ${err.message}\n`);
+  }
+
+  if (process.stdin.isTTY && !process.argv.slice(2).includes('install')) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await new Promise((resolve) => rl.question(`  ${c.dim}Presiona ENTER para salir...${c.reset}`, () => { rl.close(); resolve(); }));
+  }
+}
+
+async function uninstallSelf() {
+  const installDir = getInstallDir();
+  const exeName = process.platform === 'win32' ? 'drop.exe' : 'drop';
+  const targetPath = path.join(installDir, exeName);
+
+  if (process.platform === 'win32') {
+    const psCommand = `
+      $dir = '${installDir.replace(/'/g, "''")}';
+      $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User');
+      $parts = $userPath.Split(';') | Where-Object { $_ -ne $dir -and $_ -ne '' };
+      $newPath = $parts -join ';';
+      [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User');
+    `.replace(/\r?\n\s*/g, ' ');
+    try { execSync(`powershell -NoProfile -Command "${psCommand}"`); } catch {}
+  }
+
+  try {
+    if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+    console.log(`\n  ${c.green}✔ Drop ha sido desinstalado de tu sistema y retirado del PATH.${c.reset}\n`);
+  } catch (err) {
+    console.log(`\n  ${c.yellow}Drop ha sido retirado del PATH. Puedes eliminar el archivo manualmente en: ${targetPath}${c.reset}\n`);
+  }
+}
+
 function printHelp() {
   console.log(`
 ${c.bold}drop${c.reset} — transferencia P2P de archivos a máxima velocidad (${c.cyan}v${VERSION}${c.reset})
@@ -17,6 +122,8 @@ ${c.bold}drop${c.reset} — transferencia P2P de archivos a máxima velocidad ($
 ${c.bold}USO:${c.reset}
   drop send <archivo1> [archivo2 ...]   Envía uno o varios archivos
   drop recv <código-o-enlace>           Recibe los archivos
+  drop install                          Instala drop en el sistema y lo añade al PATH
+  drop uninstall                        Desinstala drop del sistema
 
 ${c.bold}OPCIONES:${c.reset}
   -s, --server <url>   Servidor de señalización (por defecto: ${DEFAULT_SERVER})
@@ -291,13 +398,34 @@ async function runRecv(args, options) {
 
 async function main() {
   const argv = process.argv.slice(2);
-  if (!argv.length || argv.includes('-h') || argv.includes('--help')) {
+
+  if (argv.includes('-v') || argv.includes('--version')) {
+    console.log(`drop v${VERSION}`);
+    return;
+  }
+
+  if (argv.includes('install')) {
+    await installSelf();
+    return;
+  }
+
+  if (argv.includes('uninstall')) {
+    await uninstallSelf();
+    return;
+  }
+
+  if (!argv.length) {
+    const isExe = path.basename(process.execPath).toLowerCase().startsWith('drop');
+    if (isExe && !isInstalled()) {
+      await installSelf();
+      return;
+    }
     printHelp();
     return;
   }
 
-  if (argv.includes('-v') || argv.includes('--version')) {
-    console.log(`drop v${VERSION}`);
+  if (argv.includes('-h') || argv.includes('--help')) {
+    printHelp();
     return;
   }
 

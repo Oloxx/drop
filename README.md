@@ -54,16 +54,16 @@ Para mover archivos pesados entre ordenadores saturando tu red local (Wi-Fi 6 o 
 
 > **Nota para los usuarios:** Los binarios son 100% autónomos. Quien use `drop` **no necesita tener Node.js instalado**.
 
-#### 💡 Añadir `drop` a tu PATH (para ejecutar `drop` desde cualquier carpeta):
+#### 💡 Instalación en el sistema y adición al PATH:
 
-* **En Windows:** Ejecuta `npm run install:bin` (o descarga `drop.exe` y muévelo a tu carpeta `~/.local/bin/`).
-* **En Linux / macOS:** Mueve el binario descargado a tu ruta de sistema:
+* **En Windows:** Simplemente **descarga `drop.exe` y haz doble clic sobre él** (o ejecuta `drop install` en terminal). El ejecutable se auto-instalará en tu sistema y se añadirá de forma permanente al `PATH` de tu usuario.
+* **En Linux / macOS:** Ejecuta `./drop install` o mueve el binario a tu ruta de sistema:
   ```bash
   chmod +x drop
   sudo mv drop /usr/local/bin/drop
   ```
 
-Una vez en tu PATH, no necesitas escribir `.\drop.exe` ni rutas: simplemente teclea `drop` en cualquier terminal.
+Una vez instalado, abre cualquier terminal (PowerShell, CMD, Terminal) y usa directamente el comando `drop` desde cualquier carpeta:
 
 #### 1. Enviar archivos (`drop send`)
 
