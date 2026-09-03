@@ -48,22 +48,33 @@ Puedes entrar en `https://drop.oloxx.dev/speed` para medir la velocidad de conex
 
 ---
 
-### Modo 2: Uso con el Ejecutable / CLI (`drop.exe` a máxima velocidad)
+### Modo 2: Uso con el Ejecutable / CLI (`drop` a máxima velocidad)
 
-Para mover archivos pesados entre ordenadores saturando tu red local (Wi-Fi 6 o cable Gigabit a **80–115 MB/s**), usa los binarios independientes que se encuentran en la carpeta `dist/`.
+Para mover archivos pesados entre ordenadores saturando tu red local (Wi-Fi 6 o cable Gigabit a **80–115 MB/s**), usa el ejecutable independiente.
 
-> **Nota para los usuarios:** Los binarios de `dist/` son 100% autónomos. Quien reciba el archivo `drop.exe` **no necesita tener Node.js instalado**.
+> **Nota para los usuarios:** Los binarios son 100% autónomos. Quien use `drop` **no necesita tener Node.js instalado**.
+
+#### 💡 Añadir `drop` a tu PATH (para ejecutar `drop` desde cualquier carpeta):
+
+* **En Windows:** Ejecuta `npm run install:bin` (o descarga `drop.exe` y muévelo a tu carpeta `~/.local/bin/`).
+* **En Linux / macOS:** Mueve el binario descargado a tu ruta de sistema:
+  ```bash
+  chmod +x drop
+  sudo mv drop /usr/local/bin/drop
+  ```
+
+Una vez en tu PATH, no necesitas escribir `.\drop.exe` ni rutas: simplemente teclea `drop` en cualquier terminal.
 
 #### 1. Enviar archivos (`drop send`)
 
-Abre la terminal en la carpeta donde tengas el ejecutable (en Windows `drop.exe`, en Linux `./drop-linux-x64` o `./drop-linux-arm64`, en Mac `./drop-macos-arm64`):
+Abre cualquier terminal:
 
-```powershell
+```bash
 # Enviar un único archivo
-.\drop.exe send pelicula.mkv
+drop send pelicula.mkv
 
 # Enviar múltiples archivos a la vez
-.\drop.exe send foto1.jpg foto2.jpg documento.pdf
+drop send foto1.jpg foto2.jpg documento.pdf
 ```
 
 Verás una salida como esta:
