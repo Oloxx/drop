@@ -1,4 +1,4 @@
-name: Deploy to Valhalla VPS
+name: Deploy to Production VPS
 
 on:
   push:
@@ -21,9 +21,9 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.VALHALLA_HOST }}
-          username: ${{ secrets.VALHALLA_USER }}
-          key: ${{ secrets.VALHALLA_SSH_KEY }}
+          host: ${{ secrets.DROP_HOST }}
+          username: ${{ secrets.DROP_USER }}
+          key: ${{ secrets.DROP_SSH_KEY }}
           script: |
             set -e
             echo "==> Actualizando código en ~/drop..."
