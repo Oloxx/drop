@@ -706,6 +706,7 @@ function onJoined(guestId) {
 }
 
 function onHostGone() {
+  if (rx.finished) return;
   setStatus('peer dropped', 'bad');
   // La sala muere con el emisor, pero los canales P2P no: si nos alimenta otro
   // receptor puede quedarle cola por entregarnos y esto todavia puede acabar.

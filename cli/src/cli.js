@@ -198,6 +198,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
               renderProgressBar(sent, total, speed);
             });
             console.log(`\n\n  ${c.green}✔ ¡Transferencia hacia la web completada con éxito!${c.reset}\n`);
+            await new Promise((r) => setTimeout(r, 1500));
             resolveDone();
           }
         }
