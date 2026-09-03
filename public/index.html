@@ -60,14 +60,23 @@
     <div id="offer" hidden>
       <p class="label" id="offer-title">inbound</p>
       <ul class="files" id="offer-list"></ul>
-      <div class="row">
+      <div class="row" id="offer-actions">
         <button class="primary" id="accept">receive</button>
       </div>
       <p class="hint" id="offer-hint"></p>
     </div>
 
     <div class="peers" id="recv-progress"></div>
+
+    <div class="ticket" id="verify-alert" hidden>
+      <p class="label" style="color: var(--red)">integrity discrepancy</p>
+      <p class="error" id="verify-error-msg"></p>
+      <div class="row">
+        <button class="primary" id="retry-transfer">retry transfer</button>
+      </div>
+    </div>
   </section>
+
 
 </main>
 

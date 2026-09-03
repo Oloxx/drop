@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import readline from 'node:readline';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
@@ -433,6 +434,8 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
     for (const [index, file] of files.entries()) {
       if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
 
+      const fileHash = crypto.createHash('sha256');
+
       ws.send(JSON.stringify({
         t: 'signal',
         to: guestId,
@@ -457,9 +460,12 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
           const { bytesRead } = await fd.read(buf, 0, toRead, offset);
           if (bytesRead === 0) break;
 
+          const slice = buf.subarray(0, bytesRead);
+          fileHash.update(slice);
+
           const header = Buffer.allocUnsafe(4);
           header.writeUInt32BE(guestId, 0);
-          const packet = Buffer.concat([header, buf.subarray(0, bytesRead)]);
+          const packet = Buffer.concat([header, slice]);
 
           while (ws.bufferedAmount > 4 * 1024 * 1024) {
             if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
@@ -486,10 +492,12 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
 
       if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
 
+      const sha256 = fileHash.digest('hex');
+
       ws.send(JSON.stringify({
         t: 'signal',
         to: guestId,
-        data: { type: 'cli-end', index }
+        data: { type: 'cli-end', index, sha256 }
       }));
     }
 
@@ -542,6 +550,20 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
               console.log(`\n\n  ${c.yellow}Receptor (${guest}) interrumpido: ${err.message}${c.reset}`);
               console.log(`  ${c.dim}Canal abierto. Esperando nuevas conexiones... (Presiona Ctrl + C para salir)${c.reset}\n`);
             }
+          } else if (msg.data?.type === 'cli-retry') {
+            const guest = msg.from;
+            const retryIdx = msg.data?.index || 0;
+            console.log(`\n  ${c.yellow}Reintentando envío para archivo #${retryIdx} a petición de (${guest})...${c.reset}\n`);
+            try {
+              const filesToRetry = files.slice(retryIdx);
+              const stats = await streamToWebGuest(guest, filesToRetry, ws, (sent, total, speed) => {
+                renderProgressBar(sent, total, speed);
+              });
+              renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
+              console.log(`\n  ${c.green}✔ ¡Reintento completado con éxito para (${guest})!${c.reset}\n`);
+            } catch (err) {
+              console.log(`\n  ${c.yellow}Reintento interrumpido: ${err.message}${c.reset}\n`);
+            }
           } else if (msg.data?.type === 'cli-error') {
             activeStreams.delete(msg.from);
           }
@@ -580,10 +602,29 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
 function printSuccess(received, outputDir) {
   console.log(`\n  ${c.green}✔ ¡Descarga completada con éxito!${c.reset}`);
   console.log(`  ${c.bold}Archivos guardados en:${c.reset} ${outputDir}`);
-  for (const f of received) {
-    console.log(`    · ${path.basename(f)}`);
+  for (const item of received) {
+    const filePath = typeof item === 'string' ? item : (item.path || item);
+    const verified = typeof item === 'object' && item.verified;
+    const badge = verified ? ` ${c.green}✔ verificado (SHA-256)${c.reset}` : '';
+    console.log(`    · ${path.basename(filePath)}${badge}`);
   }
   console.log('');
+}
+
+async function askRetry(err, retryFn) {
+  if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
+    console.error(`\n  ${c.red}✖ Alerta de discrepancia de integridad:${c.reset} ${err.message}`);
+    if (process.stdin.isTTY) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise((r) => rl.question(`\n  ¿Deseas reintentar la transferencia del archivo corrupto? (s/N): `, r));
+      rl.close();
+      if (answer.trim().toLowerCase() === 's' || answer.trim().toLowerCase() === 'y') {
+        console.log(`\n  ${c.cyan}Reintentando transferencia...${c.reset}\n`);
+        return retryFn();
+      }
+    }
+  }
+  process.exit(1);
 }
 
 async function runRecv(args, options) {
@@ -637,6 +678,9 @@ async function runRecv(args, options) {
       printSuccess(received, outputDir);
       process.exit(0);
     } catch (err) {
+      if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
+        return askRetry(err, () => runRecv(args, options));
+      }
       console.error(`\n${c.red}Error durante la transferencia LAN: ${err.message}${c.reset}`);
       process.exit(1);
     }
@@ -695,6 +739,10 @@ async function runRecv(args, options) {
       printSuccess(received, outputDir);
       process.exit(0);
     } catch (err) {
+      if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
+        if (ws) ws.close();
+        return askRetry(err, () => runRecv(args, options));
+      }
       process.stdout.write(`\r${' '.repeat(70)}\r`);
       // Si falla por timeout o error de conexión (NAT/Internet), pasamos a Relay
     }
@@ -714,6 +762,9 @@ async function runRecv(args, options) {
     process.exit(0);
   } catch (err) {
     if (ws) ws.close();
+    if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
+      return askRetry(err, () => runRecv(args, options));
+    }
     console.error(`\n${c.red}Error durante la transferencia Relay: ${err.message}${c.reset}`);
     process.exit(1);
   }

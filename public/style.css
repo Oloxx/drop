@@ -270,6 +270,25 @@ button {
 }
 .files .drop-one:hover { color: var(--red); }
 
+.files .badge {
+  font-size: .72rem;
+  font-weight: 500;
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.files .badge.verified {
+  color: var(--green);
+  border: 1px solid rgba(158, 206, 106, 0.3);
+  background: rgba(158, 206, 106, 0.08);
+}
+.files .badge.failed {
+  color: var(--red);
+  border: 1px solid rgba(247, 118, 142, 0.3);
+  background: rgba(247, 118, 142, 0.08);
+}
+
+
 /* ----------------------------------------------------------- recepcion */
 
 #offer {
