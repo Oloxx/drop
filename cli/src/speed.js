@@ -411,11 +411,55 @@ export async function runSpeedTest(channel, isHost, durationSec = 5) {
     }
   });
 
+  const controlQueue = [];
+  const controlWaiters = [];
+
   channel.onControl((msg) => {
+    if (msg.k === 'ping') {
+      channel.sendControl({ k: 'pong', seq: msg.seq });
+      return;
+    }
     if (msg.k === 'tick') {
       renderSpeedBar('outbound', msg.elapsed, durationSec, msg.rate, msg.bytes);
+      return;
     }
+    if (msg.k === 'rtt') {
+      results.rttMs = msg.ms;
+      console.log(`  ${c.bold}Latencia (RTT):${c.reset} ${c.cyan}${fmtMs(msg.ms)}${c.reset}\n`);
+      return;
+    }
+
+    const waiterIdx = controlWaiters.findIndex((w) => w.filter(msg));
+    if (waiterIdx !== -1) {
+      const [waiter] = controlWaiters.splice(waiterIdx, 1);
+      waiter.resolve(msg);
+      return;
+    }
+    controlQueue.push(msg);
   });
+
+  function waitForControl(filter, timeoutMs = 30000) {
+    const queuedIdx = controlQueue.findIndex(filter);
+    if (queuedIdx !== -1) {
+      const [msg] = controlQueue.splice(queuedIdx, 1);
+      return Promise.resolve(msg);
+    }
+    return new Promise((resolve, reject) => {
+      const timer = timeoutMs > 0 ? setTimeout(() => {
+        const idx = controlWaiters.findIndex((w) => w.resolve === resolve);
+        if (idx !== -1) controlWaiters.splice(idx, 1);
+        reject(new Error('TIMEOUT_WAITING_CONTROL'));
+      }, timeoutMs) : null;
+
+      controlWaiters.push({
+        filter,
+        resolve: (msg) => {
+          if (timer) clearTimeout(timer);
+          resolve(msg);
+        },
+      });
+    });
+  }
 
   async function streamPhase(dir) {
     channel.sendControl({ k: 'incoming', dir, duration: durationSec });
@@ -460,50 +504,28 @@ export async function runSpeedTest(channel, isHost, durationSec = 5) {
     process.stdout.write(`\r  ${c.bold}Latencia (RTT):${c.reset} ${c.cyan}${fmtMs(minRtt)}${c.reset}   \x1b[K\n\n`);
 
     // 2. Fase 1: Host emite (h2g) -> Outbound para Host
-    let resolveH2G;
-    const h2gPromise = new Promise((r) => { resolveH2G = r; });
-    const unsubH2G = channel.onControl((msg) => {
-      if (msg.k === 'result' && msg.dir === 'h2g') {
-        unsubH2G();
-        resolveH2G(msg);
-      }
-    });
-
     await streamPhase('h2g');
-    const h2gResult = await h2gPromise;
+    const h2gResult = await waitForControl((m) => m.k === 'result' && m.dir === 'h2g');
 
     results.outRate = h2gResult.rate;
     results.outBytes = h2gResult.bytes;
     results.outSec = h2gResult.duration;
     renderSpeedBarComplete('outbound', h2gResult.rate, h2gResult.bytes, h2gResult.duration);
 
-    await new Promise((r) => setTimeout(r, 200));
+    // 3. Fase 2: Preparar recepción en Host (Inbound para Host)
+    rxBytes = 0;
+    rxStart = 0;
+    lastReport = 0;
+    lastBytes = 0;
+    smoothedSpeed = 0;
+    isReceiving = true;
+    renderSpeedBar('inbound', 0, durationSec, 0, 0);
 
-    // 3. Fase 2: Guest emite (g2h) -> Inbound para Host
-    let resolveIncoming;
-    const incomingPromise = new Promise((r) => { resolveIncoming = r; });
-    let resolveSentDone;
-    const sentDonePromise = new Promise((r) => { resolveSentDone = r; });
+    // Host indica a Guest que está listo para recibir
+    channel.sendControl({ k: 'start-phase2' });
 
-    const unsubPhase2 = channel.onControl((msg) => {
-      if (msg.k === 'incoming' && msg.dir === 'g2h') {
-        rxBytes = 0;
-        rxStart = 0;
-        lastReport = 0;
-        lastBytes = 0;
-        smoothedSpeed = 0;
-        isReceiving = true;
-        renderSpeedBar('inbound', 0, durationSec, 0, 0);
-        resolveIncoming();
-      } else if (msg.k === 'sent-done' && msg.dir === 'g2h') {
-        isReceiving = false;
-        resolveSentDone();
-      }
-    });
-
-    await incomingPromise;
-    await sentDonePromise;
-    unsubPhase2();
+    await waitForControl((m) => m.k === 'sent-done' && m.dir === 'g2h');
+    isReceiving = false;
 
     const totalSec = Math.max(0.001, (performance.now() - rxStart) / 1000);
     const avgRate = rxBytes / totalSec;
@@ -514,80 +536,46 @@ export async function runSpeedTest(channel, isHost, durationSec = 5) {
     channel.sendControl({ k: 'result', dir: 'g2h', rate: avgRate, bytes: rxBytes, duration: totalSec });
     renderSpeedBarComplete('inbound', avgRate, rxBytes, totalSec);
 
-    // Pequeño retardo antes de finished para asegurar que el receptor procesó el resultado
+    // Pequeño respiro antes de finished para asegurar que el otro lado leyó result
     await new Promise((r) => setTimeout(r, 50));
     channel.sendControl({ k: 'finished' });
   } else {
     // Si somos Guest:
-    channel.onControl((msg) => {
-      if (msg.k === 'ping') {
-        channel.sendControl({ k: 'pong', seq: msg.seq });
-      } else if (msg.k === 'rtt') {
-        results.rttMs = msg.ms;
-        console.log(`  ${c.bold}Latencia (RTT):${c.reset} ${c.cyan}${fmtMs(msg.ms)}${c.reset}\n`);
-      }
-    });
 
     // 1. Fase 1: Host emite (h2g) -> Inbound para Guest
-    let resolveIncomingH2G;
-    const incomingH2GPromise = new Promise((r) => { resolveIncomingH2G = r; });
-    let resolveSentDoneH2G;
-    const sentDoneH2GPromise = new Promise((r) => { resolveSentDoneH2G = r; });
+    await waitForControl((m) => m.k === 'incoming' && m.dir === 'h2g');
+    rxBytes = 0;
+    rxStart = 0;
+    lastReport = 0;
+    lastBytes = 0;
+    smoothedSpeed = 0;
+    isReceiving = true;
+    renderSpeedBar('inbound', 0, durationSec, 0, 0);
 
-    const unsubPhase1Guest = channel.onControl((msg) => {
-      if (msg.k === 'incoming' && msg.dir === 'h2g') {
-        rxBytes = 0;
-        rxStart = 0;
-        lastReport = 0;
-        lastBytes = 0;
-        smoothedSpeed = 0;
-        isReceiving = true;
-        renderSpeedBar('inbound', 0, durationSec, 0, 0);
-        resolveIncomingH2G();
-      } else if (msg.k === 'sent-done' && msg.dir === 'h2g') {
-        isReceiving = false;
-        resolveSentDoneH2G();
-      }
-    });
-
-    await incomingH2GPromise;
-    await sentDoneH2GPromise;
-    unsubPhase1Guest();
+    await waitForControl((m) => m.k === 'sent-done' && m.dir === 'h2g');
+    isReceiving = false;
 
     const totalSec = Math.max(0.001, (performance.now() - rxStart) / 1000);
     const avgRate = rxBytes / totalSec;
     results.inRate = avgRate;
     results.inBytes = rxBytes;
     results.inSec = totalSec;
+
     channel.sendControl({ k: 'result', dir: 'h2g', rate: avgRate, bytes: rxBytes, duration: totalSec });
     renderSpeedBarComplete('inbound', avgRate, rxBytes, totalSec);
 
-    await new Promise((r) => setTimeout(r, 200));
-
-    // 2. Fase 2: Guest emite (g2h) -> Outbound para Guest
-    let resolveG2HResult;
-    const g2hResultPromise = new Promise((r) => { resolveG2HResult = r; });
-    let resolveFinished;
-    const finishedPromise = new Promise((r) => { resolveFinished = r; });
-
-    const unsubPhase2Guest = channel.onControl((msg) => {
-      if (msg.k === 'result' && msg.dir === 'g2h') {
-        resolveG2HResult(msg);
-      } else if (msg.k === 'finished') {
-        resolveFinished();
-      }
-    });
+    // 2. Fase 2: Esperar señal del Host para empezar a emitir (g2h)
+    await waitForControl((m) => m.k === 'start-phase2');
 
     await streamPhase('g2h');
-    const g2hResult = await g2hResultPromise;
+    const g2hResult = await waitForControl((m) => m.k === 'result' && m.dir === 'g2h');
 
     results.outRate = g2hResult.rate;
     results.outBytes = g2hResult.bytes;
     results.outSec = g2hResult.duration;
     renderSpeedBarComplete('outbound', g2hResult.rate, g2hResult.bytes, g2hResult.duration);
 
-    await finishedPromise;
-    unsubPhase2Guest();
+    await waitForControl((m) => m.k === 'finished');
   }
 
   testFinished = true;

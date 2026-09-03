@@ -29,22 +29,22 @@ Los archivos viajan **directamente entre dispositivos**: el servidor actúa excl
 
 ---
 
-## 📥 Descargas (Versión v0.3.3)
+## 📥 Descargas (Versión v0.3.4)
 
-Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.3.3](https://github.com/Oloxx/drop/releases/tag/v0.3.3):
+Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.3.4](https://github.com/Oloxx/drop/releases/tag/v0.3.4):
 
-* **Windows (x64):** [`drop-v0.3.3-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.3.3/drop-v0.3.3-windows-x64.exe)
-* **Linux (x64):** [`drop-v0.3.3-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.3.3/drop-v0.3.3-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-v0.3.3-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.3.3/drop-v0.3.3-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-v0.3.3-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.3.3/drop-v0.3.3-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.3.3-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.3.3/drop-v0.3.3-macos-x64.tar.gz)
+* **Windows (x64):** [`drop-v0.3.4-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.3.4/drop-v0.3.4-windows-x64.exe)
+* **Linux (x64):** [`drop-v0.3.4-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.3.4/drop-v0.3.4-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-v0.3.4-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.3.4/drop-v0.3.4-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-v0.3.4-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.3.4/drop-v0.3.4-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-v0.3.4-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.3.4/drop-v0.3.4-macos-x64.tar.gz)
 
 ---
 
 ## 🛠️ Instalación en el Sistema
 
 ### Windows
-Simplemente **descarga [`drop-v0.3.3-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.3.3/drop-v0.3.3-windows-x64.exe) y haz doble clic sobre él**.
+Simplemente **descarga [`drop-v0.3.4-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.3.4/drop-v0.3.4-windows-x64.exe) y haz doble clic sobre él**.
 1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
 2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
 3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
@@ -52,8 +52,8 @@ Simplemente **descarga [`drop-v0.3.3-windows-x64.exe`](https://github.com/Oloxx/
 ### Linux / macOS
 Descarga el archivo correspondiente, extráelo y ejecútalo con `install`:
 ```bash
-tar -xzf drop-v0.3.3-linux-x64.tar.gz
-./drop-v0.3.3-linux-x64 install
+tar -xzf drop-v0.3.4-linux-x64.tar.gz
+./drop-v0.3.4-linux-x64 install
 ```
 *(O muévelo manualmente a tu ruta del sistema: `sudo mv drop-linux-x64 /usr/local/bin/drop && chmod +x /usr/local/bin/drop`)*
 
