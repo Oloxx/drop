@@ -97,19 +97,109 @@ async function runSend(args, options) {
   ${c.dim}Esperando a que el receptor se conecte...${c.reset}
 `);
 
-  // 4. Si hay WS de señalización, escuchar si el receptor conecta por WAN
+async function streamToWebGuest(guestId, files, ws, onProgress) {
+  const CHUNK = 64 * 1024;
+  const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
+  let totalSent = 0;
+  let lastReport = performance.now();
+  let lastBytes = 0;
+  let speed = 0;
+
+  for (const [index, file] of files.entries()) {
+    ws.send(JSON.stringify({
+      t: 'signal',
+      to: guestId,
+      data: {
+        type: 'cli-start',
+        index,
+        name: path.basename(file.path),
+        size: file.size,
+        mime: 'application/octet-stream',
+      }
+    }));
+
+    const fd = await fs.promises.open(file.path, 'r');
+    const buf = Buffer.allocUnsafe(CHUNK);
+    let offset = 0;
+
+    while (offset < file.size) {
+      const toRead = Math.min(CHUNK, file.size - offset);
+      const { bytesRead } = await fd.read(buf, 0, toRead, offset);
+      if (bytesRead === 0) break;
+
+      const header = Buffer.allocUnsafe(4);
+      header.writeUInt32BE(guestId, 0);
+      const packet = Buffer.concat([header, buf.subarray(0, bytesRead)]);
+
+      while (ws.bufferedAmount > 4 * 1024 * 1024) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+
+      ws.send(packet);
+      offset += bytesRead;
+      totalSent += bytesRead;
+
+      const now = performance.now();
+      const dt = (now - lastReport) / 1000;
+      if (dt >= 0.15) {
+        const inst = (totalSent - lastBytes) / dt;
+        speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+        lastBytes = totalSent;
+        lastReport = now;
+        if (onProgress) onProgress(totalSent, totalBytes, speed);
+      }
+    }
+    await fd.close();
+
+    ws.send(JSON.stringify({
+      t: 'signal',
+      to: guestId,
+      data: { type: 'cli-end', index }
+    }));
+  }
+
+  ws.send(JSON.stringify({
+    t: 'signal',
+    to: guestId,
+    data: { type: 'cli-done' }
+  }));
+  if (onProgress) onProgress(totalBytes, totalBytes, speed);
+}
+
+  // 4. Si hay WS de señalización, escuchar si el receptor conecta por WAN o Web
+  let resolveDone;
+  const donePromise = new Promise((r) => { resolveDone = r; });
+
   if (ws) {
     const localIPs = getLocalIPs();
-    ws.addEventListener('message', (ev) => {
+    ws.addEventListener('message', async (ev) => {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.t === 'guest') {
-          // El receptor entró en la sala, le enviamos nuestras IPs locales y puerto
           ws.send(JSON.stringify({
             t: 'signal',
             to: msg.guestId,
-            data: { type: 'tcp-offer', ips: localIPs, port: tcpPort }
+            data: {
+              type: 'cli-offer',
+              ips: localIPs,
+              port: tcpPort,
+              manifest: files.map((f) => ({
+                name: path.basename(f.path),
+                size: f.size,
+                type: 'application/octet-stream'
+              }))
+            }
           }));
+        } else if (msg.t === 'signal') {
+          if (msg.data?.type === 'cli-accept') {
+            if (broadcaster) broadcaster.stop();
+            console.log(`\n  ${c.bold}Navegador web conectado (${msg.from}):${c.reset} ${c.cyan}[MODO WEB STREAMING]${c.reset}\n`);
+            await streamToWebGuest(msg.from, files, ws, (sent, total, speed) => {
+              renderProgressBar(sent, total, speed);
+            });
+            console.log(`\n\n  ${c.green}✔ ¡Transferencia hacia la web completada con éxito!${c.reset}\n`);
+            resolveDone();
+          }
         }
       } catch {}
     });
@@ -118,17 +208,17 @@ async function runSend(args, options) {
   activeServer.on('connection', (socket) => {
     const isLocal = socket.remoteAddress?.includes('127.0.0.1') || socket.remoteAddress?.includes('::1') || socket.remoteAddress?.startsWith('192.168.') || socket.remoteAddress?.startsWith('10.');
     const tag = isLocal ? `${c.green}[CONEXIÓN LAN DIRECTA]${c.reset}` : `${c.cyan}[CONEXIÓN DIRECTA]${c.reset}`;
-    console.log(`\n  ${c.bold}Receptor conectado:${c.reset} ${socket.remoteAddress} ${tag}\n`);
+    console.log(`\n  ${c.bold}Receptor CLI conectado:${c.reset} ${socket.remoteAddress} ${tag}\n`);
     if (broadcaster) broadcaster.stop();
   });
 
-  await new Promise((resolve) => {
-    activeServer.on('close', resolve);
-  });
+  activeServer.on('close', () => resolveDone());
+
+  await donePromise;
 
   if (broadcaster) broadcaster.stop();
   if (ws) ws.close();
-  console.log(`\n\n  ${c.green}✔ ¡Transferencia completada con éxito!${c.reset}\n`);
+  console.log(`\n  ${c.green}✔ ¡Canal cerrado!${c.reset}\n`);
   process.exit(0);
 }
 
