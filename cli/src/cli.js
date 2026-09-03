@@ -4,12 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import readline from 'node:readline';
+import os from 'node:os';
 import { c, fmtBytes, renderProgressBar } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
 
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -115,6 +116,197 @@ async function uninstallSelf() {
   }
 }
 
+function isNewerVersion(remote, local) {
+  const cleanRemote = remote.replace(/^v/, '').trim();
+  const cleanLocal = local.replace(/^v/, '').trim();
+  if (cleanRemote === cleanLocal) return false;
+
+  const rParts = cleanRemote.split('.').map((n) => parseInt(n, 10) || 0);
+  const lParts = cleanLocal.split('.').map((n) => parseInt(n, 10) || 0);
+
+  for (let i = 0; i < Math.max(rParts.length, lParts.length); i++) {
+    const r = rParts[i] || 0;
+    const l = lParts[i] || 0;
+    if (r > l) return true;
+    if (r < l) return false;
+  }
+  return false;
+}
+
+function getTargetAssetName() {
+  const platform = process.platform;
+  const arch = process.arch;
+
+  if (platform === 'win32') {
+    return 'drop-windows-x64.exe';
+  } else if (platform === 'darwin') {
+    return arch === 'arm64' ? 'drop-macos-arm64.tar.gz' : 'drop-macos-x64.tar.gz';
+  } else if (platform === 'linux') {
+    return arch === 'arm64' ? 'drop-linux-arm64.tar.gz' : 'drop-linux-x64.tar.gz';
+  }
+  return null;
+}
+
+async function downloadWithProgress(url, headers, onProgress) {
+  const res = await fetch(url, { headers, redirect: 'follow' });
+  if (!res.ok) {
+    throw new Error(`Error descargando actualización (HTTP ${res.status}): ${res.statusText}`);
+  }
+  const contentLength = parseInt(res.headers.get('content-length') || '0', 10);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let receivedBytes = 0;
+  let lastReport = performance.now();
+  let lastBytes = 0;
+  let speed = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    receivedBytes += value.length;
+
+    const now = performance.now();
+    const dt = (now - lastReport) / 1000;
+    if (dt >= 0.15) {
+      const inst = (receivedBytes - lastBytes) / dt;
+      speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+      lastBytes = receivedBytes;
+      lastReport = now;
+      if (onProgress) onProgress(receivedBytes, contentLength, speed);
+    }
+  }
+
+  if (onProgress) onProgress(receivedBytes, contentLength, speed);
+  return Buffer.concat(chunks);
+}
+
+async function updateSelf(force = false) {
+  console.log(`\n${c.bold}Comprobando actualizaciones en GitHub...${c.reset}`);
+
+  const headers = {
+    'User-Agent': 'drop-cli',
+    'Accept': 'application/vnd.github+json'
+  };
+
+  const envToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (envToken) {
+    headers['Authorization'] = `Bearer ${envToken}`;
+  } else {
+    try {
+      const ghToken = execSync('gh auth token', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+      if (ghToken) headers['Authorization'] = `Bearer ${ghToken}`;
+    } catch {}
+  }
+
+  let release;
+  try {
+    const res = await fetch('https://api.github.com/repos/Oloxx/drop/releases/latest', { headers });
+    if (!res.ok) {
+      if (res.status === 404) {
+        throw new Error('No se encontraron releases públicas en GitHub.');
+      }
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+    release = await res.json();
+  } catch (err) {
+    console.error(`\n  ${c.red}Error comprobando actualizaciones:${c.reset} ${err.message}\n`);
+    process.exit(1);
+  }
+
+  const remoteTag = release.tag_name || '';
+  const remoteVersion = remoteTag.replace(/^v/, '');
+
+  if (!force && !isNewerVersion(remoteVersion, VERSION)) {
+    console.log(`\n  ${c.green}✔ Drop ya está actualizado a la última versión disponible (${c.bold}v${VERSION}${c.reset}${c.green}).${c.reset}\n`);
+    return;
+  }
+
+  console.log(`\n  ${c.cyan}Nueva versión detectada:${c.reset} ${c.bold}${remoteTag}${c.reset} (versión actual: v${VERSION})`);
+
+  const assetName = getTargetAssetName();
+  if (!assetName) {
+    console.error(`\n  ${c.red}Plataforma no soportada para auto-actualización: ${process.platform}-${process.arch}${c.reset}\n`);
+    process.exit(1);
+  }
+
+  const asset = release.assets?.find((a) => a.name === assetName);
+  if (!asset) {
+    console.error(`\n  ${c.red}No se encontró el paquete para tu plataforma (${assetName}) en la release ${remoteTag}.${c.reset}\n`);
+    process.exit(1);
+  }
+
+  const downloadUrl = headers['Authorization'] ? asset.url : asset.browser_download_url;
+  const dlHeaders = {
+    'User-Agent': 'drop-cli',
+    ...(headers['Authorization'] ? { 'Authorization': headers['Authorization'], 'Accept': 'application/octet-stream' } : {})
+  };
+
+  console.log(`  ${c.dim}Descargando ${asset.name} (${(asset.size / (1024 * 1024)).toFixed(1)} MB)...${c.reset}\n`);
+
+  let binaryBuffer;
+  try {
+    binaryBuffer = await downloadWithProgress(downloadUrl, dlHeaders, (current, total, speed) => {
+      renderProgressBar(current, total, speed);
+    });
+  } catch (err) {
+    console.error(`\n\n  ${c.red}Error descargando actualización:${c.reset} ${err.message}\n`);
+    process.exit(1);
+  }
+
+  console.log(`\n\n  ${c.dim}Instalando nueva versión...${c.reset}`);
+
+  // Determinar la ruta de instalación del ejecutable
+  let targetPath = process.execPath;
+  const isExe = path.basename(targetPath).toLowerCase().startsWith('drop');
+  if (!isExe) {
+    const installDir = getInstallDir();
+    const exeName = process.platform === 'win32' ? 'drop.exe' : 'drop';
+    targetPath = path.join(installDir, exeName);
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+
+    if (assetName.endsWith('.tar.gz')) {
+      const tmpDir = path.join(os.tmpdir(), `drop_update_${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const tarPath = path.join(tmpDir, 'archive.tar.gz');
+      fs.writeFileSync(tarPath, binaryBuffer);
+      execSync(`tar -xzf "${tarPath}" -C "${tmpDir}"`);
+      const extractedFiles = fs.readdirSync(tmpDir).filter((f) => f.startsWith('drop') && !f.endsWith('.tar.gz'));
+      if (extractedFiles.length === 0) throw new Error('No se encontró el binario en el archivo comprimido.');
+      const extractedBin = path.join(tmpDir, extractedFiles[0]);
+      fs.copyFileSync(extractedBin, targetPath);
+      fs.chmodSync(targetPath, 0o755);
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    } else {
+      if (process.platform === 'win32') {
+        const oldPath = targetPath + '.old';
+        if (fs.existsSync(oldPath)) {
+          try { fs.unlinkSync(oldPath); } catch {}
+        }
+        if (fs.existsSync(targetPath)) {
+          fs.renameSync(targetPath, oldPath);
+        }
+        fs.writeFileSync(targetPath, binaryBuffer);
+        // Limpiar el .old en segundo plano una vez cerrado el proceso
+        try {
+          execSync(`powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile -Command Start-Sleep -Milliseconds 800; Remove-Item -Force ''${oldPath}'' -ErrorAction SilentlyContinue' -WindowStyle Hidden"`, { stdio: 'ignore' });
+        } catch {}
+      } else {
+        fs.writeFileSync(targetPath, binaryBuffer);
+        fs.chmodSync(targetPath, 0o755);
+      }
+    }
+
+    console.log(`  ${c.green}✔ ¡Drop actualizado con éxito a la versión ${c.bold}${remoteTag}${c.reset}${c.green}!${c.reset}\n`);
+  } catch (err) {
+    console.error(`\n  ${c.red}Error instalando actualización:${c.reset} ${err.message}\n`);
+    process.exit(1);
+  }
+}
+
 function printHelp() {
   console.log(`
 ${c.bold}drop${c.reset} — transferencia P2P de archivos a máxima velocidad (${c.cyan}v${VERSION}${c.reset})
@@ -122,19 +314,23 @@ ${c.bold}drop${c.reset} — transferencia P2P de archivos a máxima velocidad ($
 ${c.bold}USO:${c.reset}
   drop send <archivo1> [archivo2 ...]   Envía uno o varios archivos
   drop recv <código-o-enlace>           Recibe los archivos
+  drop update                           Busca e instala la última versión disponible
   drop install                          Instala drop en el sistema y lo añade al PATH
   drop uninstall                        Desinstala drop del sistema
 
 ${c.bold}OPCIONES:${c.reset}
-  -s, --server <url>   Servidor de señalización (por defecto: ${DEFAULT_SERVER})
+  -s, --server <url>     Servidor de señalización (por defecto: ${DEFAULT_SERVER})
   -o, --out <directorio> Directorio de destino para descargas (por defecto: actual)
-  -h, --help           Muestra esta ayuda
-  -v, --version        Muestra la versión
+  --update               Comprueba y actualiza a la última versión
+  --force                Fuerza la reinstalación en 'drop update'
+  -h, --help             Muestra esta ayuda
+  -v, --version          Muestra la versión
 
 ${c.bold}EJEMPLOS:${c.reset}
   drop send video.mp4
   drop recv 7x9y-z8w2
   drop recv https://drop.oloxx.dev/#7x9y-z8w2
+  drop update
 `);
 }
 
@@ -497,6 +693,13 @@ async function runRecv(args, options) {
 async function main() {
   const argv = process.argv.slice(2);
 
+  if (process.platform === 'win32') {
+    const oldExe = process.execPath + '.old';
+    if (fs.existsSync(oldExe)) {
+      try { fs.unlinkSync(oldExe); } catch {}
+    }
+  }
+
   if (argv.includes('-v') || argv.includes('--version')) {
     console.log(`drop v${VERSION}`);
     return;
@@ -509,6 +712,12 @@ async function main() {
 
   if (argv.includes('uninstall')) {
     await uninstallSelf();
+    return;
+  }
+
+  if (argv.includes('update') || argv.includes('--update')) {
+    const force = argv.includes('--force');
+    await updateSelf(force);
     return;
   }
 
