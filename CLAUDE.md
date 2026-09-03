@@ -236,10 +236,11 @@ Production runs on the Oracle Cloud VPS reachable as `ssh valhalla` (Ubuntu 24.0
 in `~/drop`, as three containers: the app, **Caddy** (automatic Let's Encrypt) and **coturn**
 (TURN). Config lives in `.env` there — never commit it.
 
+**CI/CD automático:** Cada `git push origin main` activa el workflow de GitHub Actions (`.github/workflows/deploy.yml`), que se conecta por SSH a `valhalla`, actualiza el repositorio en `~/drop` (`git reset --hard origin/main`) y reconstruye el contenedor Docker automáticamente.
+
+Despliegue manual (si hiciera falta):
 ```bash
-tar --exclude=node_modules --exclude=.git --exclude=.env -czf - . \
-  | ssh valhalla 'tar -xzf - -C ~/drop'
-ssh valhalla 'cd ~/drop && docker compose up -d --build drop'
+ssh valhalla "cd ~/drop && git pull && docker compose up -d --build drop"
 ```
 
 Oracle's firewall is in **two** places: the VCN Security List in the OCI console *and* the
