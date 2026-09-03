@@ -9,7 +9,7 @@ import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -204,6 +204,8 @@ async function runSend(args, options) {
   ${c.dim}Esperando a que el receptor se conecte...${c.reset}
 `);
 
+const activeStreams = new Set();
+
 async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
@@ -212,71 +214,84 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   let lastBytes = 0;
   let speed = 0;
 
-  for (const [index, file] of files.entries()) {
-    ws.send(JSON.stringify({
-      t: 'signal',
-      to: guestId,
-      data: {
-        type: 'cli-start',
-        index,
-        name: path.basename(file.path),
-        size: file.size,
-        mime: 'application/octet-stream',
+  activeStreams.add(guestId);
+
+  try {
+    for (const [index, file] of files.entries()) {
+      if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
+
+      ws.send(JSON.stringify({
+        t: 'signal',
+        to: guestId,
+        data: {
+          type: 'cli-start',
+          index,
+          name: path.basename(file.path),
+          size: file.size,
+          mime: 'application/octet-stream',
+        }
+      }));
+
+      const fd = await fs.promises.open(file.path, 'r');
+      const buf = Buffer.allocUnsafe(CHUNK);
+      let offset = 0;
+
+      try {
+        while (offset < file.size) {
+          if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
+
+          const toRead = Math.min(CHUNK, file.size - offset);
+          const { bytesRead } = await fd.read(buf, 0, toRead, offset);
+          if (bytesRead === 0) break;
+
+          const header = Buffer.allocUnsafe(4);
+          header.writeUInt32BE(guestId, 0);
+          const packet = Buffer.concat([header, buf.subarray(0, bytesRead)]);
+
+          while (ws.bufferedAmount > 4 * 1024 * 1024) {
+            if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
+            await new Promise((r) => setTimeout(r, 15));
+          }
+
+          ws.send(packet);
+          offset += bytesRead;
+          totalSent += bytesRead;
+
+          const now = performance.now();
+          const dt = (now - lastReport) / 1000;
+          if (dt >= 0.15) {
+            const inst = (totalSent - lastBytes) / dt;
+            speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+            lastBytes = totalSent;
+            lastReport = now;
+            if (onProgress) onProgress(totalSent, totalBytes, speed);
+          }
+        }
+      } finally {
+        await fd.close().catch(() => {});
       }
-    }));
 
-    const fd = await fs.promises.open(file.path, 'r');
-    const buf = Buffer.allocUnsafe(CHUNK);
-    let offset = 0;
+      if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
 
-    while (offset < file.size) {
-      const toRead = Math.min(CHUNK, file.size - offset);
-      const { bytesRead } = await fd.read(buf, 0, toRead, offset);
-      if (bytesRead === 0) break;
-
-      const header = Buffer.allocUnsafe(4);
-      header.writeUInt32BE(guestId, 0);
-      const packet = Buffer.concat([header, buf.subarray(0, bytesRead)]);
-
-      while (ws.bufferedAmount > 4 * 1024 * 1024) {
-        await new Promise((r) => setTimeout(r, 15));
-      }
-
-      ws.send(packet);
-      offset += bytesRead;
-      totalSent += bytesRead;
-
-      const now = performance.now();
-      const dt = (now - lastReport) / 1000;
-      if (dt >= 0.15) {
-        const inst = (totalSent - lastBytes) / dt;
-        speed = speed ? speed * 0.7 + inst * 0.3 : inst;
-        lastBytes = totalSent;
-        lastReport = now;
-        if (onProgress) onProgress(totalSent, totalBytes, speed);
-      }
+      ws.send(JSON.stringify({
+        t: 'signal',
+        to: guestId,
+        data: { type: 'cli-end', index }
+      }));
     }
-    await fd.close();
 
     ws.send(JSON.stringify({
       t: 'signal',
       to: guestId,
-      data: { type: 'cli-end', index }
+      data: { type: 'cli-done' }
     }));
+    if (onProgress) onProgress(totalBytes, totalBytes, speed);
+  } finally {
+    activeStreams.delete(guestId);
   }
-
-  ws.send(JSON.stringify({
-    t: 'signal',
-    to: guestId,
-    data: { type: 'cli-done' }
-  }));
-  if (onProgress) onProgress(totalBytes, totalBytes, speed);
 }
 
   // 4. Si hay WS de señalización, escuchar si el receptor conecta por WAN o Web
-  let resolveDone;
-  const donePromise = new Promise((r) => { resolveDone = r; });
-
   if (ws) {
     const localIPs = getLocalIPs();
     ws.addEventListener('message', async (ev) => {
@@ -299,15 +314,23 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
           }));
         } else if (msg.t === 'signal') {
           if (msg.data?.type === 'cli-accept') {
-            if (broadcaster) broadcaster.stop();
-            console.log(`\n  ${c.bold}Receptor conectado (${msg.from}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
-            await streamToWebGuest(msg.from, files, ws, (sent, total, speed) => {
-              renderProgressBar(sent, total, speed);
-            });
-            console.log(`\n\n  ${c.green}✔ ¡Transferencia completada con éxito!${c.reset}\n`);
-            await new Promise((r) => setTimeout(r, 1500));
-            resolveDone();
+            const guest = msg.from;
+            console.log(`\n  ${c.bold}Receptor conectado (${guest}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
+            try {
+              await streamToWebGuest(guest, files, ws, (sent, total, speed) => {
+                renderProgressBar(sent, total, speed);
+              });
+              console.log(`\n\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${guest})!${c.reset}`);
+              console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
+            } catch (err) {
+              console.log(`\n\n  ${c.yellow}Receptor (${guest}) interrumpido: ${err.message}${c.reset}`);
+              console.log(`  ${c.dim}Canal abierto. Esperando nuevas conexiones... (Presiona Ctrl + C para salir)${c.reset}\n`);
+            }
+          } else if (msg.data?.type === 'cli-error') {
+            activeStreams.delete(msg.from);
           }
+        } else if (msg.t === 'guest-gone') {
+          activeStreams.delete(msg.guestId);
         }
       } catch {}
     });
@@ -317,17 +340,25 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
     const isLocal = socket.remoteAddress?.includes('127.0.0.1') || socket.remoteAddress?.includes('::1') || socket.remoteAddress?.startsWith('192.168.') || socket.remoteAddress?.startsWith('10.');
     const tag = isLocal ? `${c.green}[CONEXIÓN LAN DIRECTA]${c.reset}` : `${c.cyan}[CONEXIÓN DIRECTA]${c.reset}`;
     console.log(`\n  ${c.bold}Receptor CLI conectado:${c.reset} ${socket.remoteAddress} ${tag}\n`);
-    if (broadcaster) broadcaster.stop();
   });
 
-  activeServer.on('close', () => resolveDone());
+  console.log(`  ${c.dim}Canal abierto permanentemente. Presiona ${c.bold}Ctrl + C${c.reset}${c.dim} para cerrarlo cuando hayas terminado.${c.reset}\n`);
 
-  await donePromise;
+  await new Promise(() => {
+    const onExit = () => {
+      console.log(`\n\n  ${c.yellow}Cerrando canal de transferencia...${c.reset}`);
+      if (broadcaster) broadcaster.stop();
+      if (ws) {
+        try { ws.close(); } catch {}
+      }
+      try { activeServer.close(); } catch {}
+      console.log(`  ${c.green}✔ ¡Canal cerrado con éxito!${c.reset}\n`);
+      process.exit(0);
+    };
 
-  if (broadcaster) broadcaster.stop();
-  if (ws) ws.close();
-  console.log(`\n  ${c.green}✔ ¡Canal cerrado!${c.reset}\n`);
-  process.exit(0);
+    process.on('SIGINT', onExit);
+    process.on('SIGTERM', onExit);
+  });
 }
 
 function printSuccess(received, outputDir) {
@@ -348,7 +379,28 @@ async function runRecv(args, options) {
 
   // Extraer token de URLs si se pega enlace
   const token = input.includes('#') ? input.split('#')[1].trim() : input.trim();
-  const outputDir = path.resolve(options.out || process.cwd());
+  let outputDir = options.out ? path.resolve(options.out) : process.cwd();
+
+  // Si se ejecuta en una carpeta del sistema protegida (ej. C:\Windows\System32 por abrir PowerShell como Admin),
+  // redirigir automáticamente a la carpeta de Descargas del usuario para evitar errores de permisos (EPERM)
+  const winDir = process.env.WINDIR || 'C:\\Windows';
+  if (!options.out && process.platform === 'win32' && outputDir.toLowerCase().startsWith(winDir.toLowerCase())) {
+    const userDownloads = path.join(process.env.USERPROFILE || 'C:\\', 'Downloads');
+    outputDir = fs.existsSync(userDownloads) ? userDownloads : (process.env.USERPROFILE || outputDir);
+    console.log(`\n  ${c.yellow}Aviso: Terminal abierta en carpeta del sistema. Guardando en: ${outputDir}${c.reset}`);
+  }
+
+  // Verificar permisos de escritura antes de iniciar
+  try {
+    fs.mkdirSync(outputDir, { recursive: true });
+    const testWritePath = path.join(outputDir, `.drop_test_${Date.now()}`);
+    fs.writeFileSync(testWritePath, '');
+    fs.unlinkSync(testWritePath);
+  } catch (err) {
+    console.error(`\n${c.red}Error: No se tienen permisos de escritura en "${outputDir}".${c.reset}`);
+    console.error(`Especifica una carpeta accesible con -o (ejemplo: drop recv ${token} -o %USERPROFILE%\\Downloads)\n`);
+    process.exit(1);
+  }
 
   console.log(`\n${c.bold}Buscando emisor para el código:${c.reset} ${c.cyan}${token}${c.reset}`);
 

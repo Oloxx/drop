@@ -29,22 +29,22 @@ Los archivos viajan **directamente entre dispositivos**: el servidor actúa excl
 
 ---
 
-## 📥 Descargas (Versión v0.2.1)
+## 📥 Descargas (Versión v0.2.2)
 
-Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.2.1](https://github.com/Oloxx/drop/releases/tag/v0.2.1):
+Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.2.2](https://github.com/Oloxx/drop/releases/tag/v0.2.2):
 
-* **Windows (x64):** [`drop-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.1/drop-windows-x64.exe)
-* **Linux (x64):** [`drop-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.1/drop-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.1/drop-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.1/drop-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.1/drop-macos-x64.tar.gz)
+* **Windows (x64):** [`drop-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.2/drop-windows-x64.exe)
+* **Linux (x64):** [`drop-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.2/drop-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.2/drop-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.2/drop-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.2/drop-macos-x64.tar.gz)
 
 ---
 
 ## 🛠️ Instalación en el Sistema
 
 ### Windows
-Simplemente **descarga [`drop-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.1/drop-windows-x64.exe) y haz doble clic sobre él**.
+Simplemente **descarga [`drop-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.2/drop-windows-x64.exe) y haz doble clic sobre él**.
 1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
 2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
 3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
