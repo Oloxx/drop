@@ -47,6 +47,11 @@ export function fmtDuration(seconds) {
   return `${h}h ${m % 60}m ${s}s`;
 }
 
+export function fmtMs(ms) {
+  if (ms == null || !isFinite(ms)) return '—';
+  return (ms < 10 ? ms.toFixed(1) : Math.round(ms)) + ' ms';
+}
+
 function getBarWidth(preferred = 30) {
   const cols = process.stdout.columns;
   if (!cols || cols >= 105) return preferred;

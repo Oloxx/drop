@@ -10,8 +10,9 @@ import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete 
 import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
+import { runSpeedHost, runSpeedGuest } from './speed.js';
 
-const VERSION = '0.2.4';
+const VERSION = '0.3.0';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -322,13 +323,17 @@ ${c.bold}drop${c.reset} — transferencia P2P de archivos a máxima velocidad ($
 ${c.bold}USO:${c.reset}
   drop send <archivo1> [archivo2 ...]   Envía uno o varios archivos
   drop recv <código-o-enlace>           Recibe los archivos
+  drop speed [código-o-enlace]          Mide la velocidad de transferencia entre 2 clientes CLI
   drop update                           Busca e instala la última versión disponible
   drop install                          Instala drop en el sistema y lo añade al PATH
   drop uninstall                        Desinstala drop del sistema
 
 ${c.bold}OPCIONES:${c.reset}
+  -t, --time <segundos>  Duración de cada fase del test de velocidad (por defecto: 5s)
   -s, --server <url>     Servidor de señalización (por defecto: ${DEFAULT_SERVER})
   -o, --out <directorio> Directorio de destino para descargas (por defecto: actual)
+  --relay                Fuerza el test a través del servidor de Relay
+  --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --update               Comprueba y actualiza a la última versión
   --force                Fuerza la reinstalación en 'drop update'
   -h, --help             Muestra esta ayuda
@@ -337,7 +342,9 @@ ${c.bold}OPCIONES:${c.reset}
 ${c.bold}EJEMPLOS:${c.reset}
   drop send video.mp4
   drop recv 7x9y-z8w2
-  drop recv https://drop.oloxx.dev/#7x9y-z8w2
+  drop speed
+  drop speed 7x9y-z8w2
+  drop speed 7x9y-z8w2 -t 10
   drop update
 `);
 }
@@ -819,6 +826,9 @@ async function main() {
   const options = {
     server: DEFAULT_SERVER,
     out: null,
+    time: 5,
+    directOnly: false,
+    relay: false,
   };
 
   const cleanArgs = [];
@@ -827,6 +837,12 @@ async function main() {
       options.server = argv[++i];
     } else if (argv[i] === '-o' || argv[i] === '--out') {
       options.out = argv[++i];
+    } else if (argv[i] === '-t' || argv[i] === '--time') {
+      options.time = parseInt(argv[++i], 10) || 5;
+    } else if (argv[i] === '--direct-only') {
+      options.directOnly = true;
+    } else if (argv[i] === '--relay') {
+      options.relay = true;
     } else {
       cleanArgs.push(argv[i]);
     }
@@ -839,6 +855,12 @@ async function main() {
     await runSend(rest, options);
   } else if (command === 'recv' || command === 'get') {
     await runRecv(rest, options);
+  } else if (command === 'speed' || command === 'test') {
+    if (rest.length > 0 && !rest[0].startsWith('-')) {
+      await runSpeedGuest(rest[0], options);
+    } else {
+      await runSpeedHost(options);
+    }
   } else {
     // Si se pasa directamente un archivo: drop archivo.zip
     if (fs.existsSync(command)) {

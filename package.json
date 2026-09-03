@@ -1,6 +1,6 @@
 {
   "name": "drop",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Envio de archivos P2P entre navegadores (WebRTC). El servidor solo empareja: los archivos nunca pasan por el.",
@@ -17,7 +17,8 @@
     "test": "node --test test/*.test.mjs",
     "bench": "node test/throughput.bench.mjs",
     "bench:fanout": "node test/fanout.bench.mjs",
-    "bench:cli": "node test/cli.bench.mjs"
+    "bench:cli": "node test/cli.bench.mjs",
+    "bench:speed": "node test/speed.bench.mjs"
   },
   "dependencies": {
     "express": "^4.21.2",
