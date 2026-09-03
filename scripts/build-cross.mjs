@@ -9,9 +9,13 @@ const CACHE_DIR = path.resolve('node_modules', '.cache', 'sea-binaries');
 if (!fs.existsSync(DIST_DIR)) fs.mkdirSync(DIST_DIR, { recursive: true });
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 
+const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+const VERSION_TAG = `v${pkg.version}`;
+
 const TARGETS = {
   'win-x64': {
-    output: 'drop-windows-x64.exe',
+    output: `drop-${VERSION_TAG}-windows-x64.exe`,
+    legacyOutput: 'drop-windows-x64.exe',
     getNode: async () => {
       if (process.platform === 'win32' && process.arch === 'x64') {
         return process.execPath;
@@ -27,22 +31,22 @@ const TARGETS = {
     }
   },
   'linux-x64': {
-    output: 'drop-linux-x64',
+    output: `drop-${VERSION_TAG}-linux-x64`,
     archive: `node-${NODE_VERSION}-linux-x64.tar.gz`,
     subPath: `node-${NODE_VERSION}-linux-x64/bin/node`,
   },
   'linux-arm64': {
-    output: 'drop-linux-arm64',
+    output: `drop-${VERSION_TAG}-linux-arm64`,
     archive: `node-${NODE_VERSION}-linux-arm64.tar.gz`,
     subPath: `node-${NODE_VERSION}-linux-arm64/bin/node`,
   },
   'darwin-arm64': {
-    output: 'drop-macos-arm64',
+    output: `drop-${VERSION_TAG}-macos-arm64`,
     archive: `node-${NODE_VERSION}-darwin-arm64.tar.gz`,
     subPath: `node-${NODE_VERSION}-darwin-arm64/bin/node`,
   },
   'darwin-x64': {
-    output: 'drop-macos-x64',
+    output: `drop-${VERSION_TAG}-macos-x64`,
     archive: `node-${NODE_VERSION}-darwin-x64.tar.gz`,
     subPath: `node-${NODE_VERSION}-darwin-x64/bin/node`,
   },
@@ -93,6 +97,10 @@ async function buildTarget(key) {
 
   const sizeMB = (fs.statSync(outPath).size / (1024 * 1024)).toFixed(1);
   console.log(`✔ ¡Binario generado con éxito!: dist/${info.output} (${sizeMB} MB)`);
+
+  if (info.legacyOutput) {
+    fs.copyFileSync(outPath, path.join(DIST_DIR, info.legacyOutput));
+  }
 
   if (key !== 'win-x64') {
     const tarName = `${info.output}.tar.gz`;

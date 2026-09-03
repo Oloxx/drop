@@ -133,16 +133,16 @@ function isNewerVersion(remote, local) {
   return false;
 }
 
-function getTargetAssetName() {
+function getTargetAssetSuffix() {
   const platform = process.platform;
   const arch = process.arch;
 
   if (platform === 'win32') {
-    return 'drop-windows-x64.exe';
+    return 'windows-x64.exe';
   } else if (platform === 'darwin') {
-    return arch === 'arm64' ? 'drop-macos-arm64.tar.gz' : 'drop-macos-x64.tar.gz';
+    return arch === 'arm64' ? 'macos-arm64.tar.gz' : 'macos-x64.tar.gz';
   } else if (platform === 'linux') {
-    return arch === 'arm64' ? 'drop-linux-arm64.tar.gz' : 'drop-linux-x64.tar.gz';
+    return arch === 'arm64' ? 'linux-arm64.tar.gz' : 'linux-x64.tar.gz';
   }
   return null;
 }
@@ -224,15 +224,15 @@ async function updateSelf(force = false) {
 
   console.log(`\n  ${c.cyan}Nueva versión detectada:${c.reset} ${c.bold}${remoteTag}${c.reset} (versión actual: v${VERSION})`);
 
-  const assetName = getTargetAssetName();
-  if (!assetName) {
+  const assetSuffix = getTargetAssetSuffix();
+  if (!assetSuffix) {
     console.error(`\n  ${c.red}Plataforma no soportada para auto-actualización: ${process.platform}-${process.arch}${c.reset}\n`);
     process.exit(1);
   }
 
-  const asset = release.assets?.find((a) => a.name === assetName);
+  const asset = release.assets?.find((a) => a.name.endsWith(assetSuffix));
   if (!asset) {
-    console.error(`\n  ${c.red}No se encontró el paquete para tu plataforma (${assetName}) en la release ${remoteTag}.${c.reset}\n`);
+    console.error(`\n  ${c.red}No se encontró el paquete para tu plataforma (*${assetSuffix}) en la release ${remoteTag}.${c.reset}\n`);
     process.exit(1);
   }
 
@@ -268,7 +268,7 @@ async function updateSelf(force = false) {
   try {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
 
-    if (assetName.endsWith('.tar.gz')) {
+    if (asset.name.endsWith('.tar.gz')) {
       const tmpDir = path.join(os.tmpdir(), `drop_update_${Date.now()}`);
       fs.mkdirSync(tmpDir, { recursive: true });
       const tarPath = path.join(tmpDir, 'archive.tar.gz');
