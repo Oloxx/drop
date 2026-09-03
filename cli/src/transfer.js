@@ -228,6 +228,25 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
 
     fs.mkdirSync(outputDir, { recursive: true });
 
+    const cleanup = () => {
+      ws.removeEventListener('message', onMsg);
+      if (currentFd) {
+        currentFd.close().catch(() => {});
+        currentFd = null;
+      }
+    };
+
+    const failWithError = (err) => {
+      try {
+        ws.send(JSON.stringify({
+          t: 'signal',
+          data: { type: 'cli-error', message: err.message }
+        }));
+      } catch {}
+      cleanup();
+      reject(err);
+    };
+
     const onMsg = (ev) => {
       if (typeof ev.data !== 'string') {
         const data = ev.data;
@@ -249,7 +268,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
               if (onProgress) onProgress(totalReceived, totalBytes, speed);
             }
           }
-        }).catch(reject);
+        }).catch(failWithError);
         return;
       }
 
@@ -272,14 +291,14 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
             const dest = path.join(outputDir, filename);
             currentFd = await fs.promises.open(dest, 'w');
             receivedFiles.push(dest);
-          }).catch(reject);
+          }).catch(failWithError);
         } else if (data?.type === 'cli-end') {
           writeQueue = writeQueue.then(async () => {
             if (currentFd) {
               await currentFd.close();
               currentFd = null;
             }
-          }).catch(reject);
+          }).catch(failWithError);
         } else if (data?.type === 'cli-done') {
           writeQueue = writeQueue.then(async () => {
             if (currentFd) {
@@ -289,23 +308,14 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
             if (onProgress) onProgress(totalBytes, totalBytes, speed);
             cleanup();
             resolve(receivedFiles);
-          }).catch(reject);
+          }).catch(failWithError);
         }
-      }
-    };
-
-    const cleanup = () => {
-      ws.removeEventListener('message', onMsg);
-      if (currentFd) {
-        currentFd.close().catch(() => {});
-        currentFd = null;
       }
     };
 
     ws.addEventListener('message', onMsg);
     ws.addEventListener('error', (err) => {
-      cleanup();
-      reject(err);
+      failWithError(err);
     }, { once: true });
     ws.addEventListener('close', () => {
       cleanup();
