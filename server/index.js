@@ -66,7 +66,22 @@ wss.on('connection', (ws) => {
 
   ws.on('pong', () => { ws.isAlive = true; });
 
-  ws.on('message', (raw) => {
+  ws.on('message', (raw, isBinary) => {
+    if (isBinary) {
+      const room = rooms.get(ws.token);
+      if (!room) return;
+      if (ws.role === 'host') {
+        if (raw.length < 4) return;
+        const toGuestId = raw.readUInt32BE(0);
+        const payload = raw.subarray(4);
+        const guest = room.guests.get(toGuestId);
+        if (guest && guest.readyState === 1) guest.send(payload, { binary: true });
+      } else if (ws.role === 'guest') {
+        if (room.host && room.host.readyState === 1) room.host.send(raw, { binary: true });
+      }
+      return;
+    }
+
     let msg;
     try {
       msg = JSON.parse(raw);

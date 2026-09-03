@@ -92,10 +92,15 @@ function connectSignaling() {
     if (ws && ws.readyState === WebSocket.OPEN) return resolve();
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(proto + '//' + location.host);
+    ws.binaryType = 'arraybuffer';
     ws.onopen = () => { setStatus('uplink ok', 'live'); resolve(); };
     ws.onerror = () => reject(new Error('No route to the server'));
     ws.onclose = () => setStatus('uplink lost', 'bad');
     ws.onmessage = (ev) => {
+      if (typeof ev.data !== 'string') {
+        onChunk(ev.data);
+        return;
+      }
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
       handleSignal(msg);
@@ -881,7 +886,11 @@ function onControl(msg) {
     case 'done':
       rx.finished = true;
       rx.writes = rx.writes.then(() => {
-        sendHost({ k: 'complete' });
+        if (rx.isCli) {
+          wsSend({ t: 'signal', data: { type: 'cli-complete' } });
+        } else {
+          sendHost({ k: 'complete' });
+        }
         if (rx.row) { rx.row.file(''); rx.row.finish('received'); }
         setStatus('transfer complete', 'live');
       });
@@ -894,6 +903,13 @@ function onChunk(buffer) {
   rx.fileGot += buffer.byteLength;
   rx.writes = rx.writes.then(() => rx.sink && rx.sink.write(buffer));
   if (rx.row) rx.row.progress(rx.received, rx.total);
+  if (rx.isCli) {
+    if (rx.received - rx.lastAck >= ACK_EVERY || rx.received >= rx.total) {
+      rx.lastAck = rx.received;
+      wsSend({ t: 'signal', data: { type: 'cli-ack', bytes: rx.received } });
+    }
+    return;
+  }
   if (rx.received - rx.lastAck >= ACK_EVERY || rx.received >= rx.total) {
     rx.lastAck = rx.received;
     sendHost({ k: 'ack', bytes: rx.received });
@@ -1002,11 +1018,37 @@ async function acceptTransfer() {
   rx.accepted = true;
   rx.row = makeProgressRow($('#recv-progress'), 'inbound');
   rx.row.state('arming…');
+  if (rx.isCli) {
+    rx.row.path('CLI stream');
+    rx.row.state('downloading…');
+    wsSend({ t: 'signal', data: { type: 'cli-accept' } });
+    return;
+  }
   watchPaths();
   sendHost({ k: 'accept' });
 }
 
 function routeSignal(from, data) {
+  if (data.type === 'cli-offer') {
+    rx.isCli = true;
+    rx.manifest = data.manifest;
+    rx.total = data.manifest.reduce((sum, f) => sum + f.size, 0);
+    showOffer(data.manifest);
+    setStatus('channel ready · CLI host', 'live');
+    return;
+  }
+  if (data.type === 'cli-start') {
+    onControl({ k: 'start', index: data.index, name: data.name, size: data.size, type: data.mime || '', from: 0 });
+    return;
+  }
+  if (data.type === 'cli-end') {
+    onControl({ k: 'end', index: data.index });
+    return;
+  }
+  if (data.type === 'cli-done') {
+    onControl({ k: 'done' });
+    return;
+  }
   if (document.body.dataset.view === 'send') {
     const conn = out.peers.get(from);
     if (conn) applySignal(conn, data).catch((err) => console.error('signal', err));
