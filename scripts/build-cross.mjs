@@ -11,7 +11,7 @@ if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 
 const TARGETS = {
   'win-x64': {
-    output: 'drop.exe',
+    output: 'drop-windows-x64.exe',
     getNode: async () => {
       if (process.platform === 'win32' && process.arch === 'x64') {
         return process.execPath;

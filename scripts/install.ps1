@@ -5,10 +5,14 @@ if (-not (Test-Path $binDir)) {
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
 
-$sourceExe = Join-Path $PSScriptRoot "..\dist\drop.exe"
+$sourceExe = Join-Path $PSScriptRoot "..\dist\drop-windows-x64.exe"
 if (-not (Test-Path $sourceExe)) {
-    Write-Host "Compilando drop.exe primero..." -ForegroundColor Cyan
+    $sourceExe = Join-Path $PSScriptRoot "..\dist\drop.exe"
+}
+if (-not (Test-Path $sourceExe)) {
+    Write-Host "Compilando drop-windows-x64.exe primero..." -ForegroundColor Cyan
     node "$PSScriptRoot\build-cross.mjs" win-x64
+    $sourceExe = Join-Path $PSScriptRoot "..\dist\drop-windows-x64.exe"
 }
 
 $destExe = Join-Path $binDir "drop.exe"
