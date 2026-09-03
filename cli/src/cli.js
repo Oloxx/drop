@@ -10,7 +10,7 @@ import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
 
-const VERSION = '0.2.3';
+const VERSION = '0.2.4';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
