@@ -1,296 +1,192 @@
-# Drop
+# Drop 📦⚡
 
-Enviar archivos a un amigo desde el navegador, sin cuentas y sin subirlos a ninguna nube.
-Los bytes van **directos de un navegador a otro** por WebRTC; el servidor solo hace de
-"guía telefónica" para que los dos navegadores se encuentren.
+Transferencia de archivos P2P cifrada de extremo a extremo, sin cuentas y sin límites de tamaño.
+
+Los archivos viajan **directamente entre dispositivos**: el servidor actúa exclusivamente como señalizador para que ambos extremos se encuentren.
 
 ```
-  Tú                     servidor                  tu amigo
-  │  1. crear sala ──────► (devuelve un token)
-  │                             ▲
-  │  2. le pasas el enlace ─────┼── 3. lo abre
-  │◄── 4. SDP + ICE (el servidor solo los reenvía) ───►│
-  │                                                    │
-  └────────── 5. los archivos, P2P cifrado ───────────►│
+  Tú                     Servidor                   Receptor
+  │  1. Crear sala ──────► (devuelve un token)          ▲
+  │                                                     │
+  │  2. Pasas el enlace / código ───────────────────────┤ 3. Abre enlace o ejecuta CLI
+  │◄── 4. Señalización (SDP/ICE o IPs locales) ────────►│
+  │                                                     │
+  │  5. TRANSFERENCIA P2P DIRECTA CIFRADA (E2EE) ──────►│
+  └─────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🚀 Dos Modos de Uso
+
+| Característica | 🌐 Drop Web | 💻 Drop CLI (`drop`) |
+|---|---|---|
+| **Ideal para** | Amigos, móviles, tablets, envíos rápidos | Archivos gigantes (ISOs, backups, vídeos) |
+| **Instalación** | **Cero**. Solo abrir el navegador | **Auto-instalable** (1 clic) sin dependencias |
+| **Protocolo** | WebRTC DataChannel | Sockets TCP directos + LAN UDP Broadcast |
+| **Velocidad** | ~15 MB/s (límite SCTP del navegador) | **100–115 MB/s** (satura Gigabit / Wi-Fi 6) |
+| **Compatibilidad** | Navegador a Navegador | **CLI a CLI** y **CLI a Web Browser** |
+
+---
+
+## 📥 Descargas (Versión v0.2.0)
+
+Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.2.0](https://github.com/Oloxx/drop/releases/tag/v0.2.0):
+
+* **Windows (x64):** [`drop.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop.exe)
+* **Linux (x64):** [`drop-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-macos-x64.tar.gz)
+
+---
+
+## 🛠️ Instalación en el Sistema
+
+### Windows
+Simplemente **descarga [`drop.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop.exe) y haz doble clic sobre él**.
+1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
+2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
+3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
+
+### Linux / macOS
+Descarga el archivo correspondiente, extráelo y ejecútalo con `install`:
+```bash
+tar -xzf drop-linux-x64.tar.gz
+./drop-linux-x64 install
+```
+*(O muévelo manualmente a tu ruta del sistema: `sudo mv drop-linux-x64 /usr/local/bin/drop && chmod +x /usr/local/bin/drop`)*
+
+---
 
 ## 📖 Guía de Uso
 
-Drop ofrece dos formas de transferir archivos según lo que necesites:
+### Modo 1: Desde la Web (Navegador)
 
-1. **Drop Web (Fricción Cero):** Ideal para enviar archivos desde o hacia móviles, tablets y PCs al instante. Solo abres el navegador, sin instalar absolutamente nada.
-2. **Drop CLI / `drop.exe` (Máxima Velocidad):** Un ejecutable independiente que no requiere instalar nada y transfiere a **100+ MB/s** mediante sockets TCP directos y descubrimiento LAN automático.
+> Web en producción: **[https://drop.oloxx.dev](https://drop.oloxx.dev)**
 
----
-
-### Modo 1: Uso desde la Web (Navegador)
-
-> Disponible en vivo en **https://drop.oloxx.dev** (o en local con `npm run dev`).
-
-#### Para enviar archivos (Emisor):
-1. Abre **Drop** en tu navegador.
-2. **Arrastra los archivos** al recuadro (o pulsa para seleccionarlos).
-3. Pulsa el botón **Crear enlace**.
-4. Se generará un enlace único con un token secreto (ejemplo: `https://drop.oloxx.dev/#oEwhOqPWDixlEyHK`).
-5. Pulsa **Copiar enlace** y pásaselo al receptor (por chat, correo, etc.).
-6. Mantén la pestaña abierta mientras se realiza el envío.
-
-#### Para recibir archivos (Receptor):
-1. Abre el enlace que te han compartido en cualquier navegador.
-2. Verás la lista de archivos que te van a enviar y el tamaño total.
-3. Pulsa **Descargar**:
-   * Si el archivo es grande o son varios (en Chrome/Edge), el navegador te pedirá elegir una carpeta y los guardará directamente a disco en streaming continuo.
-   * En archivos individuales o en navegadores como Safari y Firefox, se descargará automáticamente a tu carpeta de Descargas.
-4. Al terminar, la barra marcará `received` y el archivo estará listo en tu disco.
-
-#### Diagnóstico de velocidad (`/speed`):
-Puedes entrar en `https://drop.oloxx.dev/speed` para medir la velocidad de conexión directa con otra persona, ver el ping (RTT), el caudal de subida y bajada, y comprobar si la conexión es **directa P2P** o si pasa por un servidor **TURN**.
+1. **Enviar:**
+   * Abre la web, arrastra tus archivos y pulsa **Crear enlace**.
+   * Copia el enlace único generado (ej. `https://drop.oloxx.dev/#T_9q_4uzB9iJAf8x`) y compártelo.
+   * Mantén la pestaña abierta mientras se transfieren los archivos.
+2. **Recibir:**
+   * El receptor abre el enlace en su navegador.
+   * Pulsa **Descargar**. Con la *File System Access API* (Chrome/Edge), se guardan en streaming directo a la carpeta elegida; en navegadores sin esta API, se descargan a la carpeta habitual de Descargas.
+3. **Test de velocidad P2P (`/speed`):**
+   * Abre `https://drop.oloxx.dev/speed` para medir latencia (RTT), velocidad simétrica de subida/bajada y si la ruta es directa o rebotada por TURN.
 
 ---
 
-### Modo 2: Uso con el Ejecutable / CLI (`drop` a máxima velocidad)
-
-Para mover archivos pesados entre ordenadores saturando tu red local (Wi-Fi 6 o cable Gigabit a **80–115 MB/s**), usa el ejecutable independiente.
-
-> **Nota para los usuarios:** Los binarios son 100% autónomos. Quien use `drop` **no necesita tener Node.js instalado**.
-
-#### 💡 Instalación en el sistema y adición al PATH:
-
-* **En Windows:** Simplemente **descarga `drop.exe` y haz doble clic sobre él** (o ejecuta `drop install` en terminal). El ejecutable se auto-instalará en tu sistema y se añadirá de forma permanente al `PATH` de tu usuario.
-* **En Linux / macOS:** Ejecuta `./drop install` o mueve el binario a tu ruta de sistema:
-  ```bash
-  chmod +x drop
-  sudo mv drop /usr/local/bin/drop
-  ```
-
-Una vez instalado, abre cualquier terminal (PowerShell, CMD, Terminal) y usa directamente el comando `drop` desde cualquier carpeta:
+### Modo 2: Desde la Terminal (`drop` a máxima velocidad)
 
 #### 1. Enviar archivos (`drop send`)
-
-Abre cualquier terminal:
-
+Abre cualquier terminal y pasa los archivos que quieras enviar:
 ```bash
-# Enviar un único archivo
+# Enviar un archivo
 drop send pelicula.mkv
 
 # Enviar múltiples archivos a la vez
-drop send foto1.jpg foto2.jpg documento.pdf
+drop send foto1.jpg foto2.jpg documento.pdf "C:\Descargas\backup.iso"
 ```
 
-Verás una salida como esta:
+Salida en terminal:
 ```text
-Preparando envío: 1 archivo(s) · 1.5 GB
+Preparando envío: 1 archivo(s) · 5.8 GB
+
   ✔ Canal abierto.
-  Código:  oEwhOqPWDixlEyHK
-  Enlace:  https://drop.oloxx.dev/#oEwhOqPWDixlEyHK
+  Código:  T_9q_4uzB9iJAf8x
+  Enlace:  https://drop.oloxx.dev/#T_9q_4uzB9iJAf8x
 
   Esperando a que el receptor se conecte...
 ```
 
 #### 2. Recibir archivos (`drop recv`)
+En otro ordenador con `drop` instalado:
+```bash
+# Usando el código corto
+drop recv T_9q_4uzB9iJAf8x
 
-En el otro ordenador, el receptor ejecuta el comando pasando el **código** o el **enlace completo**:
+# O pegando el enlace web completo
+drop recv https://drop.oloxx.dev/#T_9q_4uzB9iJAf8x
 
-```powershell
-# Recibir usando el código corto
-.\drop.exe recv oEwhOqPWDixlEyHK
-
-# O pegando el enlace web directamente
-.\drop.exe recv https://drop.oloxx.dev/#oEwhOqPWDixlEyHK
-
-# Opcional: especificar dónde guardar los archivos con -o o --out
-.\drop.exe recv oEwhOqPWDixlEyHK -o D:\Descargas
+# Opcional: especificar carpeta de destino (-o o --out)
+drop recv T_9q_4uzB9iJAf8x -o D:\Descargas
 ```
 
-#### 3. ¿Cómo conecta? (LAN vs Internet)
-- **En la misma red local (Wi-Fi o cable):** Drop CLI utiliza *UDP Broadcast*. Se detectan en menos de 10 milisegundos y se transfieren por IP privada a **100–115 MB/s** sin gastar datos de internet.
-- **A través de Internet:** Si no están en la misma red local, se comunican automáticamente a través del servidor de señalización para establecer la conexión TCP directa y cifrada con AES-256-GCM.
+#### 3. Interoperabilidad total (CLI ↔ Web Browser)
+Si envías un archivo con `drop send` y el destinatario **no tiene instalada la terminal**, ¡no pasa nada!
+* Puede abrir el enlace generado (`https://drop.oloxx.dev/#...`) directamente en **Chrome, Edge, Firefox o Safari**.
+* El receptor verá los archivos y el botón **Descargar**.
+* El CLI detecta automáticamente la conexión web y transmite los archivos en streaming continuo por WebSocket.
 
-Durante la transferencia, ambos verán la barra de progreso en tiempo real:
-```text
-  [██████████████████████████████] 100% · 1.5 GB / 1.5 GB · 109.8 MB/s (878 Mbit/s)
-  ✔ ¡Descarga completada con éxito!
+#### 4. Comandos de gestión del CLI
+```bash
+drop --help       # Muestra la ayuda de comandos
+drop --version    # Muestra la versión instalada
+drop install      # Instala o actualiza drop en el sistema y en el PATH
+drop uninstall    # Desinstala drop del sistema y limpia el PATH
 ```
 
 ---
 
-### Compilar los ejecutables tú mismo
+## ⚙️ ¿Cómo funciona por dentro?
 
-Si deseas recompilar los binarios independientes desde el código fuente para cualquier sistema operativo, ejecuta:
+### 1. Transferencia Nativa CLI (TCP + AES-256-GCM)
+* **Descubrimiento LAN instantáneo:** Emite pings por broadcast UDP (puerto `42424`). En la misma red Wi-Fi o cable, los equipos se encuentran en **< 10 milisegundos** y transfieren por IP privada local sin salir a internet.
+* **Sockets TCP Directos:** Utiliza `socket.setNoDelay(true)` con búferes de lectura/escritura de 2–4 MB en streaming continuo.
+* **Cifrado E2EE nativo:** Cifrado simétrico AES-256-GCM con claves derivadas por HKDF a partir del token de la sala, con aceleración hardware `AES-NI`.
 
-```bash
-npm run build:exe     # Compila para Windows x64 (dist/drop.exe)
-npm run build:linux   # Compila para Linux x64 (dist/drop-linux-x64)
-npm run build:arm     # Compila para Linux ARM64 (dist/drop-linux-arm64, Raspberry Pi / VPS ARM)
-npm run build:macos   # Compila para macOS Apple Silicon (dist/drop-macos-arm64)
-npm run build:all     # Compila todas las plataformas de golpe
-```
+### 2. Transferencia Web (WebRTC DataChannel)
+* **Protocolo mínimo:** Control en JSON (`manifest`, `accept`, `start`, `ack`, `end`, `done`) y datos en trozos binarios continuos.
+* **Control de flujo reactivo:** Evita desbordar la memoria pausando la lectura al superar 8 MB en el búfer de envío y reanudando al bajar de 1 MB.
+* **Cadena multi-receptor (Fanout Chain):** Cuando varios amigos descargan a la vez, se organizan en cadena (`Emisor → A → B → C`). El emisor sube **una sola copia** de los datos, ahorrando ancho de banda de subida.
 
 ---
 
-## Arrancar la Web en desarrollo
+## 💻 Desarrollo y Compilación Local
+
+### Requisitos
+* Node.js >= 18
 
 ```bash
+# Instalar dependencias
 npm install
-npm run dev          # http://localhost:3000
-```
 
-Tests del servidor de emparejamiento, y banco de pruebas de velocidad (los dos necesitan el
-servidor arrancado en otra terminal):
+# Iniciar servidor local de desarrollo (http://localhost:3000)
+npm run dev
 
-```bash
+# Ejecutar el CLI en modo desarrollo
+npm run cli -- send mi_archivo.zip
+
+# Ejecutar la suite de tests
 npm test
-npm run bench                 # transferencia real entre dos pestañas de Chrome
-SIZE_MB=256 npm run bench     # payload mayor
-npm run bench:fanout          # varios receptores a la vez, con la cadena
-PEERS=5 npm run bench:fanout  # cadena más larga
+
+# Benchmarks de velocidad
+npm run bench:cli   # Benchmark del motor TCP nativo (~110 MB/s)
+npm run bench       # Benchmark WebRTC en navegador (~15 MB/s)
+npm run bench:fanout # Benchmark de cadena multi-receptor
 ```
 
-Y para medir la conexión con otra persona sin tocar la terminal, la app trae una página:
-**`/speed`**. Uno abre el canal, pasa el enlace, y los dos ven latencia, velocidad en cada
-dirección, y si la conexión va directa o rebotando por el TURN.
-
-`bench` conduce dos pestañas contra la app real y mide MB/s de punta a punta. Las dos viven en
-la misma máquina, así que el número es el techo de la app —troceado, cifrado, SCTP, control de
-flujo—, no el ancho de banda entre dos casas.
-
-`bench:fanout` es el de varios receptores: comprueba el SHA-256 de lo que guarda cada uno y
-cuenta **cuántas copias del payload salen por el uplink del emisor**. Con tres receptores son
-1,05 copias con la cadena y 3,14 sin ella (`STAGGER_MS=2500`, que separa los *accept* para que no
-se agrupen). El tiempo de esa prueba no dice nada: todas las pestañas comparten la misma CPU.
-
-## Cómo funciona
-
-| Pieza | Qué hace |
-|---|---|
-| `server/index.js` | WebSocket de señalización. Genera tokens de sala, los guarda en memoria y reenvía SDP/ICE a ciegas. Nunca ve un archivo. |
-| `public/app.js` | Toda la lógica de cliente: WebRTC, troceado, control de flujo y escritura a disco. |
-| `public/index.html` / `style.css` | Interfaz de dos pantallas: enviar (la de inicio) y recibir (solo se llega abriendo un enlace). |
-
-Sobre el `RTCDataChannel` viaja un protocolo mínimo:
-
-- **texto** → control en JSON: `manifest`, `accept`, `start`, `end`, `done`, `ack`, `complete`
-- **binario** → trozos de 64 KiB del archivo en curso, en orden
-
-Detalles que importan:
-
-- **Control de flujo.** El emisor pausa cuando `bufferedAmount` pasa de 8 MB y reanuda al bajar
-  de 1 MB. Sin esto, un archivo de 4 GB se leería entero en RAM antes de salir.
-- **Progreso real.** La barra se mueve con los `ack` del receptor, no con lo que el emisor ha
-  entregado a la red: `bufferedAmount` mentiría al final de cada archivo.
-- **Por dónde va.** Cada fila dice el camino real y la latencia —`direct 20ms`, `turn 84ms`,
-  `via peer · direct 12ms`—, sacados de los candidatos ICE. Si una transferencia va lenta, lo
-  primero que quieres saber es si está rebotando por el TURN, y ahora se ve sin abrir nada.
-- **Escritura a disco.** Con varios archivos o más de 128 MB se pide una carpeta
-  (File System Access API, Chrome/Edge) y se escribe en streaming. Para un archivo suelto se usa
-  la descarga normal del navegador, que también funciona en Firefox y Safari.
-- **Varios receptores, en cadena.** La sala aguanta abierta y cada amigo que entra tiene su
-  propia barra. Pero mandarle a cada uno una copia entera parte el uplink del emisor entre
-  todos, así que si varios aceptan a la vez se encadenan —`emisor → A → B → C`— y cada uno va
-  reenviando los trozos según le llegan. El emisor sube **una sola copia** y el límite pasa a
-  ser el peor uplink de la cadena en vez de el suyo dividido entre N. Nadie guarda nada para
-  reenviarlo, así que solo se puede encadenar a quien empieza a la vez: el que llega tarde se
-  sirve directo, como siempre. Si un eslabón cierra la pestaña, los de abajo piden al emisor
-  seguir desde el byte exacto que tenían y la cadena se deshace en conexiones directas.
-- **Cifrado y enlaces.** DTLS es obligatorio en WebRTC, así que el tráfico va cifrado de extremo
-  a extremo por defecto. El token de la sala son 96 bits aleatorios (`crypto.randomBytes`): como
-  nadie lo teclea, no hace falta que sea corto, y así no se puede adivinar a fuerza bruta. Viaja
-  en el **fragmento** de la URL (`#...`), que el navegador nunca envía al servidor: no aparece en
-  sus logs ni en la cabecera `Referer`. En los logs de la app solo se registra un prefijo.
-  Aun así el enlace *es* la llave: quien lo tenga entra mientras la sala siga abierta.
-
-## Logs
-
-El servidor escribe una línea por evento de sala, con hora ISO:
-
-```
-2026-08-25T15:45:34.020Z sala abierta Uj6y... | salas activas: 1
-2026-08-25T15:45:34.023Z receptor 1 entra en Uj6y... | receptores en la sala: 1
-2026-08-25T15:45:34.036Z sala cerrada Uj6y... | vivio 0s con 2 receptores | salas activas: 0
-```
-
-Del token solo se registra el prefijo: es la llave de la sala, no debe acabar escrita en disco.
-Y ahí no verás nada del progreso de una transferencia, porque el servidor no la ve: los errores
-de WebRTC salen en la **consola del navegador** de cada uno de los dos lados.
-`GET /healthz` devuelve el número de salas abiertas en ese momento.
-
-## Desplegar
-
-Requisitos del sitio donde lo pongas, en orden de importancia:
-
-1. **WebSockets** (la señalización va por ahí).
-2. **HTTPS**. Sin contexto seguro no hay portapapeles ni escritura directa a disco, y los
-   navegadores restringen WebRTC.
-3. **Una sola instancia.** Las salas viven en la memoria del proceso: con dos réplicas, el emisor
-   puede caer en una y el receptor en la otra, y el enlace daría "caducado". Para escalar de
-   verdad haría falta mover las salas a Redis y relevar los mensajes por pub/sub.
-
-### Fly.io (la vía más corta desde aquí)
-
-Ya tienes `Dockerfile` y `fly.toml` listos. No necesitas Docker en local: Fly construye la imagen
-en su propio builder.
-
-```powershell
-# 1. instalar flyctl (una vez)
-iwr https://fly.io/install.ps1 -useb | iex
-
-# 2. cuenta (te abre el navegador)
-fly auth signup      # o: fly auth login
-
-# 3. edita fly.toml y pon un nombre libre en `app`, luego:
-fly launch --no-deploy --copy-config    # crea la app respetando este fly.toml
-fly deploy --ha=false                   # --ha=false = una sola maquina, ver punto 3 de arriba
-```
-
-Queda en `https://<tu-app>.fly.dev`. Para ver los logs en vivo: `fly logs`.
-
-### Render (si prefieres desplegar desde GitHub)
-
-Necesita el proyecto en un repositorio. `git init`, súbelo, y en Render: *New → Web Service*,
-`Build Command: npm ci`, `Start Command: npm start`. Deja **una sola instancia**. Aviso: el plan
-gratuito duerme el servicio tras 15 minutos de inactividad y tarda ~50 s en despertar, así que el
-primer enlace del día puede hacerse esperar.
-
-### Tu propio VPS (la opción completa, y gratis si es un Always Free de Oracle)
-
-La mejor de todas si ya tienes máquina: siempre encendida, una sola instancia por definición
-—así que las salas en memoria funcionan como fueron diseñadas— y puedes alojar tu propio TURN
-al lado, que es la parte que de verdad cuesta dinero en cualquier otro sitio.
+### Compilar ejecutables autónomos (Cross-Compilation)
+El script [`scripts/build-cross.mjs`](scripts/build-cross.mjs) permite compilar los binarios de todas las plataformas desde cualquier sistema operativo utilizando Node SEA (*Single Executable Application*):
 
 ```bash
-cp .env.example .env    # dominio, IPs y contraseña del TURN
+npm run build:exe     # Compila dist/drop.exe (Windows x64)
+npm run build:linux   # Compila dist/drop-linux-x64 (Linux x64)
+npm run build:arm     # Compila dist/drop-linux-arm64 (Linux ARM64 / Raspberry Pi)
+npm run build:macos   # Compila dist/drop-macos-arm64 (macOS Apple Silicon)
+npm run build:all     # Compila todas las plataformas a la vez
+```
+
+---
+
+## 🌐 Despliegue del Servidor
+
+El servidor actúa únicamente como guía de señalización (emparejamiento) y nunca almacena archivos.
+
+Para desplegar tu propia instancia en un VPS (ej. Oracle Cloud Always Free):
+```bash
+cp .env.example .env
 docker compose up -d --build
 ```
-
-Levanta la app, un Caddy que saca el certificado HTTPS solo y un coturn como servidor TURN.
-Los pasos completos, incluida la trampa de los puertos de Oracle (hay que abrirlos en dos
-sitios) están en **[DEPLOY-VPS.md](DEPLOY-VPS.md)**.
-
-### TURN (recomendado en cuanto salga de tu red)
-
-Entre un 10 % y un 15 % de las conexiones no logran hablar directamente (NAT simétrica, redes
-corporativas, algunos móviles). Un servidor TURN reenvía esos casos. El cliente lee la
-configuración de `/config`, así que basta con definir las variables de entorno:
-
-```bash
-fly secrets set TURN_URL=turn:... TURN_USER=... TURN_PASS=...   # en Fly
-cp .env.example .env                                            # en local
-```
-
-Opciones: coturn en un VPS, o un TURN gestionado (Twilio, Metered, Cloudflare Calls).
-
-## Límites conocidos
-
-- Si el emisor cierra la pestaña, la transferencia se corta: no hay reanudación ni troceado
-  persistente (es lo que un torrent sí hace).
-- El receptor sin File System Access API acumula cada archivo en memoria antes de descargarlo;
-  para archivos enormes conviene Chrome o Edge.
-- No hay carpetas (solo archivos sueltos) ni cola de reintentos.
-
-## Ideas para después
-
-- Reanudar transferencias interrumpidas guardando el offset por archivo.
-- Soporte de carpetas con `webkitdirectory` + rutas relativas en el manifiesto.
-- Código QR junto al enlace, para enviar del portátil al móvil.
-- PIN opcional además del enlace, para lo que se comparte en grupos grandes.
-- Caducidad de sala por tiempo, además de por cierre de pestaña.
+Levanta el servidor Node.js, un reverse proxy Caddy con certificados SSL automáticos y un servidor TURN (coturn) para sortear NATs estrictas. Guía detallada en **[DEPLOY-VPS.md](DEPLOY-VPS.md)**.
