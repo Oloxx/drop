@@ -7,9 +7,9 @@ import readline from 'node:readline';
 import { c, fmtBytes, renderProgressBar } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
-import { createSenderServer, receiveFiles } from './transfer.js';
+import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -300,11 +300,11 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
         } else if (msg.t === 'signal') {
           if (msg.data?.type === 'cli-accept') {
             if (broadcaster) broadcaster.stop();
-            console.log(`\n  ${c.bold}Navegador web conectado (${msg.from}):${c.reset} ${c.cyan}[MODO WEB STREAMING]${c.reset}\n`);
+            console.log(`\n  ${c.bold}Receptor conectado (${msg.from}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
             await streamToWebGuest(msg.from, files, ws, (sent, total, speed) => {
               renderProgressBar(sent, total, speed);
             });
-            console.log(`\n\n  ${c.green}✔ ¡Transferencia hacia la web completada con éxito!${c.reset}\n`);
+            console.log(`\n\n  ${c.green}✔ ¡Transferencia completada con éxito!${c.reset}\n`);
             await new Promise((r) => setTimeout(r, 1500));
             resolveDone();
           }
@@ -330,6 +330,15 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   process.exit(0);
 }
 
+function printSuccess(received, outputDir) {
+  console.log(`\n\n  ${c.green}✔ ¡Descarga completada con éxito!${c.reset}`);
+  console.log(`  ${c.bold}Archivos guardados en:${c.reset} ${outputDir}`);
+  for (const f of received) {
+    console.log(`    · ${path.basename(f)}`);
+  }
+  console.log('');
+}
+
 async function runRecv(args, options) {
   const input = args[0];
   if (!input) {
@@ -343,55 +352,92 @@ async function runRecv(args, options) {
 
   console.log(`\n${c.bold}Buscando emisor para el código:${c.reset} ${c.cyan}${token}${c.reset}`);
 
-  // 1. Primero intentar descubrimiento LAN instantáneo (<1.5s)
+  // 1. Primero intentar descubrimiento LAN instantáneo (<1.2s)
   process.stdout.write(`  ${c.dim}Explorando red local (LAN)...${c.reset}`);
   let target = await listenForLAN(token, 1200);
 
   if (target) {
     console.log(`\r  ${c.green}✔ Emisor encontrado en red local:${c.reset} ${target.host}:${target.port}`);
-  } else {
-    console.log(`\r  ${c.dim}No detectado en LAN directa, conectando por servidor de señalización...${c.reset}`);
+    console.log(`\n  ${c.bold}Conectando a:${c.reset} ${target.host}:${target.port} (Sockets TCP nativos - LAN)\n`);
     try {
-      const ws = await connectSignaling(options.server);
-      const guestId = await joinRoom(ws, token);
-
-      target = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Tiempo de espera agotado esperando datos del emisor')), 10000);
-        ws.addEventListener('message', (ev) => {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg.t === 'signal' && msg.data?.type === 'tcp-offer') {
-              clearTimeout(timeout);
-              const { ips, port } = msg.data;
-              // Elegir primera IP local accesible
-              resolve({ host: ips[0] || '127.0.0.1', port });
-            }
-          } catch {}
-        });
+      const received = await receiveFiles(target.host, target.port, token, outputDir, (current, total, speed) => {
+        renderProgressBar(current, total, speed);
       });
-      ws.close();
+      printSuccess(received, outputDir);
+      process.exit(0);
     } catch (err) {
-      console.error(`\n${c.red}Error de conexión: ${err.message}${c.reset}`);
+      console.error(`\n${c.red}Error durante la transferencia LAN: ${err.message}${c.reset}`);
       process.exit(1);
     }
   }
 
-  console.log(`\n  ${c.bold}Conectando a:${c.reset} ${target.host}:${target.port} (Sockets TCP nativos)\n`);
-
+  // 2. Si no está en LAN broadcast, conectar por servidor de señalización
+  console.log(`\r  ${c.dim}No detectado en LAN directa, conectando por servidor de señalización...${c.reset}`);
+  let ws = null;
+  let offer = null;
   try {
-    const received = await receiveFiles(target.host, target.port, token, outputDir, (current, total, speed) => {
+    ws = await connectSignaling(options.server);
+    ws.binaryType = 'arraybuffer';
+    await joinRoom(ws, token);
+
+    offer = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Tiempo de espera agotado esperando datos del emisor')), 10000);
+      const onMsg = (ev) => {
+        try {
+          if (typeof ev.data !== 'string') return;
+          const msg = JSON.parse(ev.data);
+          if (msg.t === 'signal' && (msg.data?.type === 'cli-offer' || msg.data?.type === 'tcp-offer')) {
+            clearTimeout(timeout);
+            ws.removeEventListener('message', onMsg);
+            resolve(msg.data);
+          }
+        } catch {}
+      };
+      ws.addEventListener('message', onMsg);
+    });
+  } catch (err) {
+    if (ws) ws.close();
+    console.error(`\n${c.red}Error de conexión: ${err.message}${c.reset}`);
+    process.exit(1);
+  }
+
+  const { ips = [], port, manifest = [] } = offer;
+
+  // 3. Probar si alguna IP es accesible directamente por TCP (misma red local o VPN)
+  const localIPs = getLocalIPs();
+  const candidateIP = ips.find((rip) => {
+    if (rip === '127.0.0.1' || rip === '::1') return true;
+    const rsub = rip.split('.').slice(0, 3).join('.');
+    return localIPs.some((lip) => lip.split('.').slice(0, 3).join('.') === rsub);
+  }) || ips[0];
+
+  if (candidateIP && port) {
+    process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con ${candidateIP}:${port}...${c.reset}`);
+    try {
+      const received = await receiveFiles(candidateIP, port, token, outputDir, (current, total, speed) => {
+        renderProgressBar(current, total, speed);
+      }, 1500);
+      if (ws) ws.close();
+      printSuccess(received, outputDir);
+      process.exit(0);
+    } catch (err) {
+      process.stdout.write(`\r${' '.repeat(70)}\r`);
+      // Si falla por timeout o error de conexión (NAT/Internet), pasamos a Relay
+    }
+  }
+
+  // 4. Modo Relay por Internet (Streaming seguro a través del servidor)
+  console.log(`  ${c.cyan}[MODO RELAY POR INTERNET]${c.reset} ${c.dim}Descargando archivos en streaming...${c.reset}\n`);
+  try {
+    const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed) => {
       renderProgressBar(current, total, speed);
     });
-
-    console.log(`\n\n  ${c.green}✔ ¡Descarga completada con éxito!${c.reset}`);
-    console.log(`  ${c.bold}Archivos guardados en:${c.reset} ${outputDir}`);
-    for (const f of received) {
-      console.log(`    · ${path.basename(f)}`);
-    }
-    console.log('');
+    if (ws) ws.close();
+    printSuccess(received, outputDir);
     process.exit(0);
   } catch (err) {
-    console.error(`\n${c.red}Error durante la transferencia: ${err.message}${c.reset}`);
+    if (ws) ws.close();
+    console.error(`\n${c.red}Error durante la transferencia Relay: ${err.message}${c.reset}`);
     process.exit(1);
   }
 }

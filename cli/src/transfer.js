@@ -25,6 +25,7 @@ export function createSenderServer(files, token, onProgress) {
 
   const server = net.createServer((socket) => {
     socket.setNoDelay(true);
+    socket.on('error', () => {});
 
     (async () => {
       try {
@@ -89,11 +90,24 @@ export function createSenderServer(files, token, onProgress) {
 /**
  * Cliente TCP del receptor que se conecta al emisor y guarda los archivos
  */
-export function receiveFiles(host, port, token, outputDir, onProgress) {
+export function receiveFiles(host, port, token, outputDir, onProgress, connectTimeoutMs = 0) {
   return new Promise((resolve, reject) => {
     const key = deriveKey(token);
     const socket = net.connect({ host, port });
     socket.setNoDelay(true);
+
+    let connTimer = null;
+    if (connectTimeoutMs > 0) {
+      connTimer = setTimeout(() => {
+        socket.destroy(new Error('CONNECT_TIMEOUT'));
+      }, connectTimeoutMs);
+      socket.on('connect', () => {
+        if (connTimer) {
+          clearTimeout(connTimer);
+          connTimer = null;
+        }
+      });
+    }
 
     let buffer = Buffer.alloc(0);
     let manifest = null;
@@ -178,14 +192,134 @@ export function receiveFiles(host, port, token, outputDir, onProgress) {
     });
 
     socket.on('end', async () => {
+      if (connTimer) {
+        clearTimeout(connTimer);
+        connTimer = null;
+      }
       if (currentFd) await currentFd.close();
       if (onProgress) onProgress(totalBytes, totalBytes, speed);
       resolve(receivedFiles);
     });
 
     socket.on('error', (err) => {
+      if (connTimer) {
+        clearTimeout(connTimer);
+        connTimer = null;
+      }
       if (currentFd) currentFd.close().catch(() => {});
       reject(err);
     });
+  });
+}
+
+/**
+ * Cliente Relay que recibe los archivos en streaming a través del WebSocket de señalización
+ */
+export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
+  return new Promise((resolve, reject) => {
+    let currentFd = null;
+    let totalBytes = manifest.reduce((acc, f) => acc + (f.size || 0), 0);
+    let totalReceived = 0;
+    let lastReport = performance.now();
+    let lastBytes = 0;
+    let speed = 0;
+    const receivedFiles = [];
+    let writeQueue = Promise.resolve();
+
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const onMsg = (ev) => {
+      if (typeof ev.data !== 'string') {
+        const data = ev.data;
+        writeQueue = writeQueue.then(async () => {
+          const chunk = Buffer.isBuffer(data)
+            ? data
+            : Buffer.from(data instanceof ArrayBuffer ? data : await data.arrayBuffer());
+          if (currentFd) {
+            await currentFd.write(chunk);
+            totalReceived += chunk.length;
+
+            const now = performance.now();
+            const dt = (now - lastReport) / 1000;
+            if (dt >= 0.15) {
+              const inst = (totalReceived - lastBytes) / dt;
+              speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+              lastBytes = totalReceived;
+              lastReport = now;
+              if (onProgress) onProgress(totalReceived, totalBytes, speed);
+            }
+          }
+        }).catch(reject);
+        return;
+      }
+
+      let msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+
+      if (msg.t === 'signal') {
+        const { data } = msg;
+        if (data?.type === 'cli-start') {
+          writeQueue = writeQueue.then(async () => {
+            if (currentFd) {
+              await currentFd.close();
+              currentFd = null;
+            }
+            const filename = path.basename(data.name || 'archivo');
+            const dest = path.join(outputDir, filename);
+            currentFd = await fs.promises.open(dest, 'w');
+            receivedFiles.push(dest);
+          }).catch(reject);
+        } else if (data?.type === 'cli-end') {
+          writeQueue = writeQueue.then(async () => {
+            if (currentFd) {
+              await currentFd.close();
+              currentFd = null;
+            }
+          }).catch(reject);
+        } else if (data?.type === 'cli-done') {
+          writeQueue = writeQueue.then(async () => {
+            if (currentFd) {
+              await currentFd.close();
+              currentFd = null;
+            }
+            if (onProgress) onProgress(totalBytes, totalBytes, speed);
+            cleanup();
+            resolve(receivedFiles);
+          }).catch(reject);
+        }
+      }
+    };
+
+    const cleanup = () => {
+      ws.removeEventListener('message', onMsg);
+      if (currentFd) {
+        currentFd.close().catch(() => {});
+        currentFd = null;
+      }
+    };
+
+    ws.addEventListener('message', onMsg);
+    ws.addEventListener('error', (err) => {
+      cleanup();
+      reject(err);
+    }, { once: true });
+    ws.addEventListener('close', () => {
+      cleanup();
+      if (receivedFiles.length > 0 && totalReceived >= totalBytes) {
+        resolve(receivedFiles);
+      } else {
+        reject(new Error('Conexión cerrada por el servidor antes de completar la descarga'));
+      }
+    }, { once: true });
+
+    // Notificar al emisor que estamos listos para recibir por Relay
+    ws.send(JSON.stringify({
+      t: 'signal',
+      data: { type: 'cli-accept' }
+    }));
   });
 }
