@@ -33,7 +33,7 @@ Los archivos viajan **directamente entre dispositivos**: el servidor actúa excl
 
 Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.2.0](https://github.com/Oloxx/drop/releases/tag/v0.2.0):
 
-* **Windows (x64):** [`drop.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop.exe)
+* **Windows (x64):** [`drop-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-windows-x64.exe)
 * **Linux (x64):** [`drop-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-linux-x64.tar.gz)
 * **Linux (ARM64):** [`drop-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
 * **macOS (Apple Silicon):** [`drop-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
@@ -44,7 +44,7 @@ Descarga directa de los binarios autónomos (sin necesidad de tener Node.js inst
 ## 🛠️ Instalación en el Sistema
 
 ### Windows
-Simplemente **descarga [`drop.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop.exe) y haz doble clic sobre él**.
+Simplemente **descarga [`drop-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.2.0/drop-windows-x64.exe) y haz doble clic sobre él**.
 1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
 2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
 3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
@@ -171,7 +171,7 @@ npm run bench:fanout # Benchmark de cadena multi-receptor
 El script [`scripts/build-cross.mjs`](scripts/build-cross.mjs) permite compilar los binarios de todas las plataformas desde cualquier sistema operativo utilizando Node SEA (*Single Executable Application*):
 
 ```bash
-npm run build:exe     # Compila dist/drop.exe (Windows x64)
+npm run build:exe     # Compila dist/drop-windows-x64.exe (Windows x64)
 npm run build:linux   # Compila dist/drop-linux-x64 (Linux x64)
 npm run build:arm     # Compila dist/drop-linux-arm64 (Linux ARM64 / Raspberry Pi)
 npm run build:macos   # Compila dist/drop-macos-arm64 (macOS Apple Silicon)
