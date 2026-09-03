@@ -18,6 +18,11 @@ export function fmtBytes(n) {
 }
 
 export function fmtSpeed(bytesPerSec) {
+  if (bytesPerSec < 1024 * 1024) {
+    const kbps = bytesPerSec / 1024;
+    const kbit = (bytesPerSec * 8) / 1024;
+    return `${c.green}${kbps.toFixed(1)} KB/s${c.reset} ${c.dim}(${kbit.toFixed(0)} Kbit/s)${c.reset}`;
+  }
   const mbps = bytesPerSec / (1024 * 1024);
   const mbit = (bytesPerSec * 8) / (1024 * 1024);
   return `${c.green}${mbps.toFixed(1)} MB/s${c.reset} ${c.dim}(${mbit.toFixed(0)} Mbit/s)${c.reset}`;
@@ -30,14 +35,43 @@ export function fmtEta(seconds) {
   return `${m}m ${Math.round(seconds % 60)}s`;
 }
 
+export function fmtDuration(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return '0s';
+  if (seconds < 0.1) return '< 0.1s';
+  if (seconds < 1) return seconds.toFixed(1) + 's';
+  if (seconds < 60) return Math.round(seconds) + 's';
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m ${s}s`;
+}
+
+function getBarWidth(preferred = 30) {
+  const cols = process.stdout.columns;
+  if (!cols || cols >= 105) return preferred;
+  return Math.max(10, Math.min(preferred, cols - 72));
+}
+
 export function renderProgressBar(current, total, speed, width = 30) {
+  const barWidth = getBarWidth(width);
   const pct = total > 0 ? Math.min(1, current / total) : 0;
-  const filled = Math.round(width * pct);
-  const empty = width - filled;
+  const filled = Math.round(barWidth * pct);
+  const empty = barWidth - filled;
   const bar = `${c.cyan}${'█'.repeat(filled)}${c.dim}${'░'.repeat(empty)}${c.reset}`;
   const pctStr = `${(pct * 100).toFixed(0)}%`.padStart(4);
-  const eta = speed > 0 ? fmtEta((total - current) / speed) : '';
+  const eta = (current < total && speed > 0) ? fmtEta((total - current) / speed) : '';
   const etaStr = eta ? `· ETA ${eta}` : '';
 
-  process.stdout.write(`\r  ${bar} ${pctStr} · ${fmtBytes(current)} / ${fmtBytes(total)} · ${fmtSpeed(speed)} ${etaStr}   `);
+  process.stdout.write(`\r  ${bar} ${pctStr} · ${fmtBytes(current)} / ${fmtBytes(total)} · ${fmtSpeed(speed)} ${etaStr}   \x1b[K`);
 }
+
+export function renderProgressBarComplete(total, totalTimeSec, avgSpeed, width = 30) {
+  const barWidth = getBarWidth(width);
+  const bar = `${c.cyan}${'█'.repeat(barWidth)}${c.reset}`;
+  const durationStr = fmtDuration(totalTimeSec);
+  const speedStr = fmtSpeed(avgSpeed);
+
+  process.stdout.write(`\r  ${bar} 100% · ${fmtBytes(total)} / ${fmtBytes(total)} · ${durationStr} · Media: ${speedStr}   \x1b[K\n`);
+}
+

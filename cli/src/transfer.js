@@ -19,7 +19,7 @@ function frame(buf) {
 /**
  * Servidor TCP del emisor que transmite archivos al receptor
  */
-export function createSenderServer(files, token, onProgress) {
+export function createSenderServer(files, token, onProgress, onComplete) {
   const key = deriveKey(token);
   let totalBytes = files.reduce((acc, f) => acc + f.size, 0);
 
@@ -29,6 +29,7 @@ export function createSenderServer(files, token, onProgress) {
 
     (async () => {
       try {
+        const startTime = performance.now();
         // 1. Enviar manifiesto de archivos cifrado
         const manifest = { files: files.map((f) => ({ name: path.basename(f.path), size: f.size })) };
         const encManifest = encryptChunk(Buffer.from(JSON.stringify(manifest)), key);
@@ -75,8 +76,14 @@ export function createSenderServer(files, token, onProgress) {
           await fd.close();
         }
 
-        // Finalizar reporte
-        if (onProgress) onProgress(totalBytes, totalBytes, speed);
+        const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
+        const avgSpeed = totalBytes / totalTimeSec;
+
+        if (onComplete) {
+          onComplete({ totalBytes, totalTimeSec, avgSpeed, socket });
+        } else if (onProgress) {
+          onProgress(totalBytes, totalBytes, avgSpeed);
+        }
         socket.end();
       } catch (err) {
         socket.destroy(err);
@@ -119,6 +126,7 @@ export function receiveFiles(host, port, token, outputDir, onProgress, connectTi
     let lastReport = performance.now();
     let lastBytes = 0;
     let speed = 0;
+    let startTime = null;
     const receivedFiles = [];
 
     async function processPackets() {
@@ -137,6 +145,7 @@ export function receiveFiles(host, port, token, outputDir, onProgress, connectTi
         if (!manifest) {
           manifest = JSON.parse(decrypted.toString());
           totalBytes = manifest.files.reduce((acc, f) => acc + f.size, 0);
+          startTime = performance.now();
           if (manifest.files.length > 0) {
             const f = manifest.files[0];
             const dest = path.join(outputDir, f.name);
@@ -197,7 +206,9 @@ export function receiveFiles(host, port, token, outputDir, onProgress, connectTi
         connTimer = null;
       }
       if (currentFd) await currentFd.close();
-      if (onProgress) onProgress(totalBytes, totalBytes, speed);
+      const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
+      const avgSpeed = totalBytes / totalTimeSec;
+      receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
       resolve(receivedFiles);
     });
 
@@ -223,6 +234,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
     let lastReport = performance.now();
     let lastBytes = 0;
     let speed = 0;
+    let startTime = null;
     const receivedFiles = [];
     let writeQueue = Promise.resolve();
 
@@ -250,6 +262,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
     const onMsg = (ev) => {
       if (typeof ev.data !== 'string') {
         const data = ev.data;
+        if (!startTime) startTime = performance.now();
         writeQueue = writeQueue.then(async () => {
           const chunk = Buffer.isBuffer(data)
             ? data
@@ -282,6 +295,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
       if (msg.t === 'signal') {
         const { data } = msg;
         if (data?.type === 'cli-start') {
+          if (!startTime) startTime = performance.now();
           writeQueue = writeQueue.then(async () => {
             if (currentFd) {
               await currentFd.close();
@@ -305,7 +319,9 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
               await currentFd.close();
               currentFd = null;
             }
-            if (onProgress) onProgress(totalBytes, totalBytes, speed);
+            const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
+            const avgSpeed = totalBytes / totalTimeSec;
+            receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
             cleanup();
             resolve(receivedFiles);
           }).catch(failWithError);
@@ -320,6 +336,11 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
     ws.addEventListener('close', () => {
       cleanup();
       if (receivedFiles.length > 0 && totalReceived >= totalBytes) {
+        if (!receivedFiles.stats) {
+          const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
+          const avgSpeed = totalBytes / totalTimeSec;
+          receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
+        }
         resolve(receivedFiles);
       } else {
         reject(new Error('Conexión cerrada por el servidor antes de completar la descarga'));

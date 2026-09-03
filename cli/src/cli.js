@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import readline from 'node:readline';
 import os from 'node:os';
-import { c, fmtBytes, renderProgressBar } from './ui.js';
+import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
@@ -156,7 +156,8 @@ async function downloadWithProgress(url, headers, onProgress) {
   const reader = res.body.getReader();
   const chunks = [];
   let receivedBytes = 0;
-  let lastReport = performance.now();
+  const startTime = performance.now();
+  let lastReport = startTime;
   let lastBytes = 0;
   let speed = 0;
 
@@ -177,8 +178,11 @@ async function downloadWithProgress(url, headers, onProgress) {
     }
   }
 
-  if (onProgress) onProgress(receivedBytes, contentLength, speed);
-  return Buffer.concat(chunks);
+  const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
+  const avgSpeed = receivedBytes / totalTimeSec;
+  const result = Buffer.concat(chunks);
+  result.stats = { totalBytes: receivedBytes, totalTimeSec, avgSpeed };
+  return result;
 }
 
 async function updateSelf(force = false) {
@@ -249,6 +253,9 @@ async function updateSelf(force = false) {
     binaryBuffer = await downloadWithProgress(downloadUrl, dlHeaders, (current, total, speed) => {
       renderProgressBar(current, total, speed);
     });
+    if (binaryBuffer?.stats) {
+      renderProgressBarComplete(binaryBuffer.stats.totalBytes, binaryBuffer.stats.totalTimeSec, binaryBuffer.stats.avgSpeed);
+    }
   } catch (err) {
     console.error(`\n\n  ${c.red}Error descargando actualización:${c.reset} ${err.message}\n`);
     process.exit(1);
@@ -383,9 +390,18 @@ async function runSend(args, options) {
 
   // Actualizar clave en el servidor
   server.close();
-  const activeServer = createSenderServer(files, token, (current, total, speed) => {
-    renderProgressBar(current, total, speed);
-  });
+  const activeServer = createSenderServer(
+    files,
+    token,
+    (current, total, speed) => {
+      renderProgressBar(current, total, speed);
+    },
+    ({ totalBytes, totalTimeSec, avgSpeed, socket }) => {
+      renderProgressBarComplete(totalBytes, totalTimeSec, avgSpeed);
+      console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${socket.remoteAddress})!${c.reset}`);
+      console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
+    }
+  );
   await new Promise((resolve) => activeServer.listen(tcpPort, '0.0.0.0', resolve));
 
   // 3. Iniciar descubrimiento LAN
@@ -406,7 +422,8 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
   let totalSent = 0;
-  let lastReport = performance.now();
+  const startTime = performance.now();
+  let lastReport = startTime;
   let lastBytes = 0;
   let speed = 0;
 
@@ -481,7 +498,9 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
       to: guestId,
       data: { type: 'cli-done' }
     }));
-    if (onProgress) onProgress(totalBytes, totalBytes, speed);
+    const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
+    const avgSpeed = totalBytes / totalTimeSec;
+    return { totalBytes, totalTimeSec, avgSpeed };
   } finally {
     activeStreams.delete(guestId);
   }
@@ -513,10 +532,11 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             const guest = msg.from;
             console.log(`\n  ${c.bold}Receptor conectado (${guest}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
             try {
-              await streamToWebGuest(guest, files, ws, (sent, total, speed) => {
+              const stats = await streamToWebGuest(guest, files, ws, (sent, total, speed) => {
                 renderProgressBar(sent, total, speed);
               });
-              console.log(`\n\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${guest})!${c.reset}`);
+              renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
+              console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${guest})!${c.reset}`);
               console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
             } catch (err) {
               console.log(`\n\n  ${c.yellow}Receptor (${guest}) interrumpido: ${err.message}${c.reset}`);
@@ -558,7 +578,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
 }
 
 function printSuccess(received, outputDir) {
-  console.log(`\n\n  ${c.green}✔ ¡Descarga completada con éxito!${c.reset}`);
+  console.log(`\n  ${c.green}✔ ¡Descarga completada con éxito!${c.reset}`);
   console.log(`  ${c.bold}Archivos guardados en:${c.reset} ${outputDir}`);
   for (const f of received) {
     console.log(`    · ${path.basename(f)}`);
@@ -611,6 +631,9 @@ async function runRecv(args, options) {
       const received = await receiveFiles(target.host, target.port, token, outputDir, (current, total, speed) => {
         renderProgressBar(current, total, speed);
       });
+      if (received.stats) {
+        renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
+      }
       printSuccess(received, outputDir);
       process.exit(0);
     } catch (err) {
@@ -666,6 +689,9 @@ async function runRecv(args, options) {
         renderProgressBar(current, total, speed);
       }, 1500);
       if (ws) ws.close();
+      if (received.stats) {
+        renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
+      }
       printSuccess(received, outputDir);
       process.exit(0);
     } catch (err) {
@@ -681,6 +707,9 @@ async function runRecv(args, options) {
       renderProgressBar(current, total, speed);
     });
     if (ws) ws.close();
+    if (received.stats) {
+      renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
+    }
     printSuccess(received, outputDir);
     process.exit(0);
   } catch (err) {
