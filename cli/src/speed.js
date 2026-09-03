@@ -456,7 +456,7 @@ export async function runSpeedTest(channel, isHost, durationSec = 5) {
     const minRtt = rtts.length ? Math.min(...rtts) : 1;
     results.rttMs = minRtt;
     channel.sendControl({ k: 'rtt', ms: minRtt });
-    process.stdout.write(`\r  ${c.bold}Latencia (RTT):${c.reset} ${c.cyan}${fmtMs(minRtt)}${c.reset}\n\n`);
+    process.stdout.write(`\r  ${c.bold}Latencia (RTT):${c.reset} ${c.cyan}${fmtMs(minRtt)}${c.reset}   \x1b[K\n\n`);
 
     // 2. Fase 1: Host emite (h2g) -> Outbound para Host
     let resolveH2G;
@@ -744,7 +744,7 @@ export async function runSpeedGuest(input, options = {}) {
   }
 
   if (target) {
-    process.stdout.write(`\r${' '.repeat(70)}\r`);
+    process.stdout.write('\r\x1b[K');
     const pathDesc = `Directa TCP (LAN - ${target.host}:${target.port})`;
     console.log(`  ${c.green}✔ Anfitrión encontrado en red local:${c.reset} ${pathDesc}\n`);
 
@@ -782,7 +782,7 @@ export async function runSpeedGuest(input, options = {}) {
   }
 
   // 2. Conectar al servidor de señalización
-  process.stdout.write(`\r${' '.repeat(70)}\r`);
+  process.stdout.write('\r\x1b[K');
   console.log(`  ${c.dim}No detectado en LAN directa, conectando por servidor de señalización...${c.reset}`);
 
   let ws = null;
@@ -844,7 +844,7 @@ export async function runSpeedGuest(input, options = {}) {
   }
 
   if (tcpSocket) {
-    process.stdout.write(`\r${' '.repeat(70)}\r`);
+    process.stdout.write('\r\x1b[K');
     if (ws) ws.close();
     const pathDesc = `Directa TCP (${candidateIP}:${port})`;
     console.log(`  ${c.green}✔ Conectado por TCP directo:${c.reset} ${pathDesc}\n`);
@@ -881,7 +881,7 @@ export async function runSpeedGuest(input, options = {}) {
   }
 
   // 4. Fallback a Relay por servidor
-  process.stdout.write(`\r${' '.repeat(70)}\r`);
+  process.stdout.write('\r\x1b[K');
   const pathDesc = `Relay por servidor (${new URL(serverUrl).host})`;
   console.log(`  ${c.cyan}[MODO RELAY]${c.reset} ${c.dim}Conexión directa no disponible, usando retransmisión por servidor...${c.reset}\n`);
 

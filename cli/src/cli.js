@@ -12,7 +12,7 @@ import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signa
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -750,7 +750,7 @@ async function runRecv(args, options) {
         if (ws) ws.close();
         return askRetry(err, () => runRecv(args, options));
       }
-      process.stdout.write(`\r${' '.repeat(70)}\r`);
+      process.stdout.write('\r\x1b[K');
       // Si falla por timeout o error de conexión (NAT/Internet), pasamos a Relay
     }
   }
