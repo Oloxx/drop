@@ -66,6 +66,7 @@ export function startBroadcasting(token, tcpPort) {
  * Escucha pings en la red local para encontrar al emisor por su token.
  */
 export function listenForLAN(token, timeoutMs = 3000) {
+  if (process.env.DROP_NO_LAN) return Promise.resolve(null);
   return new Promise((resolve) => {
     const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     const hash = tokenHash(token);

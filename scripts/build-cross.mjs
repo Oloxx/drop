@@ -93,6 +93,13 @@ async function buildTarget(key) {
 
   const sizeMB = (fs.statSync(outPath).size / (1024 * 1024)).toFixed(1);
   console.log(`✔ ¡Binario generado con éxito!: dist/${info.output} (${sizeMB} MB)`);
+
+  if (key !== 'win-x64') {
+    const tarName = `${info.output}.tar.gz`;
+    console.log(`  Empaquetando dist/${tarName}...`);
+    execSync(`tar -czf "${path.join(DIST_DIR, tarName)}" -C "${DIST_DIR}" "${info.output}"`);
+    console.log(`✔ ¡Comprimido generado!: dist/${tarName}`);
+  }
 }
 
 async function main() {
