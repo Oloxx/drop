@@ -13,22 +13,26 @@ const DUMMY_RAW_RELAY = Buffer.alloc(RELAY_CHUNK_SIZE, 0x5a);
 /**
  * Empaqueta un buffer con prefijo de longitud de 4 bytes (UInt32BE)
  */
-function frame(buf) {
-  const header = Buffer.allocUnsafe(4);
-  header.writeUInt32BE(buf.length, 0);
+/**
+ * Empaqueta un mensaje con prefijo de 4 bytes longitud (UInt32BE) y 1 byte de tipo
+ * type 0 = Control JSON (cifrado con AES-256-GCM)
+ * type 1 = Payload de prueba (datos crudos de saturación para medir red pura sin estrangular la CPU)
+ */
+function frame(type, buf) {
+  const header = Buffer.allocUnsafe(5);
+  header.writeUInt32BE(buf.length + 1, 0);
+  header.writeUInt8(type, 4);
   return Buffer.concat([header, buf]);
 }
 
 /**
- * Genera un conjunto rotativo de paquetes cifrados para evitar recalcular
- * AES-GCM repetidamente durante el bucle de envío y maximizar la saturación del ancho de banda.
+ * Genera un conjunto rotativo de paquetes para saturar el ancho de banda
+ * sin incurrir en coste de GC ni sobrecarga de CPU en dispositivos embebidos.
  */
-function createTcpPacketPool(key, count = 8) {
+function createTcpPacketPool(count = 8) {
   const pool = [];
   for (let i = 0; i < count; i++) {
-    const data = Buffer.concat([Buffer.from([1]), DUMMY_RAW_TCP]);
-    const enc = encryptChunk(data, key);
-    pool.push(frame(enc));
+    pool.push(frame(1, DUMMY_RAW_TCP));
   }
   return pool;
 }
@@ -63,7 +67,7 @@ export class TcpSpeedChannel {
     this.closeListeners = new Set();
     this.buffer = Buffer.alloc(0);
     this.isClosed = false;
-    this.packetPool = createTcpPacketPool(this.key, 8);
+    this.packetPool = createTcpPacketPool(8);
     this.poolIndex = 0;
 
     socket.setNoDelay(true);
@@ -82,34 +86,32 @@ export class TcpSpeedChannel {
 
   _onData(chunk) {
     this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
-    while (this.buffer.length >= 4) {
+    while (this.buffer.length >= 5) {
       const len = this.buffer.readUInt32BE(0);
       if (this.buffer.length < 4 + len) break;
-      const packet = this.buffer.subarray(4, 4 + len);
+      const type = this.buffer.readUInt8(4);
+      const data = this.buffer.subarray(5, 4 + len);
       this.buffer = this.buffer.subarray(4 + len);
 
-      try {
-        const decrypted = decryptChunk(packet, this.key);
-        if (!decrypted.length) continue;
-        const type = decrypted[0];
-
-        if (type === 0) { // Control JSON
-          const payload = decrypted.subarray(1);
-          const msg = JSON.parse(payload.toString('utf-8'));
+      if (type === 0) { // Control JSON (cifrado)
+        try {
+          const decrypted = decryptChunk(data, this.key);
+          if (!decrypted.length) continue;
+          const msg = JSON.parse(decrypted.toString('utf-8'));
           for (const listener of [...this.controlListeners]) {
             try { listener(msg); } catch {}
           }
-        } else if (type === 1) { // Payload
-          if (this.onPayloadHandler) {
-            this.onPayloadHandler(decrypted.length - 1);
-          }
+        } catch {}
+      } else if (type === 1) { // Payload dummy
+        if (this.onPayloadHandler) {
+          this.onPayloadHandler(data.length);
         }
-      } catch {}
+      }
     }
 
     if (this.buffer.length === 0) {
       this.buffer = Buffer.alloc(0);
-    } else if (this.buffer.length < 4) {
+    } else if (this.buffer.length < 5) {
       this.buffer = Buffer.from(this.buffer);
     }
   }
@@ -118,9 +120,8 @@ export class TcpSpeedChannel {
     if (this.isClosed || this.socket.destroyed) return;
     try {
       const jsonBuf = Buffer.from(JSON.stringify(obj), 'utf-8');
-      const data = Buffer.concat([Buffer.from([0]), jsonBuf]);
-      const enc = encryptChunk(data, this.key);
-      const framed = frame(enc);
+      const enc = encryptChunk(jsonBuf, this.key);
+      const framed = frame(0, enc);
       this.socket.write(framed);
     } catch {}
   }

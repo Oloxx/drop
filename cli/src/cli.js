@@ -12,7 +12,7 @@ import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signa
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
