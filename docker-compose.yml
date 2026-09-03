@@ -1,0 +1,62 @@
+# Pila completa para un VPS: la app + HTTPS automatico + TURN propio.
+# Copia .env.example a .env y rellenalo antes de levantar esto.
+#
+#   docker compose up -d --build
+#
+# Ver DEPLOY-VPS.md para los puertos que hay que abrir (en Oracle son DOS sitios).
+
+services:
+  drop:
+    build: .
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      PORT: "3000"
+      # El cliente recibe esto desde /config y lo usa como TURN.
+      TURN_URL: "turn:${DROP_DOMAIN}:3478"
+      TURN_USER: "${TURN_USER}"
+      TURN_PASS: "${TURN_PASS}"
+
+  # Caddy saca y renueva el certificado de Let's Encrypt solo, y proxea
+  # WebSockets sin configuracion extra.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DROP_DOMAIN: "${DROP_DOMAIN}"
+    depends_on:
+      - drop
+
+  # TURN: el reenvio para el 10-15% de conexiones que no logran hablar directas.
+  # network_mode host porque necesita un rango de puertos UDP para los relays.
+  coturn:
+    image: coturn/coturn:4
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - "-n"
+      - "--log-file=stdout"
+      - "--listening-port=3478"
+      - "--realm=${DROP_DOMAIN}"
+      - "--lt-cred-mech"
+      - "--user=${TURN_USER}:${TURN_PASS}"
+      # Oracle da IP publica por NAT 1:1, asi que hay que decirle las dos.
+      - "--external-ip=${PUBLIC_IP}/${PRIVATE_IP}"
+      - "--min-port=49160"
+      - "--max-port=49200"
+      - "--no-multicast-peers"
+      # Sin certificados no montamos listeners TLS; el trafico ya va cifrado por DTLS.
+      # (El CLI de coturn viene apagado por defecto, no hace falta desactivarlo.)
+      - "--no-tls"
+
+volumes:
+  caddy_data:
+  caddy_config:
