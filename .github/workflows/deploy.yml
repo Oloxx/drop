@@ -1,0 +1,40 @@
+name: Deploy to Valhalla VPS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'server/**'
+      - 'public/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'package*.json'
+      - 'Caddyfile'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VALHALLA_HOST }}
+          username: ${{ secrets.VALHALLA_USER }}
+          key: ${{ secrets.VALHALLA_SSH_KEY }}
+          script: |
+            set -e
+            echo "==> Actualizando código en ~/drop..."
+            cd ~/drop
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "==> Reconstruyendo contenedor Docker..."
+            docker compose up -d --build drop
+
+            echo "==> Comprobando estado del servicio..."
+            sleep 2
+            curl -f http://localhost:3000/healthz || exit 1
+            echo "==> ¡Despliegue completado con éxito!"
