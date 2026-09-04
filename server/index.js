@@ -58,15 +58,21 @@ function send(ws, obj) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   ws.isAlive = true;
   ws.role = null;     // 'host' | 'guest'
   ws.token = null;
   ws.guestId = null;
+  ws.clientIp = (
+    req?.headers?.['x-forwarded-for']?.split(',')[0] ||
+    req?.socket?.remoteAddress ||
+    ''
+  ).replace(/^::ffff:/, '').trim();
 
   ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', (raw, isBinary) => {
+    ws.isAlive = true;
     if (isBinary) {
       const room = rooms.get(ws.token);
       if (!room) return;
@@ -96,7 +102,7 @@ wss.on('connection', (ws) => {
         rooms.set(token, { host: ws, guests: new Map(), createdAt: Date.now() });
         ws.role = 'host';
         ws.token = token;
-        send(ws, { t: 'hosted', token });
+        send(ws, { t: 'hosted', token, publicIp: ws.clientIp });
         log('sala abierta', tag(token), '| salas activas:', rooms.size);
         break;
       }
@@ -115,7 +121,7 @@ wss.on('connection', (ws) => {
         ws.role = 'guest';
         ws.token = token;
         ws.guestId = guestId;
-        send(ws, { t: 'joined', guestId });
+        send(ws, { t: 'joined', guestId, publicIp: ws.clientIp });
         send(room.host, { t: 'guest', guestId, name: String(msg.name || '').slice(0, 40) });
         log('receptor', guestId, 'entra en', tag(token), '| receptores en la sala:', room.guests.size);
         break;

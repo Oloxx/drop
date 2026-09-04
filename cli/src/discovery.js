@@ -1,4 +1,5 @@
 import dgram from 'node:dgram';
+import net from 'node:net';
 import crypto from 'node:crypto';
 import os from 'node:os';
 
@@ -134,3 +135,65 @@ export function listenForLAN(token, timeoutMs = 3000) {
     });
   });
 }
+
+/**
+ * Prueba en paralelo (con escalonamiento estilo Happy Eyeballs) una lista de IPs candidatas
+ * y devuelve el primer socket TCP conectado con éxito.
+ */
+export function probeCandidateIPs(candidateIPs, port, timeoutMs = 2500) {
+  if (!candidateIPs || !candidateIPs.length || !port) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let resolved = false;
+    const sockets = [];
+    let pending = candidateIPs.length;
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        for (const s of sockets) {
+          try { s.destroy(); } catch {}
+        }
+        resolve(null);
+      }
+    }, timeoutMs);
+
+    for (let i = 0; i < candidateIPs.length; i++) {
+      const ip = candidateIPs[i];
+      const delay = Math.min(i * 100, 300);
+      setTimeout(() => {
+        if (resolved) return;
+        const s = net.connect({ host: ip, port });
+        s.setNoDelay(true);
+        sockets.push(s);
+
+        s.on('connect', () => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            for (const other of sockets) {
+              if (other !== s) {
+                try { other.destroy(); } catch {}
+              }
+            }
+            resolve({ socket: s, ip });
+          } else {
+            try { s.destroy(); } catch {}
+          }
+        });
+
+        const onFail = () => {
+          pending--;
+          if (pending <= 0 && !resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve(null);
+          }
+        };
+
+        s.on('error', onFail);
+        s.on('timeout', onFail);
+      }, delay);
+    }
+  });
+}
+

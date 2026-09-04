@@ -7,12 +7,13 @@ import readline from 'node:readline';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete } from './ui.js';
-import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
+import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
+import { mapPort } from './upnp.js';
 
-const VERSION = '0.3.4';
+const VERSION = '0.3.5';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -330,6 +331,7 @@ ${c.bold}USO:${c.reset}
 
 ${c.bold}OPCIONES:${c.reset}
   -t, --time <segundos>  Duración de cada fase del test de velocidad (por defecto: 5s)
+  -p, --port <puerto>    Puerto TCP local para escucha (por defecto: aleatorio)
   -s, --server <url>     Servidor de señalización (por defecto: ${DEFAULT_SERVER})
   -o, --out <directorio> Directorio de destino para descargas (por defecto: actual)
   --relay                Fuerza el test a través del servidor de Relay
@@ -382,8 +384,23 @@ async function runSend(args, options) {
     renderProgressBar(current, total, speed);
   });
 
-  await new Promise((resolve) => server.listen(0, '0.0.0.0', resolve));
+  await new Promise((resolve) => server.listen(options.port || 0, '0.0.0.0', resolve));
   const tcpPort = server.address().port;
+
+  // Iniciar mapeo UPnP en el router en segundo plano
+  let upnpPromise = null;
+  let upnpResult = null;
+  if (!process.env.DROP_NO_UPNP) {
+    upnpPromise = mapPort(tcpPort, options.port || tcpPort, 'drop-send')
+      .then((res) => {
+        if (res?.success) {
+          upnpResult = res;
+          console.log(`  ${c.green}✔ Puerto mapeado por UPnP en router:${c.reset} ${c.cyan}:${res.externalPort}${c.reset} ${c.dim}(IP WAN: ${res.publicIp || 'detectada'})${c.reset}`);
+        }
+        return res;
+      })
+      .catch(() => null);
+  }
 
   // 2. Conectar a señalización
   let token = null;
@@ -425,9 +442,11 @@ async function runSend(args, options) {
 `);
 
 const activeStreams = new Set();
+const guestAcks = new Map();
 
 async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
+  const MAX_IN_FLIGHT = 8 * 1024 * 1024; // Ventana deslizante de 8 MB máximo sin confirmar
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
   let totalSent = 0;
   const startTime = performance.now();
@@ -436,6 +455,8 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   let speed = 0;
 
   activeStreams.add(guestId);
+  const ackInfo = { acked: 0, completed: false, notify: null };
+  guestAcks.set(guestId, ackInfo);
 
   try {
     for (const [index, file] of files.entries()) {
@@ -463,6 +484,16 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
         while (offset < file.size) {
           if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
 
+          // Control de flujo (Backpressure): pausar si hay más de 8 MB en tránsito sin confirmar
+          // o si el buffer local del WebSocket está saturado (> 4 MB)
+          while ((totalSent - ackInfo.acked) > MAX_IN_FLIGHT || ws.bufferedAmount > 4 * 1024 * 1024) {
+            if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
+            await new Promise((resolve) => {
+              ackInfo.notify = resolve;
+              setTimeout(resolve, 50);
+            });
+          }
+
           const toRead = Math.min(CHUNK, file.size - offset);
           const { bytesRead } = await fd.read(buf, 0, toRead, offset);
           if (bytesRead === 0) break;
@@ -474,11 +505,6 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
           header.writeUInt32BE(guestId, 0);
           const packet = Buffer.concat([header, slice]);
 
-          while (ws.bufferedAmount > 4 * 1024 * 1024) {
-            if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
-            await new Promise((r) => setTimeout(r, 15));
-          }
-
           ws.send(packet);
           offset += bytesRead;
           totalSent += bytesRead;
@@ -486,11 +512,13 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
           const now = performance.now();
           const dt = (now - lastReport) / 1000;
           if (dt >= 0.15) {
-            const inst = (totalSent - lastBytes) / dt;
+            // El progreso real mostrado se basa en lo que el receptor ha confirmado (ACKs)
+            const progressBytes = Math.min(totalBytes, Math.max(ackInfo.acked, Math.min(totalSent, totalBytes)));
+            const inst = (progressBytes - lastBytes) / dt;
             speed = speed ? speed * 0.7 + inst * 0.3 : inst;
-            lastBytes = totalSent;
+            lastBytes = progressBytes;
             lastReport = now;
-            if (onProgress) onProgress(totalSent, totalBytes, speed);
+            if (onProgress) onProgress(progressBytes, totalBytes, speed);
           }
         }
       } finally {
@@ -513,11 +541,24 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
       to: guestId,
       data: { type: 'cli-done' }
     }));
+
+    // Esperar a que el receptor confirme la recepción completa de todos los datos
+    while (ackInfo.acked < totalBytes && !ackInfo.completed && activeStreams.has(guestId)) {
+      await new Promise((resolve) => {
+        ackInfo.notify = resolve;
+        setTimeout(resolve, 50);
+      });
+      if (onProgress) {
+        onProgress(Math.min(totalBytes, ackInfo.acked), totalBytes, speed);
+      }
+    }
+
     const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
     const avgSpeed = totalBytes / totalTimeSec;
     return { totalBytes, totalTimeSec, avgSpeed };
   } finally {
     activeStreams.delete(guestId);
+    guestAcks.delete(guestId);
   }
 }
 
@@ -528,13 +569,30 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.t === 'guest') {
+          let upnp = upnpResult;
+          if (!upnp && upnpPromise) {
+            upnp = await Promise.race([
+              upnpPromise,
+              new Promise((r) => setTimeout(r, 2000))
+            ]);
+          }
+
+          const candidateIps = [...localIPs];
+          if (upnp?.publicIp && !candidateIps.includes(upnp.publicIp)) {
+            candidateIps.push(upnp.publicIp);
+          }
+          if (ws.publicIp && !candidateIps.includes(ws.publicIp)) {
+            candidateIps.push(ws.publicIp);
+          }
+
           ws.send(JSON.stringify({
             t: 'signal',
             to: msg.guestId,
             data: {
               type: 'cli-offer',
-              ips: localIPs,
-              port: tcpPort,
+              ips: candidateIps,
+              port: upnp?.externalPort || tcpPort,
+              upnp: Boolean(upnp?.success),
               manifest: files.map((f) => ({
                 name: path.basename(f.path),
                 size: f.size,
@@ -557,6 +615,29 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
               console.log(`\n\n  ${c.yellow}Receptor (${guest}) interrumpido: ${err.message}${c.reset}`);
               console.log(`  ${c.dim}Canal abierto. Esperando nuevas conexiones... (Presiona Ctrl + C para salir)${c.reset}\n`);
             }
+          } else if (msg.data?.type === 'cli-ack') {
+            const guest = msg.from;
+            const ackInfo = guestAcks.get(guest);
+            if (ackInfo) {
+              ackInfo.acked = Math.max(ackInfo.acked, msg.data.bytes || 0);
+              if (ackInfo.notify) {
+                const cb = ackInfo.notify;
+                ackInfo.notify = null;
+                cb();
+              }
+            }
+          } else if (msg.data?.type === 'cli-complete') {
+            const guest = msg.from;
+            const ackInfo = guestAcks.get(guest);
+            if (ackInfo) {
+              ackInfo.completed = true;
+              ackInfo.acked = totalBytes;
+              if (ackInfo.notify) {
+                const cb = ackInfo.notify;
+                ackInfo.notify = null;
+                cb();
+              }
+            }
           } else if (msg.data?.type === 'cli-retry') {
             const guest = msg.from;
             const retryIdx = msg.data?.index || 0;
@@ -573,9 +654,21 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             }
           } else if (msg.data?.type === 'cli-error') {
             activeStreams.delete(msg.from);
+            const ackInfo = guestAcks.get(msg.from);
+            if (ackInfo?.notify) {
+              const cb = ackInfo.notify;
+              ackInfo.notify = null;
+              cb();
+            }
           }
         } else if (msg.t === 'guest-gone') {
           activeStreams.delete(msg.guestId);
+          const ackInfo = guestAcks.get(msg.guestId);
+          if (ackInfo?.notify) {
+            const cb = ackInfo.notify;
+            ackInfo.notify = null;
+            cb();
+          }
         }
       } catch {}
     });
@@ -590,13 +683,16 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   console.log(`  ${c.dim}Canal abierto permanentemente. Presiona ${c.bold}Ctrl + C${c.reset}${c.dim} para cerrarlo cuando hayas terminado.${c.reset}\n`);
 
   await new Promise(() => {
-    const onExit = () => {
+    const onExit = async () => {
       console.log(`\n\n  ${c.yellow}Cerrando canal de transferencia...${c.reset}`);
       if (broadcaster) broadcaster.stop();
       if (ws) {
         try { ws.close(); } catch {}
       }
       try { activeServer.close(); } catch {}
+      if (upnpResult?.unmap) {
+        try { await upnpResult.unmap(); } catch {}
+      }
       console.log(`  ${c.green}✔ ¡Canal cerrado con éxito!${c.reset}\n`);
       process.exit(0);
     };
@@ -725,7 +821,7 @@ async function runRecv(args, options) {
 
   const { ips = [], port, manifest = [] } = offer;
 
-  // 3. Probar si alguna IP es accesible directamente por TCP (misma red local o VPN)
+  // 3. Probar si alguna IP es accesible directamente por TCP (misma red local, VPN o UPnP en Internet)
   const localIPs = getLocalIPs();
   function scoreIP(ip) {
     if (ip === '127.0.0.1' || ip === '::1') return 100;
@@ -734,30 +830,36 @@ async function runRecv(args, options) {
     if (ip.startsWith('192.168.')) return 80;
     if (ip.startsWith('10.')) return 70;
     if (ip.startsWith('172.')) return 60;
-    return 10;
+    return 50;
   }
   const candidateIPs = port ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
 
-  for (const candidateIP of candidateIPs) {
-    process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con ${candidateIP}:${port}...${c.reset}`);
-    try {
-      const received = await receiveFiles(candidateIP, port, token, outputDir, (current, total, speed) => {
-        renderProgressBar(current, total, speed);
-      }, 1500);
-      process.stdout.write('\r\x1b[K');
-      if (ws) ws.close();
-      if (received.stats) {
-        renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
-      }
-      printSuccess(received, outputDir);
-      process.exit(0);
-    } catch (err) {
-      if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
+  if (candidateIPs.length > 0) {
+    process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con el emisor...${c.reset}`);
+    const probe = await probeCandidateIPs(candidateIPs, port, 2500);
+    process.stdout.write('\r\x1b[K');
+    if (probe) {
+      try { probe.socket.destroy(); } catch {}
+      const isLocal = probe.ip?.includes('127.0.0.1') || probe.ip?.includes('::1') || probe.ip?.startsWith('192.168.') || probe.ip?.startsWith('10.');
+      const tag = isLocal ? 'Sockets TCP nativos - LAN' : 'Sockets TCP nativos - Internet/P2P';
+      console.log(`  ${c.green}✔ Emisor alcanzable por TCP directo:${c.reset} ${probe.ip}:${port}`);
+      console.log(`\n  ${c.bold}Conectando a:${c.reset} ${probe.ip}:${port} (${tag})\n`);
+      try {
+        const received = await receiveFiles(probe.ip, port, token, outputDir, (current, total, speed) => {
+          renderProgressBar(current, total, speed);
+        }, 3000);
         if (ws) ws.close();
-        return askRetry(err, () => runRecv(args, options));
+        if (received.stats) {
+          renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
+        }
+        printSuccess(received, outputDir);
+        process.exit(0);
+      } catch (err) {
+        if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
+          if (ws) ws.close();
+          return askRetry(err, () => runRecv(args, options));
+        }
       }
-      process.stdout.write('\r\x1b[K');
-      // Si falla por timeout o error de conexión, probamos la siguiente IP o pasamos a Relay
     }
   }
 
@@ -833,6 +935,7 @@ async function main() {
     server: DEFAULT_SERVER,
     out: null,
     time: 5,
+    port: 0,
     directOnly: false,
     relay: false,
   };
@@ -843,6 +946,8 @@ async function main() {
       options.server = argv[++i];
     } else if (argv[i] === '-o' || argv[i] === '--out') {
       options.out = argv[++i];
+    } else if (argv[i] === '-p' || argv[i] === '--port') {
+      options.port = parseInt(argv[++i], 10) || 0;
     } else if (argv[i] === '-t' || argv[i] === '--time') {
       options.time = parseInt(argv[++i], 10) || 5;
     } else if (argv[i] === '--direct-only') {

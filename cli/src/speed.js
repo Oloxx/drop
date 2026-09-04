@@ -2,8 +2,9 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { c, fmtBytes, fmtSpeed, fmtDuration, fmtMs } from './ui.js';
 import { deriveKey, encryptChunk, decryptChunk } from './crypto.js';
-import { getLocalIPs, startBroadcasting, listenForLAN } from './discovery.js';
+import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom } from './signaling.js';
+import { mapPort } from './upnp.js';
 
 const TCP_CHUNK_SIZE = 256 * 1024;    // 256 KB por bloque para máxima velocidad en TCP
 const RELAY_CHUNK_SIZE = 64 * 1024;   // 64 KB por bloque para streaming óptimo en WebSocket
@@ -597,8 +598,22 @@ export async function runSpeedHost(options = {}) {
   let token = null;
 
   const tcpServer = net.createServer();
-  await new Promise((resolve) => tcpServer.listen(0, '0.0.0.0', resolve));
+  await new Promise((resolve) => tcpServer.listen(options.port || 0, '0.0.0.0', resolve));
   const tcpPort = tcpServer.address().port;
+
+  let upnpPromise = null;
+  let upnpResult = null;
+  if (!options.relay && !process.env.DROP_NO_UPNP) {
+    upnpPromise = mapPort(tcpPort, options.port || tcpPort, 'drop-speed')
+      .then((res) => {
+        if (res?.success) {
+          upnpResult = res;
+          console.log(`  ${c.green}✔ Puerto mapeado por UPnP en router:${c.reset} ${c.cyan}:${res.externalPort}${c.reset} ${c.dim}(IP WAN: ${res.publicIp || 'detectada'})${c.reset}\n`);
+        }
+        return res;
+      })
+      .catch(() => null);
+  }
 
   try {
     ws = await connectSignaling(serverUrl);
@@ -633,7 +648,7 @@ export async function runSpeedHost(options = {}) {
       const isLocal = socket.remoteAddress?.includes('127.0.0.1') || socket.remoteAddress?.includes('::1') || socket.remoteAddress?.startsWith('192.168.') || socket.remoteAddress?.startsWith('10.');
       const pathDesc = isLocal
         ? `Directa TCP (LAN/Loopback - ${socket.remoteAddress})`
-        : `Directa TCP (${socket.remoteAddress})`;
+        : `Directa TCP (Internet/P2P - ${socket.remoteAddress})`;
 
       const ch = new TcpSpeedChannel(socket, token, true, pathDesc);
 
@@ -657,18 +672,35 @@ export async function runSpeedHost(options = {}) {
 
     if (ws) {
       const localIPs = getLocalIPs();
-      ws.addEventListener('message', (ev) => {
+      ws.addEventListener('message', async (ev) => {
         if (resolved) return;
         try {
           const msg = JSON.parse(ev.data);
           if (msg.t === 'guest') {
+            let upnp = upnpResult;
+            if (!upnp && upnpPromise) {
+              upnp = await Promise.race([
+                upnpPromise,
+                new Promise((r) => setTimeout(r, 2000))
+              ]);
+            }
+
+            const candidateIps = [...localIPs];
+            if (upnp?.publicIp && !candidateIps.includes(upnp.publicIp)) {
+              candidateIps.push(upnp.publicIp);
+            }
+            if (ws.publicIp && !candidateIps.includes(ws.publicIp)) {
+              candidateIps.push(ws.publicIp);
+            }
+
             ws.send(JSON.stringify({
               t: 'signal',
               to: msg.guestId,
               data: {
                 type: 'cli-speed-offer',
-                ips: localIPs,
-                port: tcpPort,
+                ips: candidateIps,
+                port: upnp?.externalPort || tcpPort,
+                upnp: Boolean(upnp?.success)
               }
             }));
           } else if (msg.t === 'signal' && msg.data?.type === 'cli-speed-accept') {
@@ -691,10 +723,13 @@ export async function runSpeedHost(options = {}) {
 
   activeChannel = channel;
 
-  const onExit = () => {
+  const onExit = async () => {
     if (broadcaster) broadcaster.stop();
     if (ws) try { ws.close(); } catch {}
     try { tcpServer.close(); } catch {}
+    if (upnpResult?.unmap) {
+      try { await upnpResult.unmap(); } catch {}
+    }
     if (activeChannel) activeChannel.close();
     process.exit(0);
   };
@@ -707,6 +742,9 @@ export async function runSpeedHost(options = {}) {
     if (broadcaster) broadcaster.stop();
     if (ws) try { ws.close(); } catch {}
     try { tcpServer.close(); } catch {}
+    if (upnpResult?.unmap) {
+      try { await upnpResult.unmap(); } catch {}
+    }
     channel.close();
   }
 }
@@ -813,43 +851,29 @@ export async function runSpeedGuest(input, options = {}) {
     if (ip.startsWith('192.168.')) return 80;
     if (ip.startsWith('10.')) return 70;
     if (ip.startsWith('172.')) return 60;
-    return 10;
+    return 50;
   }
   const candidateIPs = !forceRelay && port ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
 
   let tcpSocket = null;
   let connectedIP = null;
   if (!forceRelay && port && candidateIPs.length > 0) {
-    for (const testIP of candidateIPs) {
-      process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con ${testIP}:${port}...${c.reset}`);
-      const sock = await new Promise((resolve) => {
-        const s = net.connect({ host: testIP, port });
-        const timer = setTimeout(() => {
-          s.destroy();
-          resolve(null);
-        }, 1500);
-        s.on('connect', () => {
-          clearTimeout(timer);
-          resolve(s);
-        });
-        s.on('error', () => {
-          clearTimeout(timer);
-          resolve(null);
-        });
-      });
-      process.stdout.write('\r\x1b[K');
-      if (sock) {
-        tcpSocket = sock;
-        connectedIP = testIP;
-        break;
-      }
+    process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con el anfitrión...${c.reset}`);
+    const probe = await probeCandidateIPs(candidateIPs, port, 2500);
+    process.stdout.write('\r\x1b[K');
+    if (probe) {
+      tcpSocket = probe.socket;
+      connectedIP = probe.ip;
     }
   }
 
   if (tcpSocket) {
     process.stdout.write('\r\x1b[K');
     if (ws) ws.close();
-    const pathDesc = `Directa TCP (${connectedIP}:${port})`;
+    const isLocal = connectedIP?.includes('127.0.0.1') || connectedIP?.includes('::1') || connectedIP?.startsWith('192.168.') || connectedIP?.startsWith('10.');
+    const pathDesc = isLocal
+      ? `Directa TCP (${connectedIP}:${port})`
+      : `Directa TCP (Internet/P2P - ${connectedIP}:${port})`;
     console.log(`  ${c.green}✔ Conectado por TCP directo:${c.reset} ${pathDesc}\n`);
     const channel = new TcpSpeedChannel(tcpSocket, token, false, pathDesc);
 

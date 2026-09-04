@@ -19,6 +19,7 @@ export function createRoom(ws) {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.t === 'hosted') {
+          if (msg.publicIp) ws.publicIp = msg.publicIp;
           ws.removeEventListener('message', onMsg);
           resolve(msg.token);
         }
@@ -37,6 +38,7 @@ export function joinRoom(ws, token) {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.t === 'joined') {
+          if (msg.publicIp) ws.publicIp = msg.publicIp;
           ws.removeEventListener('message', onMsg);
           resolve(msg.guestId);
         } else if (msg.t === 'error') {

@@ -228,7 +228,12 @@ function connectSignaling() {
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => { setStatus('uplink ok', 'live'); resolve(); };
     ws.onerror = () => reject(new Error('No route to the server'));
-    ws.onclose = () => setStatus('uplink lost', 'bad');
+    ws.onclose = () => {
+      setStatus('uplink lost', 'bad');
+      if (rx.isCli && rx.row && !rx.finished && rx.received < rx.total) {
+        rx.row.fail('uplink lost');
+      }
+    };
     ws.onmessage = (ev) => {
       if (typeof ev.data !== 'string') {
         onChunk(ev.data);
@@ -1255,8 +1260,10 @@ async function acceptTransfer() {
       const dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'drop' });
       rx.makeSink = (meta) => diskSink(dir, meta);
     } catch {
-      $('#offer-hint').textContent =
-        'No folder chosen. Held in memory until the transfer completes.';
+      const isHuge = rx.total > 500 * 1024 * 1024;
+      $('#offer-hint').textContent = isHuge
+        ? 'Warning: large file held in RAM. Choosing a folder is recommended to avoid browser crashes.'
+        : 'No folder chosen. Held in memory until the transfer completes.';
     }
   }
 
