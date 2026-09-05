@@ -17,9 +17,9 @@ const TARGETS = {
     output: `drop-${VERSION_TAG}-windows-x64.exe`,
     legacyOutput: 'drop-windows-x64.exe',
     getNode: async () => {
-      if (process.platform === 'win32' && process.arch === 'x64') {
-        return process.execPath;
-      }
+      // Nada de reutilizar `process.execPath` aunque estemos en Windows x64: el
+      // Node del sistema puede ser de cualquier version, y el binario base tiene
+      // que ser exactamente NODE_VERSION (ver generateBlob).
       const dest = path.join(CACHE_DIR, `node-${NODE_VERSION}-win-x64.exe`);
       if (!fs.existsSync(dest)) {
         console.log(`  Descargando node.exe (${NODE_VERSION})...`);
@@ -141,47 +141,59 @@ async function buildTarget(key) {
   }
 }
 
+// Que binario base corresponde a la maquina donde se compila. Se usa para
+// generar el blob, no para inyectarlo.
+const HOST_KEY = {
+  'darwin-arm64': 'darwin-arm64',
+  'darwin-x64': 'darwin-x64',
+  'linux-x64': 'linux-x64',
+  'linux-arm64': 'linux-arm64',
+  'win32-x64': 'win-x64',
+}[`${process.platform}-${process.arch}`];
+
 /**
- * El blob SEA lo genera el Node que esta instalado en la maquina, pero se inyecta
- * en los binarios base descargados de nodejs.org, que estan fijados a
- * NODE_VERSION. Si las versiones mayores no coinciden, la compilacion termina
- * "con exito" y produce binarios que revientan al arrancar, en TODAS las
- * plataformas a la vez:
+ * Genera el blob SEA con el Node de NODE_VERSION, no con el del sistema.
+ *
+ * El blob va atado a la version EXACTA de Node que lo produce, no solo a la
+ * mayor. Un blob generado con v22.23.2 e inyectado en un binario base v22.15.0
+ * compila sin quejarse y produce ejecutables que mueren al arrancar, en todas
+ * las plataformas a la vez:
  *
  *   FATAL ERROR: v8::ToLocalChecked Empty MaybeLocal
  *     node::sea::LoadSingleExecutableApplication(...)
  *
- * Comprobado: blob generado con Node 24 e inyectado en el base v22.15.0 falla
- * asi; el mismo blob generado con v22.15.0 arranca sin tocar nada mas. Como el
- * fallo no aparece hasta que alguien ejecuta el binario descargado, se corta
- * aqui. El workflow de release fija Node 22 justo por esto.
+ * Paso en la release v0.4.0: el runner traia v22.23.2 y las bases eran v22.15.0.
+ * Comprobar la version mayor no basta, y pedirle a quien compila que tenga
+ * instalada una version concreta es fragil. Asi que se descarga el binario base
+ * del host -- el mismo mecanismo que ya se usa para los targets, con la misma
+ * cache -- y se genera el blob con el. La version del Node del sistema deja de
+ * importar: solo hace falta para arrancar este script.
  */
-function checkHostNodeVersion() {
-  const hostMajor = process.versions.node.split('.')[0];
-  const targetMajor = NODE_VERSION.replace(/^v/, '').split('.')[0];
-  if (hostMajor === targetMajor) return;
+async function generateBlob() {
+  if (!HOST_KEY) {
+    console.warn(`\n  Aviso: plataforma ${process.platform}-${process.arch} sin binario base conocido.`);
+    console.warn(`  Se genera el blob con el Node del sistema (v${process.versions.node}).`);
+    console.warn(`  Si no es exactamente ${NODE_VERSION}, los ejecutables no arrancaran.\n`);
+    execSync('node --experimental-sea-config sea-config.json', { stdio: 'inherit' });
+    return;
+  }
 
-  console.error(`\nError: incompatibilidad de versiones de Node.`);
-  console.error(`  Node de esta maquina:  v${process.versions.node} (mayor ${hostMajor})`);
-  console.error(`  Binarios base a usar:  ${NODE_VERSION} (mayor ${targetMajor})`);
-  console.error(`\nEl blob SEA se genera con el Node local y se inyecta en los binarios base.`);
-  console.error(`Con versiones mayores distintas, los ejecutables se generan pero no arrancan.`);
-  console.error(`\nOpciones: usa Node ${targetMajor}.x para compilar, o sube NODE_VERSION en`);
-  console.error(`scripts/build-cross.mjs si quieres publicar con el runtime de esta maquina.\n`);
-  process.exit(1);
+  const hostNode = await getBinary(HOST_KEY, TARGETS[HOST_KEY]);
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(hostNode, 0o755); } catch {}
+  }
+  execSync(`"${hostNode}" --experimental-sea-config sea-config.json`, { stdio: 'inherit' });
 }
 
 async function main() {
   const args = process.argv.slice(2);
   const requested = args[0] || 'win-x64';
 
-  checkHostNodeVersion();
-
   console.log('1. Generando bundle de código...');
   execSync('npx --yes esbuild cli/src/cli.js --bundle --platform=node --format=cjs --outfile=dist/bundle.cjs', { stdio: 'inherit' });
 
-  console.log('2. Generando blob SEA agnóstico de plataforma...');
-  execSync('node --experimental-sea-config sea-config.json', { stdio: 'inherit' });
+  console.log(`2. Generando blob SEA con Node ${NODE_VERSION}...`);
+  await generateBlob();
 
   if (requested === 'all') {
     for (const key of Object.keys(TARGETS)) {
