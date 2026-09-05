@@ -72,9 +72,12 @@ jobs:
       matrix:
         include:
           - target: darwin-arm64
-            runner: macos-latest    # Apple Silicon
+            runner: macos-latest      # Apple Silicon
+          # `macos-13` ya no existe: GitHub lo retiro y las imagenes vivas son
+          # macOS 26, 15 y 14 (esta ultima deprecada). Un label retirado no falla,
+          # se queda encolado esperando un runner que no va a aparecer nunca.
           - target: darwin-x64
-            runner: macos-13        # Intel
+            runner: macos-15-intel    # Intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
