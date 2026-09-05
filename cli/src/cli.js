@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
-import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
+import { createSenderServer, receiveFiles, receiveFromRelay, RELAY_IDLE_TIMEOUT_MS } from './transfer.js';
 import { secretProof } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
@@ -404,7 +404,7 @@ ${c.bold}OPCIONES:${c.reset}
   -p, --port <puerto>    Puerto TCP local para escucha (por defecto: aleatorio)
   -s, --server <url>     Servidor de señalización (por defecto: ${DEFAULT_SERVER})
   -o, --out <directorio> Directorio de destino para descargas (por defecto: actual)
-  --relay                Fuerza el test a través del servidor de Relay
+  --relay                Fuerza la transferencia a través del servidor de Relay
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --update               Comprueba y actualiza a la última versión
   --force                Fuerza la reinstalación en 'drop update'
@@ -467,10 +467,15 @@ async function runSend(args, options) {
   await new Promise((resolve) => portProbe.listen(options.port || 0, '0.0.0.0', resolve));
   const tcpPort = portProbe.address().port;
 
+  // `--relay` (o DROP_FORCE_RELAY) fuerza el camino por el servidor: ni UPnP, ni
+  // anuncio por LAN, ni IPs en la oferta. Sirve para probarlo a mano y es lo que
+  // usa el test de regresión del relay, que si no acabaría yéndose por TCP directo.
+  const forceRelay = options.relay || Boolean(process.env.DROP_FORCE_RELAY);
+
   // Iniciar mapeo UPnP en el router en segundo plano
   let upnpPromise = null;
   let upnpResult = null;
-  if (!process.env.DROP_NO_UPNP) {
+  if (!forceRelay && !process.env.DROP_NO_UPNP) {
     upnpPromise = mapPort(tcpPort, options.port || tcpPort, 'drop-send')
       .then((res) => {
         if (res?.success) {
@@ -517,7 +522,7 @@ async function runSend(args, options) {
 
   // 3. Iniciar descubrimiento LAN. Por el broadcast UDP solo viaja un hash del
   // identificador público: las palabras no se emiten a la subred (ver discovery.js).
-  broadcaster = startBroadcasting(code, tcpPort);
+  if (!forceRelay) broadcaster = startBroadcasting(code, tcpPort);
 
   const shareLink = options.server ? `${options.server}/#${code}` : `https://drop.oloxx.dev/#${code}`;
   console.log(`
@@ -547,8 +552,18 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   let speed = 0;
 
   activeStreams.add(guestId);
-  const ackInfo = { acked: 0, completed: false, notify: null };
+  const ackInfo = { acked: 0, total: totalBytes, completed: false, notify: null, lastProgress: Date.now() };
   guestAcks.set(guestId, ackInfo);
+
+  // El emisor solo avanza con los acuses del receptor. Si dejan de llegar (receptor
+  // caído, o un binario antiguo que no los manda) esto corta con un mensaje en vez
+  // de dejar el proceso girando en el bucle de espera para siempre.
+  const failIfStalled = () => {
+    if (Date.now() - ackInfo.lastProgress <= RELAY_IDLE_TIMEOUT_MS) return;
+    throw new Error(
+      `El receptor lleva ${Math.round(RELAY_IDLE_TIMEOUT_MS / 1000)}s sin confirmar nada: se corta el envío por relay.`
+    );
+  };
 
   try {
     for (const [index, file] of files.entries()) {
@@ -578,8 +593,16 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
 
           // Control de flujo (Backpressure): pausar si hay más de 8 MB en tránsito sin confirmar
           // o si el buffer local del WebSocket está saturado (> 4 MB)
+          let buffered = ws.bufferedAmount;
           while ((totalSent - ackInfo.acked) > MAX_IN_FLIGHT || ws.bufferedAmount > 4 * 1024 * 1024) {
             if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
+            // El buffer vaciándose también es señal de vida: en un enlace lento los
+            // acuses tardan, pero mientras salgan bytes no hay nada roto.
+            if (ws.bufferedAmount < buffered) {
+              buffered = ws.bufferedAmount;
+              ackInfo.lastProgress = Date.now();
+            }
+            failIfStalled();
             await new Promise((resolve) => {
               ackInfo.notify = resolve;
               setTimeout(resolve, 50);
@@ -634,8 +657,12 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
       data: { type: 'cli-done' }
     }));
 
-    // Esperar a que el receptor confirme la recepción completa de todos los datos
+    // Esperar a que el receptor confirme la recepción completa de todos los datos.
+    // El reloj se pone a cero aquí: enviar el último archivo puede haber llevado más
+    // que el propio timeout sin necesitar un solo acuse por el camino.
+    ackInfo.lastProgress = Date.now();
     while (ackInfo.acked < totalBytes && !ackInfo.completed && activeStreams.has(guestId)) {
+      failIfStalled();
       await new Promise((resolve) => {
         ackInfo.notify = resolve;
         setTimeout(resolve, 50);
@@ -669,7 +696,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             ]);
           }
 
-          const candidateIps = [...localIPs];
+          const candidateIps = forceRelay ? [] : [...localIPs];
           if (upnp?.publicIp && !candidateIps.includes(upnp.publicIp)) {
             candidateIps.push(upnp.publicIp);
           }
@@ -690,7 +717,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             data: {
               type: 'cli-offer',
               ips: candidateIps,
-              port: upnp?.externalPort || tcpPort,
+              port: forceRelay ? 0 : (upnp?.externalPort || tcpPort),
               upnp: Boolean(upnp?.success),
               nonce,
             }
@@ -741,6 +768,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             const ackInfo = guestAcks.get(guest);
             if (ackInfo) {
               ackInfo.acked = Math.max(ackInfo.acked, msg.data.bytes || 0);
+              ackInfo.lastProgress = Date.now();
               if (ackInfo.notify) {
                 const cb = ackInfo.notify;
                 ackInfo.notify = null;
@@ -752,7 +780,10 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             const ackInfo = guestAcks.get(guest);
             if (ackInfo) {
               ackInfo.completed = true;
-              ackInfo.acked = totalBytes;
+              // El total del envío en curso, no el de la sesión: un `cli-retry`
+              // reenvía solo una parte de los archivos.
+              ackInfo.acked = ackInfo.total ?? totalBytes;
+              ackInfo.lastProgress = Date.now();
               if (ackInfo.notify) {
                 const cb = ackInfo.notify;
                 ackInfo.notify = null;
@@ -907,9 +938,16 @@ async function runRecv(args, options) {
 
   console.log(`\n${c.bold}Buscando emisor para el código:${c.reset} ${c.cyan}${code}${c.reset}`);
 
+  // `--relay` (o DROP_FORCE_RELAY) salta los caminos directos y va derecho al
+  // servidor: es la forma de probar ese modo sin montar una NAT de verdad.
+  const forceRelay = options.relay || Boolean(process.env.DROP_FORCE_RELAY);
+
   // 1. Primero intentar descubrimiento LAN instantáneo (<1.2s)
-  process.stdout.write(`  ${c.dim}Explorando red local (LAN)...${c.reset}`);
-  let target = await listenForLAN(code, 1200);
+  let target = null;
+  if (!forceRelay) {
+    process.stdout.write(`  ${c.dim}Explorando red local (LAN)...${c.reset}`);
+    target = await listenForLAN(code, 1200);
+  }
 
   if (target) {
     console.log(`\r  ${c.green}✔ Emisor encontrado en red local:${c.reset} ${target.host}:${target.port}`);
@@ -933,7 +971,7 @@ async function runRecv(args, options) {
   }
 
   // 2. Si no está en LAN broadcast, conectar por servidor de señalización
-  console.log(`\r  ${c.dim}No detectado en LAN directa, conectando por servidor de señalización...${c.reset}`);
+  console.log(`\r  ${c.dim}${forceRelay ? 'Relay forzado: conectando por servidor de señalización...' : 'No detectado en LAN directa, conectando por servidor de señalización...'}${c.reset}`);
   let ws = null;
   let offer = null;
   try {
@@ -975,7 +1013,7 @@ async function runRecv(args, options) {
     if (ip.startsWith('172.')) return 60;
     return 50;
   }
-  const candidateIPs = port ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
+  const candidateIPs = port && !forceRelay ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
 
   if (candidateIPs.length > 0) {
     process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con el emisor...${c.reset}`);
