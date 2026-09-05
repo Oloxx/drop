@@ -93,7 +93,38 @@ async function buildTarget(key) {
   console.log(`  Inyectando bytecode SEA con postject...`);
   const fuse = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
   const blobPath = path.join(DIST_DIR, 'sea-prep.blob');
-  execSync(`npx --yes postject "${outPath}" NODE_SEA_BLOB "${blobPath}" --sentinel-fuse ${fuse}`, { stdio: 'inherit' });
+  const isDarwin = key.startsWith('darwin-');
+  const onDarwinHost = process.platform === 'darwin';
+
+  // Los binarios de macOS vienen firmados de nodejs.org. La inyeccion invalida
+  // esa firma, y en arm64 la firma no es opcional: el sistema mata el proceso al
+  // arrancar. Hay que quitarla antes de tocar el binario y volver a ponerla
+  // despues (firma ad-hoc, `-`). Solo se puede hacer desde un macOS: al compilar
+  // desde Linux o Windows el binario sale sin firmar y hay que firmarlo luego.
+  if (isDarwin && onDarwinHost) {
+    try {
+      execSync(`codesign --remove-signature "${outPath}"`, { stdio: 'ignore' });
+    } catch {
+      // Un binario ya sin firma hace fallar el comando: no es un problema.
+    }
+  }
+
+  // Mach-O no tiene "recursos" como PE ni "notas" como ELF: el blob va en una
+  // seccion dentro de un segmento propio, y postject necesita que se lo digan.
+  // Sin esto el binario de macOS se genera igual pero no encuentra su bytecode.
+  const machoFlag = isDarwin ? ' --macho-segment-name NODE_SEA' : '';
+  execSync(`npx --yes postject "${outPath}" NODE_SEA_BLOB "${blobPath}" --sentinel-fuse ${fuse}${machoFlag}`, { stdio: 'inherit' });
+
+  if (isDarwin) {
+    if (onDarwinHost) {
+      execSync(`codesign --sign - --force "${outPath}"`, { stdio: 'inherit' });
+      console.log(`  ${'\u2714'} Binario firmado (ad-hoc) para macOS.`);
+    } else {
+      console.warn(`  Aviso: ${key} compilado desde ${process.platform}, sale SIN FIRMAR.`);
+      console.warn(`  En un Mac no arrancara (arm64) o avisara Gatekeeper. Firmalo con:`);
+      console.warn(`    codesign --sign - --force dist/${info.output}`);
+    }
+  }
 
   const sizeMB = (fs.statSync(outPath).size / (1024 * 1024)).toFixed(1);
   console.log(`✔ ¡Binario generado con éxito!: dist/${info.output} (${sizeMB} MB)`);
@@ -110,9 +141,41 @@ async function buildTarget(key) {
   }
 }
 
+/**
+ * El blob SEA lo genera el Node que esta instalado en la maquina, pero se inyecta
+ * en los binarios base descargados de nodejs.org, que estan fijados a
+ * NODE_VERSION. Si las versiones mayores no coinciden, la compilacion termina
+ * "con exito" y produce binarios que revientan al arrancar, en TODAS las
+ * plataformas a la vez:
+ *
+ *   FATAL ERROR: v8::ToLocalChecked Empty MaybeLocal
+ *     node::sea::LoadSingleExecutableApplication(...)
+ *
+ * Comprobado: blob generado con Node 24 e inyectado en el base v22.15.0 falla
+ * asi; el mismo blob generado con v22.15.0 arranca sin tocar nada mas. Como el
+ * fallo no aparece hasta que alguien ejecuta el binario descargado, se corta
+ * aqui. El workflow de release fija Node 22 justo por esto.
+ */
+function checkHostNodeVersion() {
+  const hostMajor = process.versions.node.split('.')[0];
+  const targetMajor = NODE_VERSION.replace(/^v/, '').split('.')[0];
+  if (hostMajor === targetMajor) return;
+
+  console.error(`\nError: incompatibilidad de versiones de Node.`);
+  console.error(`  Node de esta maquina:  v${process.versions.node} (mayor ${hostMajor})`);
+  console.error(`  Binarios base a usar:  ${NODE_VERSION} (mayor ${targetMajor})`);
+  console.error(`\nEl blob SEA se genera con el Node local y se inyecta en los binarios base.`);
+  console.error(`Con versiones mayores distintas, los ejecutables se generan pero no arrancan.`);
+  console.error(`\nOpciones: usa Node ${targetMajor}.x para compilar, o sube NODE_VERSION en`);
+  console.error(`scripts/build-cross.mjs si quieres publicar con el runtime de esta maquina.\n`);
+  process.exit(1);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const requested = args[0] || 'win-x64';
+
+  checkHostNodeVersion();
 
   console.log('1. Generando bundle de código...');
   execSync('npx --yes esbuild cli/src/cli.js --bundle --platform=node --format=cjs --outfile=dist/bundle.cjs', { stdio: 'inherit' });

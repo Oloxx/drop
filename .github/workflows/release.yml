@@ -1,0 +1,138 @@
+# Publica una release completa al empujar un tag `vX.Y.Z`.
+#
+#   npm version 0.4.1 && git push --follow-tags
+#
+# El grueso se compila en un solo runner de Ubuntu: `scripts/build-cross.mjs`
+# descarga el binario base de Node de cada plataforma e inyecta el blob SEA, asi
+# que no hace falta una matriz de cinco maquinas. La excepcion es macOS, que
+# necesita `codesign` de verdad y por tanto un runner macOS.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Sin esto, `gh release create` responde 403. Es el unico permiso que se amplia:
+# todo lo demas se queda en solo lectura.
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------- controles
+  # Un tag es irreversible de cara a los usuarios: quien tenga `drop update`
+  # apuntando a "latest" se lleva lo que se publique aqui. Asi que antes de
+  # compilar nada se comprueba que la version cuadra y que los tests pasan.
+  verificar:
+    name: Tests y coherencia de version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # La version vive hoy en dos sitios a mano (package.json y la constante
+      # VERSION de cli/src/cli.js). Si divergen, `drop update` compara contra la
+      # constante y los clientes no detectan la actualizacion, o la detectan en
+      # bucle. Mientras eso no se arregle (issue #26), esto lo caza aqui.
+      - name: Comprobar que el tag, package.json y cli.js coinciden
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          CLI=$(node -p "require('fs').readFileSync('cli/src/cli.js','utf8').match(/const VERSION = '([^']+)'/)[1]")
+          echo "tag=$TAG  package.json=$PKG  cli.js=$CLI"
+          if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$CLI" ]; then
+            echo "::error::La version no coincide en los tres sitios. Corrige y vuelve a etiquetar."
+            exit 1
+          fi
+
+      - run: npm ci
+
+      # `test/signaling.test.mjs` se conecta a un servidor que espera ya
+      # levantado. Hasta que la suite arranque el suyo (issue #23), se levanta
+      # aqui y se espera a que /healthz responda.
+      - name: Levantar el servidor de senializacion
+        run: |
+          node server/index.js &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/healthz && break
+            sleep 1
+          done
+
+      - run: npm test
+
+  # ------------------------------------------------------------------- macOS
+  # Aparte porque `codesign` solo existe en macOS. Sin firma, los binarios arm64
+  # no arrancan: el sistema mata el proceso.
+  macos:
+    name: Compilar y firmar binarios de macOS
+    needs: verificar
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - run: npm run build:macos          # Apple Silicon
+      - run: npm run build:macos-x64      # Intel
+
+      - name: Comprobar que la firma es valida
+        run: |
+          for bin in dist/drop-v*-macos-*; do
+            case "$bin" in *.tar.gz) continue;; esac
+            codesign --verify --verbose "$bin"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binarios-macos
+          path: dist/drop-v*-macos-*.tar.gz
+          retention-days: 1
+
+  # ----------------------------------------------------------------- release
+  publicar:
+    name: Compilar el resto y publicar la release
+    needs: [verificar, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - run: npm run build:exe      # Windows x64
+      - run: npm run build:linux    # Linux x64
+      - run: npm run build:arm      # Linux ARM64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binarios-macos
+          path: dist
+
+      # El SHA256SUMS lo verifica `drop update` antes de escribirse encima del
+      # ejecutable en marcha. Tiene que cubrir exactamente los assets que se
+      # publican, con el nombre a secas y sin la ruta.
+      - name: Generar SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum drop-v*.tar.gz drop-v*-windows-x64.exe > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Crear la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/drop-v*.tar.gz \
+            dist/drop-v*-windows-x64.exe \
+            dist/SHA256SUMS \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

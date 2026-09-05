@@ -12,6 +12,7 @@
     "build:linux": "node scripts/build-cross.mjs linux-x64",
     "build:arm": "node scripts/build-cross.mjs linux-arm64",
     "build:macos": "node scripts/build-cross.mjs darwin-arm64",
+    "build:macos-x64": "node scripts/build-cross.mjs darwin-x64",
     "build:all": "node scripts/build-cross.mjs all",
     "install:bin": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
     "test": "node --test test/*.test.mjs",

@@ -45,6 +45,21 @@ Descarga directa de los binarios autónomos (sin necesidad de tener Node.js inst
 * **macOS (Apple Silicon):** [`drop-v0.4.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.4.0/drop-v0.4.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
 * **macOS (Intel):** [`drop-v0.4.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.4.0/drop-v0.4.0-macos-x64.tar.gz)
 
+
+### Verificar la descarga
+
+Cada release publica un `SHA256SUMS` con el hash de todos los binarios. Para comprobar el que has bajado:
+
+```bash
+# Linux / macOS
+sha256sum -c SHA256SUMS --ignore-missing
+
+# Windows (PowerShell)
+Get-FileHash drop-v0.4.0-windows-x64.exe -Algorithm SHA256
+```
+
+`drop update` lo verifica solo antes de sustituir el ejecutable, y aborta si no coincide.
+
 ---
 
 ## 🛠️ Instalación en el Sistema
