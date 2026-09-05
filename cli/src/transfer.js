@@ -7,6 +7,18 @@ import { renderProgressBar } from './ui.js';
 
 const CHUNK_SIZE = 512 * 1024; // 512 KB por bloque para equilibrar streaming y memoria
 
+// El receptor confirma cada 2 MB, igual que el cliente web (`ACK_EVERY` en
+// public/app.js). No es cosmetico: el emisor no manda mas de 8 MB sin confirmar
+// (`MAX_IN_FLIGHT` en cli.js), asi que un receptor que no acuse recibo deja la
+// transferencia parada en seco al llegar a la ventana.
+export const RELAY_ACK_EVERY = 2 * 1024 * 1024;
+
+// Si por el relay no se mueve nada durante este tiempo, se corta con un mensaje.
+// Antes no habia timeout en ningun extremo: un fallo dejaba a los dos colgados sin
+// error y sin salida. Es generoso a proposito, porque el relay tambien se usa en
+// enlaces malos donde un acuse puede tardar de verdad.
+export const RELAY_IDLE_TIMEOUT_MS = 60_000;
+
 /**
  * Empaqueta un buffer con prefijo de longitud de 4 bytes (UInt32BE)
  */
@@ -14,6 +26,43 @@ function frame(buf) {
   const header = Buffer.allocUnsafe(4);
   header.writeUInt32BE(buf.length, 0);
   return Buffer.concat([header, buf]);
+}
+
+/**
+ * Resuelve donde se escribe un archivo del manifiesto dentro de `outputDir`.
+ *
+ * El nombre lo elige el EMISOR, asi que un `path.join(outputDir, name)` a secas es
+ * una escritura arbitraria en el disco del receptor: un manifiesto con
+ * `../../.ssh/authorized_keys` sale del directorio de destino con los permisos de
+ * quien ejecuta `drop recv`. Que el emisor honesto mande siempre `path.basename` no
+ * garantiza nada, porque es el lado equivocado: la comprobacion que vale es esta,
+ * la del lado que escribe.
+ */
+export function safeOutputPath(outputDir, rawName) {
+  // `path.basename` no separa por `\` fuera de Windows y el emisor puede mandar
+  // cualquiera de las dos barras: se normaliza antes de quedarse con el ultimo tramo.
+  const name = typeof rawName === 'string'
+    ? rawName.replace(/\\/g, '/').split('/').pop().trim()
+    : '';
+
+  if (!name || name === '.' || name === '..' || name.includes('\0')) {
+    const err = new Error(`El emisor manda un nombre de archivo no válido: ${JSON.stringify(rawName)}`);
+    err.code = 'UNSAFE_NAME';
+    throw err;
+  }
+
+  const root = path.resolve(outputDir);
+  const dest = path.resolve(root, name);
+
+  // Cinturon y tirantes: quedandonos con el ultimo tramo esto ya no deberia saltar
+  // nunca, pero es la comprobacion que sigue valiendo si alguien toca lo de arriba.
+  if (path.dirname(dest) !== root) {
+    const err = new Error(`El emisor intenta escribir fuera del directorio de destino: ${JSON.stringify(rawName)}`);
+    err.code = 'UNSAFE_NAME';
+    throw err;
+  }
+
+  return dest;
 }
 
 /**
@@ -138,6 +187,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 
     let buffer = Buffer.alloc(0);
     let manifest = null;
+    let destPaths = [];
     let currentFileIndex = 0;
     let currentFd = null;
     let currentFileHash = null;
@@ -204,13 +254,16 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
           if (!manifest && msg.files) {
             manifest = msg;
             totalBytes = manifest.files.reduce((acc, f) => acc + f.size, 0);
+            // Los nombres se validan TODOS aqui, antes de abrir el primer
+            // descriptor: si el manifiesto trae una ruta que se sale del destino,
+            // la transferencia se corta sin haber escrito ni un byte.
+            destPaths = manifest.files.map((f) => safeOutputPath(outputDir, f.name));
             startTime = performance.now();
             if (manifest.files.length > 0) {
-              const f = manifest.files[0];
-              const dest = path.join(outputDir, f.name);
+              const dest = destPaths[0];
               currentFd = await fs.promises.open(dest, 'w');
               currentFileHash = crypto.createHash('sha256');
-              receivedFiles.push({ path: dest, name: f.name, verified: false });
+              receivedFiles.push({ path: dest, name: path.basename(dest), verified: false });
             }
             continue;
           }
@@ -239,11 +292,10 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
             currentFileIndex = msg.index + 1;
             currentFileBytes = 0;
             if (currentFileIndex < manifest.files.length) {
-              const nextF = manifest.files[currentFileIndex];
-              const dest = path.join(outputDir, nextF.name);
+              const dest = destPaths[currentFileIndex];
               currentFd = await fs.promises.open(dest, 'w');
               currentFileHash = crypto.createHash('sha256');
-              receivedFiles.push({ path: dest, name: nextF.name, verified: false });
+              receivedFiles.push({ path: dest, name: path.basename(dest), verified: false });
             }
             continue;
           }
@@ -285,11 +337,10 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
             currentFileBytes = 0;
             currentFileIndex++;
             if (currentFileIndex < manifest.files.length) {
-              const nextF = manifest.files[currentFileIndex];
-              const dest = path.join(outputDir, nextF.name);
+              const dest = destPaths[currentFileIndex];
               currentFd = await fs.promises.open(dest, 'w');
               currentFileHash = crypto.createHash('sha256');
-              receivedFiles.push({ path: dest, name: nextF.name, verified: false });
+              receivedFiles.push({ path: dest, name: path.basename(dest), verified: false });
             }
           }
         }
@@ -322,6 +373,9 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
         const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
         const avgSpeed = totalBytes / totalTimeSec;
         receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
+        // El emisor ya ha cerrado su mitad: cerrar la nuestra o la conexion se queda
+        // a medias y mantiene vivo el proceso de quien use esto como libreria.
+        socket.end();
         resolve(receivedFiles);
       } catch (err) {
         reject(err);
@@ -355,11 +409,33 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
     let startTime = null;
     const receivedFiles = [];
     let writeQueue = Promise.resolve();
+    let lastAckBytes = 0;
+    let idleTimer = null;
 
     fs.mkdirSync(outputDir, { recursive: true });
 
+    const sendSignal = (data) => {
+      try { ws.send(JSON.stringify({ t: 'signal', data })); } catch {}
+    };
+
+    // Reloj de inactividad: se rearma con cada senial de vida del emisor (datos o
+    // control) y solo salta cuando de verdad no llega nada.
+    const armIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        failWithError(new Error(
+          `El emisor ha dejado de enviar: ${Math.round(RELAY_IDLE_TIMEOUT_MS / 1000)}s sin recibir nada por el relay.`
+        ));
+      }, RELAY_IDLE_TIMEOUT_MS);
+      idleTimer.unref?.();
+    };
+
     const cleanup = () => {
       ws.removeEventListener('message', onMsg);
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
       if (currentFd) {
         currentFd.close().catch(() => {});
         currentFd = null;
@@ -367,17 +443,13 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
     };
 
     const failWithError = (err) => {
-      try {
-        ws.send(JSON.stringify({
-          t: 'signal',
-          data: { type: 'cli-error', message: err.message }
-        }));
-      } catch {}
+      sendSignal({ type: 'cli-error', message: err.message });
       cleanup();
       reject(err);
     };
 
     const onMsg = (ev) => {
+      armIdleTimer();
       if (typeof ev.data !== 'string') {
         const data = ev.data;
         if (!startTime) startTime = performance.now();
@@ -398,6 +470,13 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
               lastBytes = totalReceived;
               lastReport = now;
               if (onProgress) onProgress(totalReceived, totalBytes, speed);
+            }
+
+            // Acuse de recibo: sin esto el emisor se para a los 8 MB y los dos
+            // extremos se quedan esperando para siempre.
+            if (totalReceived - lastAckBytes >= RELAY_ACK_EVERY || totalReceived >= totalBytes) {
+              lastAckBytes = totalReceived;
+              sendSignal({ type: 'cli-ack', bytes: totalReceived });
             }
           }
         }).catch(failWithError);
@@ -423,10 +502,9 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
             const idx = data.index || 0;
             currentTarget = manifest[idx] || { name: data.name, size: data.size };
             currentFileHash = crypto.createHash('sha256');
-            const filename = path.basename(data.name || 'archivo');
-            const dest = path.join(outputDir, filename);
+            const dest = safeOutputPath(outputDir, data.name || 'archivo');
             currentFd = await fs.promises.open(dest, 'w');
-            receivedFiles.push({ path: dest, name: filename, verified: false });
+            receivedFiles.push({ path: dest, name: path.basename(dest), verified: false });
           }).catch(failWithError);
         } else if (data?.type === 'cli-end') {
           writeQueue = writeQueue.then(async () => {
@@ -453,6 +531,9 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
               await currentFd.close();
               currentFd = null;
             }
+            // El emisor espera este mensaje para dar la transferencia por buena y
+            // soltar la ventana: se manda con todo ya escrito en disco.
+            sendSignal({ type: 'cli-complete', bytes: totalReceived });
             const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
             const avgSpeed = totalBytes / totalTimeSec;
             receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
@@ -482,9 +563,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
     }, { once: true });
 
     // Notificar al emisor que estamos listos para recibir por Relay
-    ws.send(JSON.stringify({
-      t: 'signal',
-      data: { type: 'cli-accept' }
-    }));
+    armIdleTimer();
+    sendSignal({ type: 'cli-accept' });
   });
 }

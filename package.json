@@ -15,7 +15,7 @@
     "build:macos-x64": "node scripts/build-cross.mjs darwin-x64",
     "build:all": "node scripts/build-cross.mjs all",
     "install:bin": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "bench": "node test/throughput.bench.mjs",
     "bench:fanout": "node test/fanout.bench.mjs",
     "bench:cli": "node test/cli.bench.mjs",
