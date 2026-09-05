@@ -24,6 +24,19 @@
 // `hold`/`go` son contrapresion y solo viajan un salto hacia arriba: un receptor
 // no puede frenar lo que le entra, asi que avisa a quien le alimenta y el aviso
 // sube hasta el emisor.
+//
+// CODIGO DE SALA
+// El codigo es `4271-lemon-radar-tiger-orbit`. Al servidor solo sube `4271`; las
+// cuatro palabras se quedan en esta pestania. Como acertar 4 digitos es cuestion
+// de probar, el emisor no ensenia el manifiesto de archivos a nadie que no
+// demuestre antes que conoce las palabras: manda un nonce (`challenge`) y espera
+// un sha256 de nonce+secreto (`proof`). Ese hash es rapido de calcular, asi que
+// es un verificador offline del secreto -- aqui es aceptable porque los datos ya
+// van cifrados por DTLS con claves efimeras y el codigo es de un solo uso. El
+// CLI no manda nunca esta prueba por el camino TCP directo, donde si hay AES
+// nuestro que proteger. Diseno completo en shared/codes.js.
+
+import { parseCode, randomSecretWords, formatCode, CodeError } from './shared/codes.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -178,6 +191,16 @@ class Sha256 {
     const hash = [this.h0, this.h1, this.h2, this.h3, this.h4, this.h5, this.h6, this.h7];
     return hash.map((v) => (v >>> 0).toString(16).padStart(8, '0')).join('');
   }
+}
+
+/** sha256 hexadecimal de una cadena, con el mismo Sha256 que verifica los archivos. */
+function sha256Hex(text) {
+  return new Sha256().update(new TextEncoder().encode(text)).digest();
+}
+
+/** Misma formula que `secretProof` de cli/src/crypto.js: los dos extremos deben coincidir. */
+function secretProof(nonce, secret) {
+  return sha256Hex(`drop-proof-v2|${nonce}|${secret}`);
 }
 
 function fmtBytes(n) {
@@ -441,7 +464,9 @@ function labelFor(guestId) {
 
 const out = {
   files: [],
-  token: null,
+  roomId: null,       // identificador publico: es lo unico que sabe el servidor
+  secret: null,       // las cuatro palabras: no salen de esta pestania
+  code: null,         // `roomId-palabras`, lo que ve y dicta el usuario
   peers: new Map(),   // guestId -> conn
   nextLabel: 1,
   ready: [],          // han aceptado y esperan a que se forme la cadena
@@ -459,7 +484,7 @@ function renderFileList() {
     const li = document.createElement('li');
     li.innerHTML =
       '<span class="name"></span><span class="size"></span><span class="badge" hidden></span>' +
-      (out.token ? '' : '<button class="drop-one" title="Remove">×</button>');
+      (out.code ? '' : '<button class="drop-one" title="Remove">×</button>');
     li.querySelector('.name').textContent = file.name;
     li.querySelector('.size').textContent = fmtBytes(file.size);
     if (file.sha256) {
@@ -472,8 +497,9 @@ function renderFileList() {
     if (del) del.onclick = () => { out.files.splice(i, 1); renderFileList(); };
     list.appendChild(li);
   }
-  $('#send-actions').hidden = out.files.length === 0 || !!out.token;
-  $('#drop').hidden = !!out.token;
+  $('#send-actions').hidden = out.files.length === 0 || !!out.code;
+  $('#drop').hidden = !!out.code;
+  $('#join-box').hidden = !!out.code;
 }
 
 function addFiles(fileList) {
@@ -489,7 +515,9 @@ async function createLink() {
   $('#create-link').disabled = true;
   try {
     await connectSignaling();
-    wsSend({ t: 'host' });
+    // `v:2` pide un identificador de sala corto en vez del token largo de la
+    // v0.3.5. El servidor sigue sirviendo el formato viejo a quien no lo pida.
+    wsSend({ t: 'host', v: 2 });
   } catch (err) {
     $('#create-link').disabled = false;
     setStatus('no route to the server', 'bad');
@@ -497,12 +525,17 @@ async function createLink() {
 }
 
 function shareUrl() {
-  return location.origin + location.pathname + '#' + out.token;
+  return location.origin + location.pathname + '#' + out.code;
 }
 
-function onHosted(token) {
-  out.token = token;
+function onHosted(roomId) {
+  // El servidor nos ha dado la sala; las palabras las sorteamos aqui con
+  // `crypto.getRandomValues` y nunca se las mandamos de vuelta.
+  out.roomId = roomId;
+  out.secret = randomSecretWords().join('-');
+  out.code = formatCode(roomId, out.secret.split('-'));
   $('#ticket').hidden = false;
+  $('#code-out').value = out.code;
   $('#link-out').value = shareUrl();
   renderFileList();
   setStatus('channel open · waiting for peer', 'live');
@@ -546,17 +579,41 @@ function onGuestJoined(guestId) {
   };
 
   conn.dc.onopen = () => {
-    row.state('awaiting ack…');
-    conn.dc.send(JSON.stringify({
-      k: 'manifest',
-      files: out.files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
-    }));
+    // Todavia no le ensenamos que archivos hay: primero que demuestre que sabe
+    // las palabras. Acertar la sala son 4 digitos, y los nombres de archivo ya
+    // son informacion. El nonce es nuevo por receptor.
+    row.state('verifying code…');
+    conn.nonce = [...crypto.getRandomValues(new Uint8Array(16))]
+      .map((b) => b.toString(16).padStart(2, '0')).join('');
+    conn.dc.send(JSON.stringify({ k: 'challenge', nonce: conn.nonce }));
   };
 
   conn.dc.onmessage = (ev) => {
     if (typeof ev.data !== 'string') return;
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.k === 'proof') {
+      if (!conn.nonce) return;
+      if (msg.proof !== secretProof(conn.nonce, out.secret)) {
+        // No sabe las palabras: se le echa y se avisa al servidor, que quema la
+        // sala si esto se repite (alguien esta probando codigos contra ella).
+        conn.nonce = null;
+        conn.cancelled = true;
+        conn.rejected = true;
+        row.fail('wrong code');
+        wsSend({ t: 'bad-guest', guestId });
+        try { conn.dc.close(); } catch { /* ya estaba cerrado */ }
+        return;
+      }
+      conn.nonce = null;
+      row.state('awaiting ack…');
+      conn.dc.send(JSON.stringify({
+        k: 'manifest',
+        files: out.files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
+      }));
+      return;
+    }
+    if (conn.nonce) return;      // nada de protocolo antes de la prueba
     if (msg.k === 'accept') queueForStart(conn);
     else if (msg.k === 'ack') { conn.acked = msg.bytes; row.progress(msg.bytes, totalBytes()); }
     else if (msg.k === 'complete') { conn.acked = totalBytes(); row.file(''); row.finish('delivered'); }
@@ -758,7 +815,9 @@ function dropPeer(guestId, why) {
   const queued = out.ready.indexOf(conn);
   if (queued !== -1) out.ready.splice(queued, 1);
   if (conn.acked >= totalBytes() && totalBytes() > 0) conn.row.finish('delivered');
-  else conn.row.fail(why);
+  // A quien echamos por no saber el codigo ya le hemos puesto su motivo: si lo
+  // pisamos con 'gone' el emisor no llega a ver por que se fue.
+  else if (!conn.rejected) conn.row.fail(why);
   conn.pc.close();
   out.peers.delete(guestId);
   repairChain(conn);
@@ -789,6 +848,8 @@ function repairChain(dead) {
 
 const rx = {
   guestId: 0,
+  secret: null,       // las palabras del codigo: solo viven aqui
+  code: null,
   links: new Map(),   // peerId -> conn  (0 es el emisor)
   host: null,         // dc de control con el emisor: nunca se sustituye
   up: null,           // conn por la que nos entran los bytes (emisor u otro receptor)
@@ -830,24 +891,50 @@ function makeLink(peerId) {
   return conn;
 }
 
-async function joinRoom(token) {
+/**
+ * Entra en una sala a partir del codigo completo. Al servidor solo sube el
+ * identificador publico: las palabras se guardan aqui para responder al reto del
+ * emisor y no se mandan por ningun sitio.
+ */
+function joinWithCode(code) {
+  const parsed = parseCode(code);     // lanza CodeError si no cuadra, antes de tocar la red
+  rx.code = parsed.code;
+  rx.secret = parsed.secret;
+  showView('recv');
+  return connectAndJoin(parsed);
+}
+
+async function connectAndJoin(parsed) {
+  $('#recv-title').textContent = 'handshake…';
   $('#join-error').hidden = true;
+  $('#retry-box').hidden = true;
   try {
     await connectSignaling();
-    wsSend({ t: 'join', token });
+    wsSend({ t: 'join', token: parsed.roomId });
     setStatus('locating peer…');
   } catch {
     onJoinError('NO_SERVER');
   }
 }
 
+const JOIN_ERRORS = {
+  NOT_FOUND: 'Channel closed: the sender shut their tab, or the code is wrong. Ask for a fresh one.',
+  RATE_LIMITED: 'Too many failed attempts from this network. Wait a minute and try again.',
+  BAD_SECRET: 'The sender rejected the code: the words do not match.',
+  BURNED: 'The room was closed after several wrong codes.',
+};
+
 function onJoinError(reason) {
+  if (out.code) {
+    // Somos el emisor: el servidor nos avisa de que ha cerrado la sala.
+    setStatus(reason === 'BURNED' ? 'room closed · wrong codes tried' : 'server error', 'bad');
+    return;
+  }
   $('#recv-title').textContent = 'dead link';
   const el = $('#join-error');
   el.hidden = false;
-  el.textContent = reason === 'NOT_FOUND'
-    ? 'Channel closed: the sender shut their tab. Ask them for a new link.'
-    : 'No route to the server.';
+  el.textContent = JOIN_ERRORS[reason] || 'No route to the server.';
+  $('#retry-box').hidden = false;
   setStatus('offline', 'bad');
 }
 
@@ -997,6 +1084,11 @@ function recoverUpstream() {
 
 function onControl(msg) {
   switch (msg.k) {
+    // El emisor no ensenia nada hasta que demostramos que sabemos las palabras.
+    case 'challenge':
+      sendHost({ k: 'proof', proof: secretProof(msg.nonce, rx.secret || '') });
+      break;
+
     case 'manifest':
       rx.manifest = msg.files;
       rx.total = msg.files.reduce((sum, f) => sum + f.size, 0);
@@ -1287,9 +1379,23 @@ async function acceptTransfer() {
 function routeSignal(from, data) {
   if (data.type === 'cli-offer') {
     rx.isCli = true;
-    rx.manifest = data.manifest;
-    rx.total = data.manifest.reduce((sum, f) => sum + f.size, 0);
-    showOffer(data.manifest);
+    // @deprecated Un emisor v0.3.5 manda el manifiesto de una vez, sin reto.
+    if (data.manifest) {
+      rx.manifest = data.manifest;
+      rx.total = data.manifest.reduce((sum, f) => sum + f.size, 0);
+      showOffer(data.manifest);
+      setStatus('channel ready · CLI host', 'live');
+      return;
+    }
+    // Emisor v0.4.0: la oferta viene sin nombres de archivo y con un nonce.
+    setStatus('verifying code…', 'live');
+    wsSend({ t: 'signal', data: { type: 'cli-proof', proof: secretProof(data.nonce || '', rx.secret || '') } });
+    return;
+  }
+  if (data.type === 'cli-manifest') {
+    rx.manifest = data.manifest || [];
+    rx.total = rx.manifest.reduce((sum, f) => sum + f.size, 0);
+    showOffer(rx.manifest);
     setStatus('channel ready · CLI host', 'live');
     return;
   }
@@ -1358,12 +1464,66 @@ $('#link-out').onclick = (e) => e.currentTarget.select();
 $('#restart').onclick = () => location.reload();
 $('#accept').onclick = acceptTransfer;
 
-// El token viaja en el fragmento (#...), que el navegador nunca manda al servidor:
-// no queda en sus logs ni en el Referer. Si lo hay, esto es una descarga.
-const token = location.hash.slice(1).replace(/[^A-Za-z0-9_-]/g, '');
-if (token) {
+// ------------------------------------------------------- entrada del codigo
+
+/** Enseña el error de un codigo mal escrito donde el usuario lo esta tecleando. */
+function showCodeError(el, err) {
+  if (!(err instanceof CodeError)) { console.error('drop:', err); return; }
+  el.hidden = false;
+  el.textContent = err.message;
+}
+
+$('#join-form').onsubmit = (e) => {
+  e.preventDefault();
+  const errEl = $('#code-error');
+  errEl.hidden = true;
+  try {
+    joinWithCode($('#code-in').value);
+  } catch (err) {
+    showCodeError(errEl, err);
+  }
+};
+
+$('#retry-form').onsubmit = (e) => {
+  e.preventDefault();
+  const errEl = $('#join-error');
+  errEl.hidden = true;
+  try {
+    joinWithCode($('#retry-code').value);
+  } catch (err) {
+    showCodeError(errEl, err);
+  }
+};
+
+$('#copy-code').onclick = (e) => copy(out.code, e.currentTarget, 'Copy the code:');
+$('#code-out').onclick = (e) => e.currentTarget.select();
+
+// El codigo viaja en el fragmento (#...), que el navegador nunca manda al
+// servidor: no queda en sus logs ni en el Referer. Y ahi va ENTERO, palabras
+// incluidas, porque el enlace es justo el atajo para no tener que dictarlas.
+// Si lo hay, esto es una descarga.
+// El filtro deja pasar letras, digitos y guiones: el formato nuevo
+// (`4271-lemon-radar-tiger-orbit`) y el token base64url viejo. `parseCode` ya
+// normaliza mayusculas, acentos y separadores raros.
+let fragment = location.hash.slice(1);
+try { fragment = decodeURIComponent(fragment); } catch { /* %-escapes rotos: se usa tal cual */ }
+fragment = fragment.replace(/[^A-Za-z0-9_\- ]/g, '');
+if (fragment) {
   showView('recv');
-  joinRoom(token);
+  try {
+    joinWithCode(fragment);
+  } catch (err) {
+    // Enlace con el codigo mal copiado: se enseña el motivo y se deja el campo
+    // relleno para que solo haya que arreglar la palabra que falla.
+    if (!(err instanceof CodeError)) throw err;
+    $('#recv-title').textContent = 'bad code';
+    const el = $('#join-error');
+    el.hidden = false;
+    el.textContent = err.message;
+    $('#retry-box').hidden = false;
+    $('#retry-code').value = fragment;
+    setStatus('offline', 'bad');
+  }
 }
 
 // Enganche para el bench (app.js es un modulo: sin esto no hay forma de mirar el

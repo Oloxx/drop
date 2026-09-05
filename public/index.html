@@ -39,14 +39,33 @@
     </div>
 
     <div class="ticket" id="ticket" hidden>
-      <p class="label">one-time link</p>
+      <p class="label">one-time code · read it out loud</p>
+      <div class="link-box">
+        <input id="code-out" class="code" readonly spellcheck="false" aria-label="Code to share">
+        <button class="primary" id="copy-code">copy</button>
+      </div>
+      <p class="label">…or the link</p>
       <div class="link-box">
         <input id="link-out" readonly spellcheck="false" aria-label="Link to share">
-        <button class="primary" id="copy-link">copy</button>
+        <button class="ghost" id="copy-link">copy</button>
       </div>
-      <p class="hint">Keep this tab open until the transfers finish. Any number of peers can ride
-        the same link, each on its own channel.</p>
+      <p class="hint">The four words never reach the server: only the leading number does.
+        Keep this tab open until the transfers finish. Any number of peers can ride
+        the same code, each on its own channel.</p>
       <button class="ghost" id="restart">new payload</button>
+    </div>
+
+    <!-- Recibir tecleando el codigo: es lo que habilita un codigo memorizable.
+         Antes solo se podia recibir abriendo un enlace. -->
+    <div class="ticket" id="join-box">
+      <p class="label">…or receive: type the code you were given</p>
+      <form class="link-box" id="join-form">
+        <input id="code-in" class="code" spellcheck="false" autocomplete="off"
+               autocapitalize="off" placeholder="4271-lemon-radar-tiger-orbit"
+               aria-label="Code to receive">
+        <button class="primary" type="submit">connect</button>
+      </form>
+      <p class="error" id="code-error" hidden></p>
     </div>
 
     <div class="peers" id="peers"></div>
@@ -56,6 +75,16 @@
   <section class="view" data-name="recv">
     <h1><span class="prompt">❯</span> <span id="recv-title">handshake…</span></h1>
     <p class="error" id="join-error" hidden></p>
+
+    <div class="ticket" id="retry-box" hidden>
+      <p class="label">type the code again</p>
+      <form class="link-box" id="retry-form">
+        <input id="retry-code" class="code" spellcheck="false" autocomplete="off"
+               autocapitalize="off" placeholder="4271-lemon-radar-tiger-orbit"
+               aria-label="Code to receive">
+        <button class="primary" type="submit">connect</button>
+      </form>
+    </div>
 
     <div id="offer" hidden>
       <p class="label" id="offer-title">inbound</p>

@@ -128,6 +128,9 @@ async function start() {
   try {
     await connectSignaling();
     conn.isHost = true;
+    // Sin `v:2`: aqui no hay codigo que dictar (la sala se comparte por enlace) y
+    // tampoco secreto que proteger, asi que interesa el identificador largo e
+    // inadivinable de siempre en vez de los 4 digitos publicos de `drop send`.
     wsSend({ t: 'host' });
   } catch (err) {
     $('#start').disabled = false;

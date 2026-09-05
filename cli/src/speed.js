@@ -5,6 +5,7 @@ import { deriveKey, encryptChunk, decryptChunk } from './crypto.js';
 import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom } from './signaling.js';
 import { mapPort } from './upnp.js';
+import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 
 const TCP_CHUNK_SIZE = 256 * 1024;    // 256 KB por bloque para máxima velocidad en TCP
 const RELAY_CHUNK_SIZE = 64 * 1024;   // 64 KB por bloque para streaming óptimo en WebSocket
@@ -56,10 +57,10 @@ function createRelayPacketPool(guestId, isHost, count = 8) {
  * Canal de prueba de velocidad sobre conexión TCP directa
  */
 export class TcpSpeedChannel {
-  constructor(socket, token, isHost, pathDesc) {
+  constructor(socket, code, isHost, pathDesc) {
     this.socket = socket;
-    this.token = token;
-    this.key = deriveKey(token);
+    this.code = code;
+    this.key = deriveKey(code);
     this.isHost = isHost;
     this.pathDesc = pathDesc;
     this.type = 'tcp';
@@ -595,7 +596,7 @@ export async function runSpeedHost(options = {}) {
 
   let broadcaster = null;
   let ws = null;
-  let token = null;
+  let roomId = null;
 
   const tcpServer = net.createServer();
   await new Promise((resolve) => tcpServer.listen(options.port || 0, '0.0.0.0', resolve));
@@ -617,20 +618,27 @@ export async function runSpeedHost(options = {}) {
 
   try {
     ws = await connectSignaling(serverUrl);
-    token = await createRoom(ws);
+    roomId = await createRoom(ws);
   } catch (err) {
-    token = Math.random().toString(36).slice(2, 10);
+    // Igual que en `drop send`: sin servidor sorteamos nosotros el identificador,
+    // con `randomBytes` y no con `Math.random()`, porque de este código sale la
+    // sal del KDF que cifra el canal de control del test.
+    roomId = randomRoomId(crypto.randomBytes);
     console.log(`  ${c.yellow}Aviso: Sin conexión con el servidor. Operando en modo LAN local pura.${c.reset}`);
   }
 
+  // Las palabras se generan aquí y no salen de esta máquina: al servidor y al
+  // broadcast de la LAN solo va el identificador público.
+  const code = newCode(roomId, crypto.randomBytes);
+
   if (!options.relay) {
-    broadcaster = startBroadcasting(token, tcpPort);
+    broadcaster = startBroadcasting(code, tcpPort);
   }
 
   console.log(`  ${c.green}✔ Canal de prueba abierto.${c.reset}`);
-  console.log(`  ${c.bold}Código:${c.reset}  ${c.cyan}${token}${c.reset}`);
+  console.log(`  ${c.bold}Código:${c.reset}  ${c.cyan}${c.bold}${code}${c.reset}`);
   console.log(`  ${c.bold}Comando en el segundo cliente:${c.reset}`);
-  console.log(`    ${c.yellow}drop speed ${token}${options.relay ? ' --relay' : ''}${c.reset}\n`);
+  console.log(`    ${c.yellow}drop speed ${code}${options.relay ? ' --relay' : ''}${c.reset}\n`);
   console.log(`  ${c.dim}Esperando a que el segundo cliente CLI se conecte...${c.reset}\n`);
 
   let activeChannel = null;
@@ -650,15 +658,19 @@ export async function runSpeedHost(options = {}) {
         ? `Directa TCP (LAN/Loopback - ${socket.remoteAddress})`
         : `Directa TCP (Internet/P2P - ${socket.remoteAddress})`;
 
-      const ch = new TcpSpeedChannel(socket, token, true, pathDesc);
+      const ch = new TcpSpeedChannel(socket, code, true, pathDesc);
 
-      // Esperar handshake 'hello' del cliente para validar el token
+      // Handshake 'hello'. Lo que autentica de verdad no es el contenido del
+      // mensaje sino que llegue: el marco de control va cifrado con AES-256-GCM
+      // derivado del código, así que quien no sepa las palabras no consigue que
+      // se descifre ni un byte. Dentro solo va el identificador público de sala,
+      // nunca el secreto, para no dejarlo escrito ni en un buffer de más.
       const handshakeTimer = setTimeout(() => {
         ch.close();
       }, 3500);
 
       const unsub = ch.onControl((msg) => {
-        if (msg.k === 'hello' && msg.token === token) {
+        if (msg.k === 'hello' && msg.room === roomId) {
           clearTimeout(handshakeTimer);
           unsub();
           ch.sendControl({ k: 'welcome' });
@@ -750,7 +762,19 @@ export async function runSpeedHost(options = {}) {
 }
 
 export async function runSpeedGuest(input, options = {}) {
-  const token = input.includes('#') ? input.split('#')[1].trim() : input.trim();
+  // Validar el código antes de tocar la red, igual que en `drop recv`.
+  let parsed;
+  try {
+    parsed = parseCode(input);
+  } catch (err) {
+    if (err instanceof CodeError) {
+      console.error(`\n${c.red}Código inválido:${c.reset} ${err.message}\n`);
+      process.exit(1);
+    }
+    throw err;
+  }
+  const code = parsed.code;
+  const roomId = parsed.roomId;
   const durationSec = Math.max(1, parseInt(options.time || 5, 10));
   const serverUrl = options.server || process.env.DROP_SERVER || 'https://drop.oloxx.dev';
   const directOnly = options.directOnly || false;
@@ -759,7 +783,7 @@ export async function runSpeedGuest(input, options = {}) {
   console.log(`  ${c.cyan}drop speed${c.reset} — ${c.bold}Medidor de Velocidad de Transferencia P2P${c.reset}`);
   console.log(`${c.bold}================================================================${c.reset}\n`);
 
-  console.log(`  ${c.dim}Buscando anfitrión para el código:${c.reset} ${c.cyan}${token}${c.reset}`);
+  console.log(`  ${c.dim}Buscando anfitrión para el código:${c.reset} ${c.cyan}${code}${c.reset}`);
 
   const forceRelay = options.relay || Boolean(process.env.DROP_FORCE_RELAY);
 
@@ -767,7 +791,7 @@ export async function runSpeedGuest(input, options = {}) {
   let target = null;
   if (!forceRelay) {
     process.stdout.write(`  ${c.dim}Explorando red local (LAN)...${c.reset}`);
-    target = await listenForLAN(token, 1200);
+    target = await listenForLAN(code, 1200);
   }
 
   if (target) {
@@ -781,7 +805,7 @@ export async function runSpeedGuest(input, options = {}) {
       socket.on('error', reject);
     });
 
-    const channel = new TcpSpeedChannel(socket, token, false, pathDesc);
+    const channel = new TcpSpeedChannel(socket, code, false, pathDesc);
 
     // Handshake de autenticación con el anfitrión
     await new Promise((resolve, reject) => {
@@ -793,7 +817,7 @@ export async function runSpeedGuest(input, options = {}) {
           resolve();
         }
       });
-      channel.sendControl({ k: 'hello', token });
+      channel.sendControl({ k: 'hello', room: roomId });
     });
 
     const onExit = () => { channel.close(); process.exit(0); };
@@ -817,7 +841,7 @@ export async function runSpeedGuest(input, options = {}) {
   try {
     ws = await connectSignaling(serverUrl);
     ws.binaryType = 'arraybuffer';
-    await joinRoom(ws, token);
+    await joinRoom(ws, roomId);
 
     offer = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Tiempo de espera agotado esperando datos del anfitrión')), 10000);
@@ -875,7 +899,7 @@ export async function runSpeedGuest(input, options = {}) {
       ? `Directa TCP (${connectedIP}:${port})`
       : `Directa TCP (Internet/P2P - ${connectedIP}:${port})`;
     console.log(`  ${c.green}✔ Conectado por TCP directo:${c.reset} ${pathDesc}\n`);
-    const channel = new TcpSpeedChannel(tcpSocket, token, false, pathDesc);
+    const channel = new TcpSpeedChannel(tcpSocket, code, false, pathDesc);
 
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Timeout en handshake de autenticación TCP')), 3500);
@@ -886,7 +910,7 @@ export async function runSpeedGuest(input, options = {}) {
           resolve();
         }
       });
-      channel.sendControl({ k: 'hello', token });
+      channel.sendControl({ k: 'hello', room: roomId });
     });
 
     const onExit = () => { channel.close(); process.exit(0); };
