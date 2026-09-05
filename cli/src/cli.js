@@ -476,7 +476,11 @@ async function runSend(args, options) {
   let upnpPromise = null;
   let upnpResult = null;
   if (!forceRelay && !process.env.DROP_NO_UPNP) {
-    upnpPromise = mapPort(tcpPort, options.port || tcpPort, 'drop-send')
+    upnpPromise = mapPort(tcpPort, options.port || tcpPort, 'drop-send', 7200, {
+      onRenewError: (err) => {
+        console.warn(`\n  ${c.yellow}Aviso: Falló la renovación periódica UPnP en router (${err.message}). Se reintentará...${c.reset}`);
+      }
+    })
       .then((res) => {
         if (res?.success) {
           upnpResult = res;
@@ -836,8 +840,13 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   console.log(`  ${c.dim}Canal abierto permanentemente. Presiona ${c.bold}Ctrl + C${c.reset}${c.dim} para cerrarlo cuando hayas terminado.${c.reset}\n`);
 
   await new Promise(() => {
-    const onExit = async () => {
-      console.log(`\n\n  ${c.yellow}Cerrando canal de transferencia...${c.reset}`);
+    let closing = false;
+    const onExit = async (exitCode = 0) => {
+      if (closing) return;
+      closing = true;
+      if (exitCode === 0) {
+        console.log(`\n\n  ${c.yellow}Cerrando canal de transferencia...${c.reset}`);
+      }
       if (broadcaster) broadcaster.stop();
       if (ws) {
         try { ws.close(); } catch {}
@@ -846,12 +855,27 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
       if (upnpResult?.unmap) {
         try { await upnpResult.unmap(); } catch {}
       }
-      console.log(`  ${c.green}✔ ¡Canal cerrado con éxito!${c.reset}\n`);
-      process.exit(0);
+      if (exitCode === 0) {
+        console.log(`  ${c.green}✔ ¡Canal cerrado con éxito!${c.reset}\n`);
+      }
+      process.exit(exitCode);
     };
 
-    process.on('SIGINT', onExit);
-    process.on('SIGTERM', onExit);
+    process.on('SIGINT', () => onExit(0));
+    process.on('SIGTERM', () => onExit(0));
+    process.on('uncaughtException', async (err) => {
+      console.error(`\n  ${c.red}Error no capturado:${c.reset}`, err);
+      await onExit(1);
+    });
+    process.on('unhandledRejection', async (reason) => {
+      console.error(`\n  ${c.red}Promesa rechazada no capturada:${c.reset}`, reason);
+      await onExit(1);
+    });
+    process.on('exit', () => {
+      if (upnpResult?.unmapSync) {
+        try { upnpResult.unmapSync(); } catch {}
+      }
+    });
   });
 }
 
