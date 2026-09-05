@@ -2,10 +2,10 @@
 #
 #   npm version 0.4.1 && git push --follow-tags
 #
-# El grueso se compila en un solo runner de Ubuntu: `scripts/build-cross.mjs`
-# descarga el binario base de Node de cada plataforma e inyecta el blob SEA, asi
-# que no hace falta una matriz de cinco maquinas. La excepcion es macOS, que
-# necesita `codesign` de verdad y por tanto un runner macOS.
+# Cada binario se EJECUTA en su plataforma nativa antes de publicarse. No es
+# ceremonia: la v0.4.0 se publico con los cinco ejecutables rotos porque el
+# workflow solo comprobaba que los archivos existieran. Un binario que no se ha
+# arrancado nunca no esta verificado, por muy verde que salga el job.
 
 name: Release
 
@@ -14,16 +14,12 @@ on:
     tags:
       - 'v*'
 
-# Sin esto, `gh release create` responde 403. Es el unico permiso que se amplia:
-# todo lo demas se queda en solo lectura.
+# Sin esto, `gh release create` responde 403. Es el unico permiso que se amplia.
 permissions:
   contents: write
 
 jobs:
   # ---------------------------------------------------------------- controles
-  # Un tag es irreversible de cara a los usuarios: quien tenga `drop update`
-  # apuntando a "latest" se lleva lo que se publique aqui. Asi que antes de
-  # compilar nada se comprueba que la version cuadra y que los tests pasan.
   verificar:
     name: Tests y coherencia de version
     runs-on: ubuntu-latest
@@ -34,7 +30,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      # La version vive hoy en dos sitios a mano (package.json y la constante
+      # La version vive en dos sitios a mano (package.json y la constante
       # VERSION de cli/src/cli.js). Si divergen, `drop update` compara contra la
       # constante y los clientes no detectan la actualizacion, o la detectan en
       # bucle. Mientras eso no se arregle (issue #26), esto lo caza aqui.
@@ -65,12 +61,21 @@ jobs:
       - run: npm test
 
   # ------------------------------------------------------------------- macOS
-  # Aparte porque `codesign` solo existe en macOS. Sin firma, los binarios arm64
-  # no arrancan: el sistema mata el proceso.
+  # Un runner por arquitectura, para poder EJECUTAR lo que se compila. macOS
+  # necesita ademas `codesign`, que solo existe aqui: sin firma los binarios
+  # arm64 ni arrancan.
   macos:
-    name: Compilar y firmar binarios de macOS
+    name: macOS ${{ matrix.target }}
     needs: verificar
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-latest    # Apple Silicon
+          - target: darwin-x64
+            runner: macos-13        # Intel
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -79,26 +84,25 @@ jobs:
           cache: npm
       - run: npm ci
 
-      - run: npm run build:macos          # Apple Silicon
-      - run: npm run build:macos-x64      # Intel
+      - run: node scripts/build-cross.mjs ${{ matrix.target }}
 
-      - name: Comprobar que la firma es valida
+      - name: Comprobar firma y ejecutar el binario
         run: |
-          for bin in dist/drop-v*-macos-*; do
-            case "$bin" in *.tar.gz) continue;; esac
-            codesign --verify --verbose "$bin"
-          done
+          BIN=$(ls dist/drop-v*-macos-* | grep -v '\.tar\.gz$')
+          codesign --verify --verbose "$BIN"
+          "$BIN" --version
+          "$BIN" --help > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:
-          name: binarios-macos
-          path: dist/drop-v*-macos-*.tar.gz
+          name: bin-${{ matrix.target }}
+          path: dist/drop-v*.tar.gz
           retention-days: 1
 
-  # ----------------------------------------------------------------- release
-  publicar:
-    name: Compilar el resto y publicar la release
-    needs: [verificar, macos]
+  # ------------------------------------------------------------------- Linux
+  linux:
+    name: Linux (x64 y arm64)
+    needs: verificar
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,22 +112,81 @@ jobs:
           cache: npm
       - run: npm ci
 
-      - run: npm run build:exe      # Windows x64
-      - run: npm run build:linux    # Linux x64
-      - run: npm run build:arm      # Linux ARM64
+      - run: npm run build:linux
+      - run: npm run build:arm
 
+      # El de arm64 no se puede ejecutar en un runner x64 sin emulacion, asi que
+      # queda sin probar. Es la unica plataforma que se publica a ciegas.
+      - name: Ejecutar el binario de x64
+        run: |
+          BIN=$(ls dist/drop-v*-linux-x64 | grep -v '\.tar\.gz$')
+          chmod +x "$BIN"
+          "$BIN" --version
+          "$BIN" --help > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-linux
+          path: dist/drop-v*.tar.gz
+          retention-days: 1
+
+  # ----------------------------------------------------------------- Windows
+  windows:
+    name: Windows x64
+    needs: verificar
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - run: npm run build:exe
+
+      - name: Ejecutar el binario
+        run: |
+          $bin = Get-ChildItem dist/drop-v*-windows-x64.exe | Select-Object -First 1
+          & $bin.FullName --version
+          & $bin.FullName --help | Out-Null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-windows
+          path: dist/drop-v*-windows-x64.exe
+          retention-days: 1
+
+  # ----------------------------------------------------------------- release
+  publicar:
+    name: Publicar la release
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
       - uses: actions/download-artifact@v4
         with:
-          name: binarios-macos
-          path: dist
+          path: artefactos
+          merge-multiple: true
+
+      - name: Reunir los assets
+        run: |
+          mkdir -p dist
+          find artefactos -type f \( -name 'drop-v*.tar.gz' -o -name 'drop-v*.exe' \) -exec mv {} dist/ \;
+          ls -la dist
+          # Cinco assets exactos: si falta uno, algo se perdio por el camino y es
+          # mejor no publicar una release incompleta.
+          COUNT=$(ls dist | wc -l)
+          if [ "$COUNT" -ne 5 ]; then
+            echo "::error::Se esperaban 5 binarios y hay $COUNT."
+            exit 1
+          fi
 
       # El SHA256SUMS lo verifica `drop update` antes de escribirse encima del
-      # ejecutable en marcha. Tiene que cubrir exactamente los assets que se
-      # publican, con el nombre a secas y sin la ruta.
+      # ejecutable en marcha. Nombres a secas, sin ruta.
       - name: Generar SHA256SUMS
         working-directory: dist
         run: |
-          sha256sum drop-v*.tar.gz drop-v*-windows-x64.exe > SHA256SUMS
+          sha256sum drop-v* > SHA256SUMS
           cat SHA256SUMS
 
       - name: Crear la release
@@ -131,8 +194,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/drop-v*.tar.gz \
-            dist/drop-v*-windows-x64.exe \
+            dist/drop-v* \
             dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
