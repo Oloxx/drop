@@ -186,18 +186,18 @@ test('TCP transfer calculates SHA-256 and verifies file integrity', async () => 
   const hash1 = crypto.createHash('sha256').update(content1).digest('hex');
   const hash2 = crypto.createHash('sha256').update(content2).digest('hex');
 
-  const token = 'test-token-integrity';
+  const code = '4271-lemon-radar-tiger-orbit';
   const files = [
     { path: file1Path, size: content1.length },
     { path: file2Path, size: content2.length },
   ];
 
-  const server = createSenderServer(files, token);
+  const server = createSenderServer(files, code);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
 
   try {
-    const received = await receiveFiles('127.0.0.1', port, token, outDir);
+    const received = await receiveFiles('127.0.0.1', port, code, outDir);
     assert.equal(received.length, 2);
 
     assert.equal(received[0].verified, true);
@@ -224,10 +224,10 @@ test('TCP transfer detects corrupted chunks and triggers INTEGRITY_MISMATCH', as
   const content1 = Buffer.alloc(100 * 1024, 0x11);
   fs.writeFileSync(file1Path, content1);
 
-  const token = 'test-token-corrupt';
+  const code = '5310-cargo-velvet-jungle-anchor';
 
   // Spin up a server that intentionally sends a wrong SHA-256 in the end packet
-  const key = (await import('../cli/src/crypto.js')).deriveKey(token);
+  const key = (await import('../cli/src/crypto.js')).deriveKey(code);
   const { encryptChunk } = await import('../cli/src/crypto.js');
   const net = await import('node:net');
 
@@ -259,7 +259,7 @@ test('TCP transfer detects corrupted chunks and triggers INTEGRITY_MISMATCH', as
   try {
     await assert.rejects(
       async () => {
-        await receiveFiles('127.0.0.1', port, token, outDir);
+        await receiveFiles('127.0.0.1', port, code, outDir);
       },
       (err) => {
         assert.equal(err.code, 'INTEGRITY_MISMATCH');

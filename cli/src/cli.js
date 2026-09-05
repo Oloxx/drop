@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import readline from 'node:readline';
@@ -8,12 +9,14 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
-import { connectSignaling, createRoom, joinRoom, getSignalingUrl } from './signaling.js';
+import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
 import { createSenderServer, receiveFiles, receiveFromRelay } from './transfer.js';
+import { secretProof } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
+import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 
-const VERSION = '0.3.5';
+const VERSION = '0.4.0';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -341,12 +344,20 @@ ${c.bold}OPCIONES:${c.reset}
   -h, --help             Muestra esta ayuda
   -v, --version          Muestra la versión
 
+${c.bold}EL CÓDIGO:${c.reset}
+  ${c.cyan}4271-lemon-radar-tiger-orbit${c.reset}
+  ${c.dim}El número identifica la sala y es lo único que ve el servidor. Las cuatro
+  palabras son el secreto del que sale el cifrado y no salen de tu equipo.
+  Al teclearlo da igual usar mayúsculas, espacios en vez de guiones o solo las
+  4 primeras letras de cada palabra: 4271-lemo-rada-tige-orbi vale igual.${c.reset}
+
 ${c.bold}EJEMPLOS:${c.reset}
   drop send video.mp4
-  drop recv 7x9y-z8w2
+  drop recv 4271-lemon-radar-tiger-orbit
+  drop recv https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
   drop speed
-  drop speed 7x9y-z8w2
-  drop speed 7x9y-z8w2 -t 10
+  drop speed 4271-lemon-radar-tiger-orbit
+  drop speed 4271-lemon-radar-tiger-orbit -t 10
   drop update
 `);
 }
@@ -376,16 +387,17 @@ async function runSend(args, options) {
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
   console.log(`\n${c.bold}Preparando envío:${c.reset} ${files.length} archivo(s) · ${c.cyan}${fmtBytes(totalBytes)}${c.reset}`);
 
-  // 1. Iniciar servidor TCP en puerto efímero
+  // 1. Reservar el puerto TCP antes de nada, para poder lanzar el mapeo UPnP en
+  // paralelo con la señalización. Aquí solo hace falta el número de puerto: el
+  // servidor de verdad se monta abajo, cuando ya existe el código. Antes se creaba
+  // aquí un `createSenderServer` con token vacío y se tiraba; ahora derivar la
+  // clave cuesta 62 ms de scrypt y no tiene ningún sentido pagarlos para nada.
   let broadcaster = null;
   let ws = null;
 
-  const server = createSenderServer(files, '', (current, total, speed) => {
-    renderProgressBar(current, total, speed);
-  });
-
-  await new Promise((resolve) => server.listen(options.port || 0, '0.0.0.0', resolve));
-  const tcpPort = server.address().port;
+  const portProbe = net.createServer();
+  await new Promise((resolve) => portProbe.listen(options.port || 0, '0.0.0.0', resolve));
+  const tcpPort = portProbe.address().port;
 
   // Iniciar mapeo UPnP en el router en segundo plano
   let upnpPromise = null;
@@ -402,22 +414,28 @@ async function runSend(args, options) {
       .catch(() => null);
   }
 
-  // 2. Conectar a señalización
-  let token = null;
+  // 2. Conectar a señalización. El servidor solo reparte el identificador PUBLICO
+  // de sala (4 dígitos); las palabras del código las sorteamos aquí y no salen de
+  // esta máquina: son el único material del que se deriva la clave AES.
+  let roomId = null;
   try {
     ws = await connectSignaling(options.server);
-    token = await createRoom(ws);
+    roomId = await createRoom(ws);
   } catch (err) {
-    // Si no hay internet/servidor, generamos token local para LAN pura
-    token = Math.random().toString(36).slice(2, 10);
+    // Sin servidor no hay quien reparta salas, así que el identificador lo
+    // sorteamos nosotros. Con `randomBytes` de node:crypto: antes esto era
+    // `Math.random()`, que es un PRNG predecible, y de ahí salía la sal del KDF.
+    roomId = randomRoomId(crypto.randomBytes);
     console.log(`${c.yellow}Aviso: Sin conexión con el servidor. Operando en modo LAN local pura.${c.reset}`);
   }
 
-  // Actualizar clave en el servidor
-  server.close();
+  const code = newCode(roomId, crypto.randomBytes);
+  const { secret } = parseCode(code);
+
+  portProbe.close();
   const activeServer = createSenderServer(
     files,
-    token,
+    code,
     (current, total, speed) => {
       renderProgressBar(current, total, speed);
     },
@@ -429,20 +447,26 @@ async function runSend(args, options) {
   );
   await new Promise((resolve) => activeServer.listen(tcpPort, '0.0.0.0', resolve));
 
-  // 3. Iniciar descubrimiento LAN
-  broadcaster = startBroadcasting(token, tcpPort);
+  // 3. Iniciar descubrimiento LAN. Por el broadcast UDP solo viaja un hash del
+  // identificador público: las palabras no se emiten a la subred (ver discovery.js).
+  broadcaster = startBroadcasting(code, tcpPort);
 
-  const shareLink = options.server ? `${options.server}/#${token}` : `https://drop.oloxx.dev/#${token}`;
+  const shareLink = options.server ? `${options.server}/#${code}` : `https://drop.oloxx.dev/#${code}`;
   console.log(`
   ${c.green}✔ Canal abierto.${c.reset}
-  ${c.bold}Código:${c.reset}  ${c.cyan}${token}${c.reset}
+  ${c.bold}Código:${c.reset}  ${c.cyan}${c.bold}${code}${c.reset}
   ${c.bold}Enlace:${c.reset}  ${c.dim}${shareLink}${c.reset}
+
+  ${c.dim}Díctaselo tal cual, o pásale el enlace. En el otro equipo:${c.reset}
+    ${c.yellow}drop recv ${code}${c.reset}
 
   ${c.dim}Esperando a que el receptor se conecte...${c.reset}
 `);
 
 const activeStreams = new Set();
 const guestAcks = new Map();
+// Reto pendiente por receptor: guestId -> nonce.
+const pendingProofs = new Map();
 
 async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
@@ -585,6 +609,13 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             candidateIps.push(ws.publicIp);
           }
 
+          // La oferta va SIN manifiesto. Acertar el identificador de sala son 4
+          // dígitos, y los nombres de los archivos ya son información: primero
+          // que demuestre que sabe las palabras. El reto es un nonce nuevo por
+          // receptor, así que una respuesta no vale para la siguiente sala.
+          const nonce = crypto.randomBytes(16).toString('hex');
+          pendingProofs.set(msg.guestId, nonce);
+
           ws.send(JSON.stringify({
             t: 'signal',
             to: msg.guestId,
@@ -593,14 +624,36 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
               ips: candidateIps,
               port: upnp?.externalPort || tcpPort,
               upnp: Boolean(upnp?.success),
-              manifest: files.map((f) => ({
-                name: path.basename(f.path),
-                size: f.size,
-                type: 'application/octet-stream'
-              }))
+              nonce,
             }
           }));
         } else if (msg.t === 'signal') {
+          if (msg.data?.type === 'cli-proof') {
+            // Solo lo manda quien va a comer por el relay (la web siempre, y un
+            // CLI que no ha podido abrir TCP directo). Por TCP directo no hace
+            // falta: la prueba de conocimiento es que AES-GCM autentique.
+            const nonce = pendingProofs.get(msg.from);
+            if (!nonce) return;
+            pendingProofs.delete(msg.from);
+            if (msg.data.proof !== secretProof(nonce, secret)) {
+              console.log(`\n  ${c.yellow}Receptor (${msg.from}) rechazado: el código no coincide.${c.reset}\n`);
+              reportBadGuest(ws, msg.from);
+              return;
+            }
+            ws.send(JSON.stringify({
+              t: 'signal',
+              to: msg.from,
+              data: {
+                type: 'cli-manifest',
+                manifest: files.map((f) => ({
+                  name: path.basename(f.path),
+                  size: f.size,
+                  type: 'application/octet-stream'
+                }))
+              }
+            }));
+            return;
+          }
           if (msg.data?.type === 'cli-accept') {
             const guest = msg.from;
             console.log(`\n  ${c.bold}Receptor conectado (${guest}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
@@ -663,6 +716,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
           }
         } else if (msg.t === 'guest-gone') {
           activeStreams.delete(msg.guestId);
+          pendingProofs.delete(msg.guestId);
           const ackInfo = guestAcks.get(msg.guestId);
           if (ackInfo?.notify) {
             const cb = ackInfo.notify;
@@ -737,8 +791,29 @@ async function runRecv(args, options) {
     process.exit(1);
   }
 
-  // Extraer token de URLs si se pega enlace
-  const token = input.includes('#') ? input.split('#')[1].trim() : input.trim();
+  // Validar el código ANTES de tocar la red: no tiene sentido abrir un websocket
+  // para descubrir que faltaba una palabra. `parseCode` acepta el código suelto o
+  // un enlace entero, tolera mayúsculas, acentos y espacios en vez de guiones, y
+  // corrige prefijos (`4271-lemo-rada-tige-orbi`).
+  let parsed;
+  try {
+    parsed = parseCode(input);
+  } catch (err) {
+    if (err instanceof CodeError) {
+      console.error(`\n${c.red}Código inválido:${c.reset} ${err.message}\n`);
+      process.exit(1);
+    }
+    throw err;
+  }
+  // `code` es lo que abre la caja fuerte (de ahí sale la clave AES); `roomId` es
+  // lo único que puede salir a la red: al servidor y al broadcast de la LAN.
+  const code = parsed.code;
+  const roomId = parsed.roomId;
+  if (parsed.legacy) {
+    // @deprecated Código de la v0.3.5. Se acepta para poder recibir de emisores
+    // ya distribuidos; se elimina en la v0.5.0.
+    console.log(`\n  ${c.yellow}Aviso: código en formato antiguo (v0.3.5). Sigue funcionando, pero pídele al emisor que actualice.${c.reset}`);
+  }
   let outputDir = options.out ? path.resolve(options.out) : process.cwd();
 
   // Si se ejecuta en una carpeta del sistema protegida (ej. C:\Windows\System32 por abrir PowerShell como Admin),
@@ -758,21 +833,21 @@ async function runRecv(args, options) {
     fs.unlinkSync(testWritePath);
   } catch (err) {
     console.error(`\n${c.red}Error: No se tienen permisos de escritura en "${outputDir}".${c.reset}`);
-    console.error(`Especifica una carpeta accesible con -o (ejemplo: drop recv ${token} -o %USERPROFILE%\\Downloads)\n`);
+    console.error(`Especifica una carpeta accesible con -o (ejemplo: drop recv ${code} -o %USERPROFILE%\\Downloads)\n`);
     process.exit(1);
   }
 
-  console.log(`\n${c.bold}Buscando emisor para el código:${c.reset} ${c.cyan}${token}${c.reset}`);
+  console.log(`\n${c.bold}Buscando emisor para el código:${c.reset} ${c.cyan}${code}${c.reset}`);
 
   // 1. Primero intentar descubrimiento LAN instantáneo (<1.2s)
   process.stdout.write(`  ${c.dim}Explorando red local (LAN)...${c.reset}`);
-  let target = await listenForLAN(token, 1200);
+  let target = await listenForLAN(code, 1200);
 
   if (target) {
     console.log(`\r  ${c.green}✔ Emisor encontrado en red local:${c.reset} ${target.host}:${target.port}`);
     console.log(`\n  ${c.bold}Conectando a:${c.reset} ${target.host}:${target.port} (Sockets TCP nativos - LAN)\n`);
     try {
-      const received = await receiveFiles(target.host, target.port, token, outputDir, (current, total, speed) => {
+      const received = await receiveFiles(target.host, target.port, code, outputDir, (current, total, speed) => {
         renderProgressBar(current, total, speed);
       });
       if (received.stats) {
@@ -796,7 +871,7 @@ async function runRecv(args, options) {
   try {
     ws = await connectSignaling(options.server);
     ws.binaryType = 'arraybuffer';
-    await joinRoom(ws, token);
+    await joinRoom(ws, roomId);
 
     offer = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Tiempo de espera agotado esperando datos del emisor')), 10000);
@@ -819,7 +894,7 @@ async function runRecv(args, options) {
     process.exit(1);
   }
 
-  const { ips = [], port, manifest = [] } = offer;
+  const { ips = [], port } = offer;
 
   // 3. Probar si alguna IP es accesible directamente por TCP (misma red local, VPN o UPnP en Internet)
   const localIPs = getLocalIPs();
@@ -845,7 +920,7 @@ async function runRecv(args, options) {
       console.log(`  ${c.green}✔ Emisor alcanzable por TCP directo:${c.reset} ${probe.ip}:${port}`);
       console.log(`\n  ${c.bold}Conectando a:${c.reset} ${probe.ip}:${port} (${tag})\n`);
       try {
-        const received = await receiveFiles(probe.ip, port, token, outputDir, (current, total, speed) => {
+        const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed) => {
           renderProgressBar(current, total, speed);
         }, 3000);
         if (ws) ws.close();
@@ -863,8 +938,46 @@ async function runRecv(args, options) {
     }
   }
 
-  // 4. Modo Relay por Internet (Streaming seguro a través del servidor)
+  // 4. Modo Relay por Internet (Streaming seguro a través del servidor).
+  //
+  // El emisor no manda el manifiesto con la oferta: primero pide una prueba de
+  // que conocemos las palabras. Aquí sí la damos, y solo aquí: por este camino
+  // los datos pasan por el servidor de todas formas, así que no hay cifrado
+  // nuestro que proteger. Por TCP directo no se manda nunca (ver crypto.js).
   console.log(`  ${c.cyan}[MODO RELAY POR INTERNET]${c.reset} ${c.dim}Descargando archivos en streaming...${c.reset}\n`);
+  // @deprecated Un emisor v0.3.5 manda el manifiesto dentro de la propia oferta y
+  // no entiende de retos: si viene, se usa tal cual. Se elimina en la v0.5.0.
+  let manifest = offer.manifest || null;
+  try {
+    if (!manifest) manifest = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('El emisor no ha aceptado el código')), 10000);
+      const onMsg = (ev) => {
+        try {
+          if (typeof ev.data !== 'string') return;
+          const msg = JSON.parse(ev.data);
+          if (msg.t === 'signal' && msg.data?.type === 'cli-manifest') {
+            clearTimeout(timeout);
+            ws.removeEventListener('message', onMsg);
+            resolve(msg.data.manifest || []);
+          } else if (msg.t === 'error') {
+            clearTimeout(timeout);
+            ws.removeEventListener('message', onMsg);
+            reject(new Error('El emisor ha rechazado el código: las palabras no coinciden.'));
+          }
+        } catch {}
+      };
+      ws.addEventListener('message', onMsg);
+      ws.send(JSON.stringify({
+        t: 'signal',
+        data: { type: 'cli-proof', proof: secretProof(offer.nonce || '', parsed.secret) },
+      }));
+    });
+  } catch (err) {
+    if (ws) ws.close();
+    console.error(`\n${c.red}Error: ${err.message}${c.reset}\n`);
+    process.exit(1);
+  }
+
   try {
     const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed) => {
       renderProgressBar(current, total, speed);
@@ -965,10 +1078,12 @@ async function main() {
   if (command === 'send') {
     await runSend(rest, options);
   } else if (command === 'recv' || command === 'get') {
-    await runRecv(rest, options);
+    // Ojo con el join: `drop recv 4271 lemon radar tiger orbit` (dictado con
+    // espacios) tiene que funcionar igual que con guiones.
+    await runRecv([rest.join(' ')], options);
   } else if (command === 'speed' || command === 'test') {
     if (rest.length > 0 && !rest[0].startsWith('-')) {
-      await runSpeedGuest(rest[0], options);
+      await runSpeedGuest(rest.join(' '), options);
     } else {
       await runSpeedHost(options);
     }
@@ -977,8 +1092,10 @@ async function main() {
     if (fs.existsSync(command)) {
       await runSend([command, ...rest], options);
     } else {
-      // Si se pasa directamente un token: drop 7x9y-z8w2
-      await runRecv([command], options);
+      // Si se pasa directamente un código: drop 4271-lemon-radar-tiger-orbit
+      // Se unen los argumentos sueltos porque al dictarlo mucha gente lo teclea
+      // con espacios en vez de guiones, y `parseCode` ya normaliza eso.
+      await runRecv([[command, ...rest].join(' ')], options);
     }
   }
 }

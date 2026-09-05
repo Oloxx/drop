@@ -330,6 +330,15 @@ button {
   text-overflow: ellipsis;
 }
 .link-box input:focus { outline: none; border-color: var(--blue); }
+/* El codigo se dicta y se teclea: grande, con aire entre caracteres y sin que
+   el navegador lo corrija ni lo autocomplete. */
+.link-box input.code {
+  font-size: 1.05rem;
+  letter-spacing: .04em;
+  color: var(--green);
+  text-overflow: clip;
+}
+.link-box input.code::placeholder { color: var(--muted); letter-spacing: 0; }
 
 /* ------------------------------------------------------------ progreso */
 

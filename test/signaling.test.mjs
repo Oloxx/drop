@@ -21,18 +21,31 @@ function open() {
     else ws.waiters.push(resolve);
   });
   ws.say = (obj) => ws.send(JSON.stringify(obj));
+  // Los avisos de `guest-gone` se cuelan entre medias cuando el servidor echa a
+  // un receptor: para afirmar sobre un mensaje concreto hay que saltarse el ruido.
+  ws.until = async (pred) => {
+    for (let i = 0; i < 20; i++) {
+      const msg = await ws.next();
+      if (pred(msg)) return msg;
+    }
+    throw new Error('no llego el mensaje esperado');
+  };
   return new Promise((resolve, reject) => {
     ws.on('open', () => resolve(ws));
     ws.on('error', reject);
   });
 }
 
-test('el emisor recibe un token y el receptor puede unirse', async () => {
+test('el emisor recibe un identificador de sala y el receptor puede unirse', async () => {
   const host = await open();
-  host.say({ t: 'host' });
+  host.say({ t: 'host', v: 2 });
   const hosted = await host.next();
   assert.equal(hosted.t, 'hosted');
-  assert.match(hosted.token, /^[A-Za-z0-9_-]{16}$/);           // 96 bits en base64url
+  // Codigo v0.4.0: el servidor solo reparte el identificador PUBLICO de sala.
+  // Las palabras del codigo las genera el cliente y no llegan hasta aqui.
+  assert.match(hosted.token, /^[0-9]{4}$/);
+  assert.equal(hosted.room, hosted.token);
+  assert.equal(hosted.v, 2);
 
   const guest = await open();
   guest.say({ t: 'join', token: hosted.token });
@@ -62,7 +75,7 @@ test('el emisor recibe un token y el receptor puede unirse', async () => {
 
 test('varios receptores en la misma sala reciben senales independientes', async () => {
   const host = await open();
-  host.say({ t: 'host' });
+  host.say({ t: 'host', v: 2 });
   const { token } = await host.next();
 
   const a = await open();
@@ -86,7 +99,7 @@ test('varios receptores en la misma sala reciben senales independientes', async 
   a.close(); b.close();
 });
 
-test('un token inexistente devuelve NOT_FOUND', async () => {
+test('una sala inexistente devuelve NOT_FOUND', async () => {
   const guest = await open();
   guest.say({ t: 'join', token: 'no-existe-este0' });
   const msg = await guest.next();
@@ -95,9 +108,52 @@ test('un token inexistente devuelve NOT_FOUND', async () => {
   guest.close();
 });
 
-test('la sala desaparece cuando el emisor se va', async () => {
+// @deprecated Compatibilidad con los binarios v0.3.5, que no saben pedir `v:2`.
+// Para ellos el token ES la clave de cifrado: si les diesemos 4 digitos, su AES
+// pasaria de 96 a 13 bits de entropia. Se elimina en la v0.5.0.
+test('un cliente sin v:2 sigue recibiendo el token largo de la v0.3.5', async () => {
   const host = await open();
   host.say({ t: 'host' });
+  const hosted = await host.next();
+  assert.match(hosted.token, /^[A-Za-z0-9_-]{16}$/);           // 96 bits en base64url
+  assert.equal(hosted.v, 1);
+
+  const guest = await open();
+  guest.say({ t: 'join', token: hosted.token });
+  assert.equal((await guest.next()).t, 'joined');
+  guest.close(); host.close();
+});
+
+// El identificador de sala son 4 digitos publicos: sin esto, barrer los 10.000 a
+// ritmo de red seria cuestion de segundos.
+test('la sala se quema cuando el emisor denuncia varios secretos incorrectos', async () => {
+  const host = await open();
+  host.say({ t: 'host', v: 2 });
+  const { token } = await host.next();
+
+  // Cinco receptores que aciertan la sala pero fallan el secreto: el emisor los
+  // denuncia y a la quinta el servidor cierra la sala.
+  for (let i = 0; i < 5; i++) {
+    const bad = await open();
+    bad.say({ t: 'join', token });
+    await bad.until((m) => m.t === 'joined');
+    const notice = await host.until((m) => m.t === 'guest');
+    host.say({ t: 'bad-guest', guestId: notice.guestId });
+    assert.equal((await bad.until((m) => m.t === 'error')).reason, 'BAD_SECRET');
+    bad.close();
+  }
+
+  assert.equal((await host.until((m) => m.t === 'error')).reason, 'BURNED');
+
+  const late = await open();
+  late.say({ t: 'join', token });
+  assert.equal((await late.next()).reason, 'NOT_FOUND');
+  late.close(); host.close();
+});
+
+test('la sala desaparece cuando el emisor se va', async () => {
+  const host = await open();
+  host.say({ t: 'host', v: 2 });
   const { token } = await host.next();
   host.close();
   await new Promise((r) => setTimeout(r, 100));
@@ -110,7 +166,7 @@ test('la sala desaparece cuando el emisor se va', async () => {
 
 test('dos receptores de la misma sala pueden senalizarse entre ellos', async () => {
   const host = await open();
-  host.say({ t: 'host' });
+  host.say({ t: 'host', v: 2 });
   const { token } = await host.next();
 
   const a = await open();
@@ -143,10 +199,10 @@ test('dos receptores de la misma sala pueden senalizarse entre ellos', async () 
 
 test('un receptor no alcanza a otro de una sala distinta', async () => {
   const host1 = await open();
-  host1.say({ t: 'host' });
+  host1.say({ t: 'host', v: 2 });
   const t1 = (await host1.next()).token;
   const host2 = await open();
-  host2.say({ t: 'host' });
+  host2.say({ t: 'host', v: 2 });
   const t2 = (await host2.next()).token;
 
   const a = await open();
@@ -165,4 +221,33 @@ test('un receptor no alcanza a otro de una sala distinta', async () => {
   assert.equal(b.queue.length, 0);
 
   host1.close(); host2.close(); a.close(); b.close();
+});
+
+// ULTIMO A PROPOSITO: deja el cupo de esta IP agotado durante un minuto, asi que
+// cualquier test posterior que espere un NOT_FOUND recibiria RATE_LIMITED. Un
+// `join` acertado pone el contador a cero, por eso los tests de arriba siguen
+// pasando aunque se relance la suite dentro de la misma ventana.
+test('el servidor corta la fuerza bruta de identificadores de sala', async () => {
+  const attacker = await open();
+  let limited = false;
+
+  // Identificadores que no pueden existir (el servidor solo reparte 4 digitos o
+  // tokens de 16 caracteres): asi el test mide el limite y no la suerte.
+  for (let attempt = 0; attempt < 40 && !limited; attempt++) {
+    attacker.say({ t: 'join', token: `no-existe-${attempt}` });
+    const msg = await attacker.next();
+    if (msg.reason === 'RATE_LIMITED') limited = true;
+    else assert.equal(msg.reason, 'NOT_FOUND');
+  }
+
+  assert.ok(limited, 'el servidor deberia haber cortado los intentos');
+
+  // Y un `join` valido lo desbloquea, para no castigar a quien solo se equivoco.
+  const host = await open();
+  host.say({ t: 'host', v: 2 });
+  const { token } = await host.next();
+  const guest = await open();
+  guest.say({ t: 'join', token });
+  assert.equal((await guest.next()).t, 'joined');
+  guest.close(); host.close(); attacker.close();
 });

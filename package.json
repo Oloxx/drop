@@ -1,6 +1,6 @@
 {
   "name": "drop",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Envio de archivos P2P entre navegadores (WebRTC). El servidor solo empareja: los archivos nunca pasan por el.",

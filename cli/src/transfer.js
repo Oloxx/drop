@@ -19,8 +19,9 @@ function frame(buf) {
 /**
  * Servidor TCP del emisor que transmite archivos al receptor
  */
-export function createSenderServer(files, token, onProgress, onComplete) {
-  const key = deriveKey(token);
+export function createSenderServer(files, code, onProgress, onComplete) {
+  // La clave se deriva una vez por servidor, no por socket: scrypt cuesta 62 ms.
+  const key = deriveKey(code);
   let totalBytes = files.reduce((acc, f) => acc + f.size, 0);
 
   const server = net.createServer((socket) => {
@@ -116,9 +117,9 @@ export function createSenderServer(files, token, onProgress, onComplete) {
 /**
  * Cliente TCP del receptor que se conecta al emisor y guarda los archivos
  */
-export function receiveFiles(host, port, token, outputDir, onProgress, connectTimeoutMs = 0) {
+export function receiveFiles(host, port, code, outputDir, onProgress, connectTimeoutMs = 0) {
   return new Promise((resolve, reject) => {
-    const key = deriveKey(token);
+    const key = deriveKey(code);
     const socket = net.connect({ host, port });
     socket.setNoDelay(true);
 
@@ -161,7 +162,20 @@ export function receiveFiles(host, port, token, outputDir, onProgress, connectTi
         const packet = buffer.subarray(4, 4 + packetLen);
         buffer = buffer.subarray(4 + packetLen);
 
-        const decrypted = decryptChunk(packet, key);
+        // El primer paquete es tambien la autenticacion: si la clave no coincide,
+        // AES-GCM falla el tag y OpenSSL suelta un "unable to authenticate data"
+        // que no le dice nada a nadie. Lo traducimos a lo que de verdad ha pasado.
+        let decrypted;
+        try {
+          decrypted = decryptChunk(packet, key);
+        } catch (err) {
+          if (!manifest) {
+            const wrong = new Error('El código no coincide con el del emisor: revisa las palabras.');
+            wrong.code = 'BAD_CODE';
+            throw wrong;
+          }
+          throw err;
+        }
         if (decrypted.length === 0) continue;
 
         let isControl = false;

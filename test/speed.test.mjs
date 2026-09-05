@@ -4,12 +4,12 @@ import net from 'node:net';
 import { TcpSpeedChannel, runSpeedTest } from '../cli/src/speed.js';
 
 test('TcpSpeedChannel exchanges encrypted control frames and payload', async () => {
-  const token = 'test-token-1234';
+  const code = '4271-lemon-radar-tiger-orbit';
   let serverChannel = null;
   let clientChannel = null;
 
   const server = net.createServer((socket) => {
-    serverChannel = new TcpSpeedChannel(socket, token, true, 'Test-Direct');
+    serverChannel = new TcpSpeedChannel(socket, code, true, 'Test-Direct');
   });
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -17,7 +17,7 @@ test('TcpSpeedChannel exchanges encrypted control frames and payload', async () 
 
   const clientSocket = net.connect({ host: '127.0.0.1', port });
   await new Promise((resolve) => clientSocket.on('connect', resolve));
-  clientChannel = new TcpSpeedChannel(clientSocket, token, false, 'Test-Direct');
+  clientChannel = new TcpSpeedChannel(clientSocket, code, false, 'Test-Direct');
 
   await new Promise((r) => setTimeout(r, 50));
 
@@ -52,12 +52,12 @@ test('TcpSpeedChannel exchanges encrypted control frames and payload', async () 
 });
 
 test('runSpeedTest completes bidirectional measurement between Host and Guest', async () => {
-  const token = 'speed-bench-token-5678';
+  const code = '5310-cargo-velvet-jungle-anchor';
   let serverChannel = null;
   let clientChannel = null;
 
   const server = net.createServer((socket) => {
-    serverChannel = new TcpSpeedChannel(socket, token, true, 'Loopback TCP');
+    serverChannel = new TcpSpeedChannel(socket, code, true, 'Loopback TCP');
   });
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -65,7 +65,7 @@ test('runSpeedTest completes bidirectional measurement between Host and Guest', 
 
   const clientSocket = net.connect({ host: '127.0.0.1', port });
   await new Promise((resolve) => clientSocket.on('connect', resolve));
-  clientChannel = new TcpSpeedChannel(clientSocket, token, false, 'Loopback TCP');
+  clientChannel = new TcpSpeedChannel(clientSocket, code, false, 'Loopback TCP');
 
   await new Promise((r) => setTimeout(r, 50));
 
