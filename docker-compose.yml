@@ -13,6 +13,10 @@ services:
       - "3000"
     environment:
       PORT: "3000"
+      # Sin esto, el servidor no sabe desde que dominio se le habla y rechaza el
+      # WebSocket del navegador por Origin (ver server/index.js).
+      DROP_DOMAIN: "${DROP_DOMAIN}"
+      DROP_ALLOWED_ORIGINS: "${DROP_ALLOWED_ORIGINS:-}"
       # El cliente recibe esto desde /config y lo usa como TURN.
       TURN_URL: "turn:${DROP_DOMAIN}:3478"
       TURN_USER: "${TURN_USER}"

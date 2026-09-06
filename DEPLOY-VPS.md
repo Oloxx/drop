@@ -82,6 +82,20 @@ docker compose logs -f drop                # las trazas de salas
 docker compose logs caddy | grep -i certificate
 ```
 
+En las trazas de `drop` aparece, al arrancar, desde qué orígenes acepta WebSockets de
+navegador:
+
+```text
+origenes permitidos: https://drop.oloxx.dev, https://TU_DOMINIO, http://localhost:3000
+```
+
+Sale de `DROP_DOMAIN`, así que si el `.env` está bien no hay nada que tocar. Un navegador
+que abra la web desde un dominio que no esté en esa lista recibe un **403** y no llega a
+conectar: es lo que impide que una web cualquiera use el navegador de quien la visita para
+abrir salas contra tu servidor. Si sirves el frontend desde otro sitio (un dominio distinto,
+un CDN), añádelo con `DROP_ALLOWED_ORIGINS` separando por comas. El CLI no manda cabecera
+`Origin`, así que no le afecta.
+
 Para verificar que el TURN responde de verdad, abre la
 [herramienta Trickle ICE de WebRTC](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/),
 mete `turn:TU_DOMINIO:3478` con tu usuario y contraseña, y comprueba que aparece algún candidato

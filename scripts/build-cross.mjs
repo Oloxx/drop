@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fetchShasums, verifyFile, expectedHash } from './shasums.mjs';
 
 const NODE_VERSION = 'v22.15.0';
 const DIST_DIR = path.resolve('dist');
@@ -23,10 +24,14 @@ const TARGETS = {
       const dest = path.join(CACHE_DIR, `node-${NODE_VERSION}-win-x64.exe`);
       if (!fs.existsSync(dest)) {
         console.log(`  Descargando node.exe (${NODE_VERSION})...`);
-        const res = await fetch(`https://nodejs.org/dist/${NODE_VERSION}/win-x64/node.exe`);
+        const url = `https://nodejs.org/dist/${NODE_VERSION}/win-x64/node.exe`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status} al descargar ${url}`);
         const buf = Buffer.from(await res.arrayBuffer());
         fs.writeFileSync(dest, buf);
       }
+      // En SHASUMS256.txt el node.exe de Windows va con su carpeta delante.
+      await verifyAgainstNodejsOrg(dest, 'win-x64/node.exe');
       return dest;
     }
   },
@@ -52,13 +57,24 @@ const TARGETS = {
   },
 };
 
+/**
+ * Contrasta un fichero recien bajado -- o ya en cache -- con el SHASUMS256.txt de
+ * nodejs.org. Se comprueba SIEMPRE, no solo al descargar: una cache envenenada es
+ * justo el caso que un "si ya existe, me lo creo" deja pasar para siempre.
+ */
+async function verifyAgainstNodejsOrg(filePath, sumsName) {
+  const sums = await fetchShasums(NODE_VERSION);
+  const expected = expectedHash(sums, sumsName);
+  await verifyFile(filePath, expected, sumsName);
+  console.log(`  ${'✔'} SHA-256 verificado contra nodejs.org: ${sumsName}`);
+}
+
 async function getBinary(key, info) {
   if (info.getNode) return await info.getNode();
 
-  const binaryDest = path.join(CACHE_DIR, `base-${key}-node`);
-  if (fs.existsSync(binaryDest)) return binaryDest;
-
   const archiveDest = path.join(CACHE_DIR, info.archive);
+  const binaryDest = path.join(CACHE_DIR, `base-${key}-node`);
+
   if (!fs.existsSync(archiveDest)) {
     console.log(`  Descargando ${info.archive}...`);
     const url = `https://nodejs.org/dist/${NODE_VERSION}/${info.archive}`;
@@ -67,6 +83,12 @@ async function getBinary(key, info) {
     const buf = Buffer.from(await res.arrayBuffer());
     fs.writeFileSync(archiveDest, buf);
   }
+
+  // El hash se comprueba sobre el .tar.gz, que es lo que firma nodejs.org, antes
+  // de extraer nada. Si el binario ya estaba extraido se rehace igualmente: sale
+  // barato y evita quedarse con un `base-*-node` de procedencia desconocida.
+  await verifyAgainstNodejsOrg(archiveDest, info.archive);
+  if (fs.existsSync(binaryDest)) fs.unlinkSync(binaryDest);
 
   console.log(`  Extrayendo binario de ${info.archive}...`);
   // Usar tar nativo para extraer solo el archivo binario

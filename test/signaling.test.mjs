@@ -6,8 +6,8 @@ import WebSocket from 'ws';
 
 const URL = process.env.DROP_URL || 'ws://localhost:3000';
 
-function open() {
-  const ws = new WebSocket(URL);
+function open(options) {
+  const ws = new WebSocket(URL, options);
   ws.queue = [];
   ws.waiters = [];
   ws.on('message', (raw) => {
@@ -222,6 +222,34 @@ test('un receptor no alcanza a otro de una sala distinta', async () => {
 
   host1.close(); host2.close(); a.close(); b.close();
 });
+
+// El origen por defecto que acepta el servidor cuando no se le configura otro.
+// Tiene que cuadrar con el puerto de URL: si se prueba contra otro servidor con
+// DROP_URL, hay que darle tambien un DROP_ALLOWED_ORIGINS que lo incluya.
+const ALLOWED_ORIGIN = process.env.DROP_TEST_ORIGIN
+  || `http://localhost:${URL.split(':')[2] || '80'}`;
+
+test('el servidor rechaza un origen que no esta en la lista', async () => {
+  // Una pagina no puede falsear su Origin, asi que esto es lo que impide que una
+  // web cualquiera abra salas con el navegador de quien la visita.
+  const err = await new Promise((resolve) => {
+    const ws = new WebSocket(URL, { origin: 'https://no-soy-drop.example' });
+    ws.on('error', resolve);
+    ws.on('open', () => { ws.close(); resolve(null); });
+  });
+  assert.ok(err, 'la conexion deberia haber sido rechazada');
+  assert.match(err.message, /403/);
+});
+
+test('un origen de la lista blanca conecta con normalidad', async () => {
+  const host = await open({ origin: ALLOWED_ORIGIN });
+  host.say({ t: 'host', v: 2 });
+  assert.equal((await host.next()).t, 'hosted');
+  host.close();
+});
+
+// Sin cabecera Origin (el CLI, curl, cualquier cosa que no sea un navegador) se
+// acepta: lo cubre el resto de la suite, que conecta sin mandarla.
 
 // ULTIMO A PROPOSITO: deja el cupo de esta IP agotado durante un minuto, asi que
 // cualquier test posterior que espere un NOT_FOUND recibiria RATE_LIMITED. Un

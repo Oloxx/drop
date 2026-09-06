@@ -8,7 +8,7 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 
-import { safeOutputPath, receiveFiles, PROTOCOL_VERSION } from '../cli/src/transfer.js';
+import { safeOutputPath, receiveFiles, createSenderServer, PROTOCOL_VERSION } from '../cli/src/transfer.js';
 import { deriveKey, encryptChunk } from '../cli/src/crypto.js';
 import { newCode, randomRoomId } from '../public/shared/codes.js';
 import { createHash, randomBytes } from 'node:crypto';
@@ -366,4 +366,106 @@ test('el receptor por relay tampoco pisa un archivo que ya existe', async (t) =>
   assert.equal(fs.readFileSync(path.join(out, 'archivo.bin'), 'utf-8'), 'VIEJO');
   assert.equal(fs.readFileSync(path.join(out, 'archivo (2).bin'), 'utf-8'), 'NUEVO');
   assert.equal(received[0].path, path.join(out, 'archivo (2).bin'));
+});
+
+// --------------------------------------- confirmacion del emisor (onPeer)
+
+/** Emisor de verdad, con la puerta de confirmacion puesta. */
+async function senderWithGate(onPeer) {
+  const dir = tmpdir('drop-gate-');
+  const filePath = path.join(dir, 'carga.bin');
+  const contenido = randomBytes(64 * 1024);
+  fs.writeFileSync(filePath, contenido);
+
+  const code = newCode(randomRoomId(randomBytes), randomBytes);
+  const files = [{ path: filePath, size: contenido.length }];
+  const server = createSenderServer(files, code, null, null, { onPeer });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  return { dir, code, contenido, server, port: server.address().port };
+}
+
+test('el emisor no manda nada hasta que la confirmacion dice que si', async () => {
+  const vistos = [];
+  const emisor = await senderWithGate((info) => {
+    vistos.push(info);
+    return true;
+  });
+  const outDir = tmpdir('drop-gate-out-');
+
+  try {
+    const recibidos = await receiveFiles('127.0.0.1', emisor.port, emisor.code, outDir);
+    assert.equal(recibidos.length, 1);
+    assert.deepEqual(fs.readFileSync(path.join(outDir, 'carga.bin')), emisor.contenido);
+
+    // Y a quien pregunta le llega con que decidir: quien es y que huella tiene.
+    assert.equal(vistos.length, 1);
+    assert.ok(vistos[0].address, 'deberia decir de donde viene la conexion');
+    assert.equal(vistos[0].sas.split('-').length, 3);
+  } finally {
+    emisor.server.close();
+    fs.rmSync(emisor.dir, { recursive: true, force: true });
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test('si la confirmacion dice que no, el receptor no ve ni el manifiesto', async () => {
+  // Lo que se comprueba es que NO se escribe nada en el socket: quien conecta
+  // sabe el codigo, asi que si el emisor dice que no, ni los nombres de archivo
+  // pueden salir de aqui.
+  const emisor = await senderWithGate(() => false);
+  const outDir = tmpdir('drop-gate-out-');
+
+  try {
+    await assert.rejects(() => receiveFiles('127.0.0.1', emisor.port, emisor.code, outDir));
+    assert.deepEqual(fs.readdirSync(outDir), []);
+  } finally {
+    emisor.server.close();
+    fs.rmSync(emisor.dir, { recursive: true, force: true });
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test('un sondeo de puerto no le pregunta nada al emisor', async () => {
+  // El receptor tantea el puerto con una conexion que cierra al instante antes de
+  // abrir la de verdad (probeCandidateIPs). Si eso disparase la confirmacion, a
+  // quien envia le saldrian dos preguntas por el mismo receptor.
+  let preguntas = 0;
+  const emisor = await senderWithGate(() => { preguntas++; return true; });
+
+  try {
+    await new Promise((resolve, reject) => {
+      const sonda = net.connect({ host: '127.0.0.1', port: emisor.port });
+      sonda.on('connect', () => { sonda.destroy(); resolve(); });
+      sonda.on('error', reject);
+    });
+    await new Promise((r) => setTimeout(r, 800));
+    assert.equal(preguntas, 0, 'un sondeo no deberia molestar a nadie');
+  } finally {
+    emisor.server.close();
+    fs.rmSync(emisor.dir, { recursive: true, force: true });
+  }
+});
+
+test('la huella que ve el emisor es la misma que ve el receptor', async () => {
+  // Es lo unico que hace util compararla en voz alta.
+  let sasEmisor = null;
+  let sasReceptor = null;
+  const emisor = await senderWithGate((info) => {
+    sasEmisor = info.sas;
+    return true;
+  });
+  const outDir = tmpdir('drop-gate-out-');
+
+  try {
+    await receiveFiles('127.0.0.1', emisor.port, emisor.code, outDir, null, 0, {
+      onConnected: (sas) => { sasReceptor = sas; },
+    });
+    assert.ok(sasEmisor, 'el emisor deberia haber calculado una huella');
+    assert.equal(sasReceptor, sasEmisor);
+  } finally {
+    emisor.server.close();
+    fs.rmSync(emisor.dir, { recursive: true, force: true });
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
 });

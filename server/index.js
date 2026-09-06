@@ -90,6 +90,58 @@ const sweepFails = setInterval(() => {
 }, JOIN_FAIL_WINDOW);
 sweepFails.unref?.();
 
+// ------------------------------------------------------- origenes permitidos
+//
+// El limite de arriba cuenta la IP de quien conecta, y contra un navegador eso es
+// la IP del visitante, no la del atacante: una pagina cualquiera puede abrir salas
+// o barrer identificadores usando el navegador de quien la visita, repartiendo el
+// barrido entre miles de IPs distintas. La cabecera `Origin` la pone el navegador
+// y una pagina no puede falsearla, asi que aqui se mira.
+//
+// QUE FRENA Y QUE NO: frena que un tercero use navegadores ajenos como ariete. No
+// frena a un cliente que no sea un navegador -- curl, un script, el propio CLI --
+// porque esos eligen que cabeceras mandan. Por eso una conexion SIN `Origin` se
+// acepta: es la del CLI, y cerrarla no ganaria nada (bastaria con no mandarla).
+
+// Un origen es esquema+host+puerto: se comparan en minusculas y sin barra final,
+// que es como los mandan unos navegadores y otros.
+const normOrigin = (o) => {
+  let out = o.trim().toLowerCase();
+  while (out.endsWith('/')) out = out.slice(0, -1);
+  return out;
+};
+
+// El dominio del proyecto va en la lista por defecto para que un despliegue que
+// no configure nada siga funcionando; `DROP_DOMAIN` anade el de quien se lo monta
+// en su propia maquina, y `DROP_ALLOWED_ORIGINS` (separada por comas) sustituye la
+// lista entera. localhost queda dentro siempre: es el `npm run dev` y la suite.
+const DEFAULT_ORIGINS = [
+  'https://drop.oloxx.dev',
+  process.env.DROP_DOMAIN && `https://${process.env.DROP_DOMAIN}`,
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`,
+].filter(Boolean);
+
+const ALLOWED_ORIGINS = new Set(
+  (process.env.DROP_ALLOWED_ORIGINS
+    ? process.env.DROP_ALLOWED_ORIGINS.split(',')
+    : DEFAULT_ORIGINS
+  )
+    .map(normOrigin)
+    .filter(Boolean)
+);
+
+// `*` desactiva la comprobacion. Existe para quien sirve Drop desde un dominio que
+// no controla o monta su propio frontend, y para no dejarle sin salida si algo de
+// esto se le atraviesa en produccion.
+const ORIGIN_ANY = ALLOWED_ORIGINS.has('*');
+
+function originAllowed(origin) {
+  if (!origin) return true;
+  if (ORIGIN_ANY) return true;
+  return ALLOWED_ORIGINS.has(normOrigin(origin));
+}
+
 function closeRoom(token, reason) {
   const room = rooms.get(token);
   if (!room) return;
@@ -121,7 +173,18 @@ app.get('/healthz', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
 app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'] }));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  server,
+  // Se rechaza en el upgrade, no en `connection`: asi el navegador recibe un 403
+  // y el socket no llega a existir.
+  verifyClient: ({ origin, req }, done) => {
+    if (originAllowed(origin)) return done(true);
+    const ip = (req?.headers?.['x-forwarded-for']?.split(',')[0] || req?.socket?.remoteAddress || '')
+      .replace(/^::ffff:/, '').trim();
+    log('origen no permitido', origin, 'desde', ip || '(ip desconocida)');
+    done(false, 403, 'Forbidden origin');
+  },
+});
 
 function send(ws, obj) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
@@ -215,7 +278,12 @@ wss.on('connection', (ws, req) => {
         ws.token = token;
         ws.guestId = guestId;
         send(ws, { t: 'joined', guestId, publicIp: ws.clientIp });
-        send(room.host, { t: 'guest', guestId, name: String(msg.name || '').slice(0, 40) });
+        send(room.host, {
+          t: 'guest',
+          guestId,
+          name: String(msg.name || '').slice(0, 40),
+          ip: ws.clientIp,
+        });
         log('receptor', guestId, 'entra en', tag(token), '| receptores en la sala:', room.guests.size);
         break;
       }
@@ -289,4 +357,7 @@ wss.on('close', () => clearInterval(heartbeat));
 
 server.listen(PORT, () => {
   log(`Drop escuchando en http://localhost:${PORT}`);
+  // Una lista mal puesta se nota como "la web no conecta" y nada mas: dejarla
+  // escrita al arrancar es lo que ahorra buscarlo a ciegas.
+  log('origenes permitidos:', ORIGIN_ANY ? '(cualquiera)' : [...ALLOWED_ORIGINS].join(', '));
 });
