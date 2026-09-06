@@ -119,12 +119,27 @@ Preparando envío: 1 archivo(s) · 5.8 GB
   ✔ Canal abierto.
   Código:  4271-lemon-radar-tiger-orbit
   Enlace:  https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
+  Huella:  beef-grit-two (el receptor tiene que ver esta misma por TCP directo)
 
   Díctaselo tal cual, o pásale el enlace. En el otro equipo:
     drop recv 4271-lemon-radar-tiger-orbit
 
   Esperando a que el receptor se conecte...
 ```
+
+Cuando alguien se conecta, `drop` pregunta antes de servir nada:
+
+```text
+  Alguien quiere descargar: 192.168.1.42 (TCP directo)
+  Huella de la sesión: beef-grit-two (tiene que coincidir con la que ve el receptor)
+  ¿Le dejas descargar? (s/N):
+```
+
+Hasta que respondas que sí no sale del equipo ni el nombre de los archivos. Con
+`--yes` (o `-y`) no pregunta, y en un script sin terminal interactiva se autoriza
+solo: bloquear ahí sería colgar el proceso esperando una tecla que no va a llegar.
+Qué es la huella y qué detecta, en
+[Modelo de seguridad del código](#-modelo-de-seguridad-del-código).
 
 #### 2. Recibir archivos (`drop recv`)
 En otro ordenador con `drop` instalado:
@@ -228,8 +243,26 @@ El código es `4271-lemon-radar-tiger-orbit` y son **dos cosas distintas pegadas
   limita los intentos fallidos por IP y cierra la sala si el emisor denuncia varios receptores
   que no saben el secreto, pero eso encarece el barrido, no lo impide. Quien acierte una sala
   no obtiene ni los archivos ni sus nombres: el emisor le pide antes una prueba de conocimiento
-  del secreto. Tampoco hay defensa contra un *man in the middle* activo con control del servidor:
-  eso exigiría un PAKE (SPAKE2/CPace) y no se implementa a mano sin auditar.
+  del secreto, y además tiene que autorizar la descarga a mano. Sigue sin haber PAKE
+  (SPAKE2/CPace), que no se implementa a mano sin auditar: contra un *man in the middle* activo
+  con control del servidor lo que hay es la huella de sesión, que se compara a ojo.
+
+### La huella de sesión
+
+Los dos extremos muestran tres palabras — `beef-grit-two` — sacadas de lo que se ha negociado
+de verdad. **Si no coinciden, hay alguien en medio.** Se comparan por otro canal: una llamada,
+un mensaje, estar en la misma habitación.
+
+| Ruta | De dónde sale la huella | Qué detecta |
+|---|---|---|
+| **Web ↔ Web** (WebRTC) | Los *fingerprints* DTLS de los dos extremos | **Un servidor que sustituya el SDP** para hablar DTLS con cada lado por separado. Es el ataque real que cubre |
+| **CLI ↔ CLI** (TCP directo) | La clave AES ya derivada con scrypt | Que los dos estén en la misma transferencia. Aquí un MITM ya era imposible: sin las palabras, AES-GCM rechaza el primer paquete |
+| **Cualquier ruta por relay** | No hay huella | Nada: por ahí los bytes pasan por el servidor y una huella prometería algo que esa ruta no da. Se avisa en pantalla |
+
+La huella **no viaja por el cable** (si viajase, el de en medio la cambiaría al vuelo) y **no
+lleva dentro las palabras del código**: entra material de clave, no el secreto, para que leerla
+en voz alta no regale un verificador offline de 44 bits. El diseño completo está en
+[`public/shared/sas.js`](public/shared/sas.js).
 
 El diseño completo, con el razonamiento y los límites, está comentado en la cabecera de
 [`public/shared/codes.js`](public/shared/codes.js).
@@ -281,6 +314,11 @@ npm run build:macos   # Compila dist/drop-macos-arm64 (macOS Apple Silicon)
 npm run build:all     # Compila todas las plataformas a la vez
 ```
 
+Los binarios base de Node se descargan de nodejs.org y **se comprueban contra el
+`SHASUMS256.txt` que se publica junto a ellos** antes de inyectarles nada, también los que ya
+están en la caché local. Si un hash no cuadra, el fichero se borra y la compilación se detiene:
+ese binario es el que acaba en las releases.
+
 ---
 
 ## 🌐 Despliegue del Servidor
@@ -293,3 +331,8 @@ cp .env.example .env
 docker compose up -d --build
 ```
 Levanta el servidor Node.js, un reverse proxy Caddy con certificados SSL automáticos y un servidor TURN (coturn) para sortear NATs estrictas. Guía detallada en **[DEPLOY-VPS.md](DEPLOY-VPS.md)**.
+
+El servidor solo acepta WebSockets de navegador desde su propio dominio (`DROP_DOMAIN`) y
+localhost, para que una web cualquiera no pueda abrir salas con el navegador de quien la visita.
+Si sirves el frontend desde otro sitio, añade el origen con `DROP_ALLOWED_ORIGINS`. Las
+conexiones sin cabecera `Origin` —el CLI— no se ven afectadas.
