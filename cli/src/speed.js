@@ -5,6 +5,7 @@ import { deriveKey, encryptChunk, decryptChunk } from './crypto.js';
 import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom } from './signaling.js';
 import { mapPort } from './upnp.js';
+import { listenOrExplain, watchServerErrors } from './listen.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 
 const TCP_CHUNK_SIZE = 256 * 1024;    // 256 KB por bloque para máxima velocidad en TCP
@@ -599,7 +600,19 @@ export async function runSpeedHost(options = {}) {
   let roomId = null;
 
   const tcpServer = net.createServer();
-  await new Promise((resolve) => tcpServer.listen(options.port || 0, '0.0.0.0', resolve));
+  try {
+    await listenOrExplain(tcpServer, options.port || 0, '0.0.0.0');
+  } catch (err) {
+    console.error(`
+  ${c.red}${err.message}${c.reset}
+`);
+    process.exit(1);
+  }
+  watchServerErrors(tcpServer, (err) => {
+    console.error(`
+  ${c.red}Error en el canal de escucha: ${err.message}${c.reset}
+`);
+  });
   const tcpPort = tcpServer.address().port;
 
   let upnpPromise = null;

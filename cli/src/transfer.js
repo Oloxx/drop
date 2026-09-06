@@ -3,9 +3,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { deriveKey, encryptChunk, decryptChunk } from './crypto.js';
-import { renderProgressBar } from './ui.js';
 
 const CHUNK_SIZE = 512 * 1024; // 512 KB por bloque para equilibrar streaming y memoria
+
+// Version del protocolo de transferencia. Viaja DENTRO del primer marco de control
+// (cifrado y autenticado por AES-GCM), no como byte en claro: un byte fuera del
+// cifrado seria una huella gratis para quien mire el cable —hoy el primer paquete
+// es indistinguible de ruido— y, al no ir autenticado, se podria cambiar sin
+// romper el tag para llevar al receptor a otra rama de parseo. La contrapartida es
+// que asi no se puede versionar el cifrado en si; si algun dia hace falta, eso se
+// anuncia en la oferta de senializacion, que ya es publica.
+//
+// Antes no habia version ninguna y el receptor adivinaba si un paquete era control
+// o datos por su primer byte, con dos ramas de "compatibilidad" que no daban
+// compatibilidad: con un emisor sin prefijo, ese byte es CONTENIDO del archivo, y
+// cuando valia 0x00 o 0x01 el trozo se tiraba en silencio.
+export const PROTOCOL_VERSION = 1;
 
 // El receptor confirma cada 2 MB, igual que el cliente web (`ACK_EVERY` en
 // public/app.js). No es cosmetico: el emisor no manda mas de 8 MB sin confirmar
@@ -66,14 +79,159 @@ export function safeOutputPath(outputDir, rawName) {
 }
 
 /**
- * Servidor TCP del emisor que transmite archivos al receptor
+ * Dos rutas son "el mismo archivo" sin distinguir mayusculas donde el sistema
+ * tampoco las distingue: en Windows y macOS `Foto.jpg` pisaria a `foto.jpg`.
  */
-export function createSenderServer(files, code, onProgress, onComplete) {
+function sameFileKey(p) {
+  return (process.platform === 'win32' || process.platform === 'darwin') ? p.toLowerCase() : p;
+}
+
+/**
+ * Hay algo con ese nombre, aunque sea un enlace roto. `existsSync` sigue los
+ * enlaces y diria que no de un simbolico colgado, que si ocupa el nombre.
+ */
+function occupied(p) {
+  return fs.lstatSync(p, { throwIfNoEntry: false }) !== undefined;
+}
+
+/**
+ * Reserva el nombre definitivo de un archivo del manifiesto y devuelve el par
+ * (definitivo, temporal). NO toca el disco: solo mira. Eso es lo que permite
+ * reservar el manifiesto entero antes de crear nada, para que un nombre imposible
+ * en el ultimo archivo siga cortando la transferencia sin haber escrito un byte.
+ *
+ * `reserved` son los nombres ya pedidos EN ESTA transferencia: sin el, un
+ * manifiesto con dos `a.zip` se pisaria a si mismo, porque al reservar el segundo
+ * el primero todavia no existe en disco (esta en su `.part`).
+ */
+export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { overwrite = false } = {}) {
+  const dest = safeOutputPath(outputDir, rawName);
+  const mine = (p) => reserved.has(sameFileKey(p));
+
+  // Con --overwrite el destino se acepta tal cual, salvo que ya lo haya pedido
+  // otro archivo de este mismo manifiesto: dos nombres iguales del emisor nunca
+  // se pisan entre ellos, con flag o sin flag.
+  const libre = overwrite
+    ? (p) => !mine(p)
+    : (p) => !mine(p) && !occupied(p) && !occupied(`${p}.part`);
+
+  let finalPath = dest;
+  if (!libre(dest)) {
+    const { dir, name, ext } = path.parse(dest);
+    let n = 2;
+    // El tope es para no girar para siempre en un directorio patologico.
+    for (; n <= 9999; n++) {
+      const candidato = path.join(dir, `${name} (${n})${ext}`);
+      if (!mine(candidato) && !occupied(candidato) && !occupied(`${candidato}.part`)) {
+        finalPath = candidato;
+        break;
+      }
+    }
+    if (n > 9999) {
+      const err = new Error(`No queda un nombre libre para ${JSON.stringify(rawName)} en el directorio de destino.`);
+      err.code = 'DEST_COLLISION';
+      throw err;
+    }
+  }
+
+  reserved.add(sameFileKey(finalPath));
+  return { finalPath, partPath: `${finalPath}.part` };
+}
+
+/**
+ * Sumidero de un archivo: escribe en `nombre.part`, calcula el SHA-256 sobre la
+ * marcha y solo renombra al nombre bueno cuando el hash cuadra.
+ *
+ * Antes se abria el nombre definitivo con 'w' y pasaban las tres cosas de golpe:
+ * se truncaba lo que ya hubiera ahi, y un fallo de integridad dejaba los bytes
+ * malos instalados con el nombre bueno, que es la peor combinacion posible.
+ */
+export async function openFileSink({ finalPath, partPath, name, index = null, overwrite = false }) {
+  // 'wx' falla si el `.part` ya existe; con --overwrite el `.part` es nuestro.
+  const fd = await fs.promises.open(partPath, overwrite ? 'w' : 'wx');
+  const hash = crypto.createHash('sha256');
+  let bytes = 0;
+  let closed = false;
+
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    await fd.close();
+  };
+
+  return {
+    finalPath,
+    partPath,
+    index,
+    name: name || path.basename(finalPath),
+    get bytes() { return bytes; },
+
+    async write(buf) {
+      await fd.write(buf);
+      hash.update(buf);
+      bytes += buf.length;
+    },
+
+    /**
+     * Cierra, compara y renombra. El cierre va ANTES del rename a proposito: en
+     * Windows no se puede renombrar un archivo con el descriptor abierto.
+     */
+    async commit(expected) {
+      const calc = hash.digest('hex');
+      await close();
+      if (expected && calc !== expected) {
+        // Los bytes estan demostrablemente mal: el `.part` no vale ni para
+        // reanudar, se borra y el nombre bueno no llega a existir.
+        await fs.promises.unlink(partPath).catch(() => {});
+        const err = new Error(`Error de integridad SHA-256 en ${this.name}: esperado ${expected}, calculado ${calc}`);
+        err.code = 'INTEGRITY_MISMATCH';
+        err.fileIndex = index;
+        err.expectedHash = expected;
+        err.actualHash = calc;
+        throw err;
+      }
+      // `rename` es atomico dentro del mismo sistema de ficheros (el `.part` vive
+      // en el mismo directorio) y no sigue enlaces simbolicos: un simbolico
+      // plantado en el destino se reemplaza, no se escribe a traves de el.
+      try {
+        await fs.promises.rename(partPath, finalPath);
+      } catch (err) {
+        // Windows no reemplaza siempre en el rename; con --overwrite el destino
+        // es nuestro para quitarlo de en medio.
+        if (!overwrite || (err.code !== 'EEXIST' && err.code !== 'EPERM' && err.code !== 'EACCES')) throw err;
+        await fs.promises.rm(finalPath, { force: true });
+        await fs.promises.rename(partPath, finalPath);
+      }
+      return calc;
+    },
+
+    /**
+     * Interrupcion. Se borra el `.part`: dejarlo haria que el siguiente intento
+     * lo viera ocupado y acabase escribiendo `archivo (2).zip`, que es justo lo
+     * que hace `askRetry` al reintentar. Reanudar transferencias (issue #21)
+     * tendra que conservarlo cuando el corte sea de conexion y negociar un
+     * offset; el cambio queda aqui, en una linea.
+     */
+    async abort() {
+      await close();
+      await fs.promises.unlink(partPath).catch(() => {});
+    },
+  };
+}
+
+/**
+ * Cuelga la logica del emisor de un servidor TCP que YA existe (y que puede estar
+ * ya escuchando). Se separa de `createSenderServer` porque `runSend` necesita el
+ * numero de puerto antes de conocer el codigo — UPnP y la senializacion arrancan
+ * con el puerto — y antes esto se resolvia creando dos servidores y rebindeando el
+ * mismo puerto en carrera.
+ */
+export function attachSender(server, files, code, onProgress, onComplete) {
   // La clave se deriva una vez por servidor, no por socket: scrypt cuesta 62 ms.
   const key = deriveKey(code);
   let totalBytes = files.reduce((acc, f) => acc + f.size, 0);
 
-  const server = net.createServer((socket) => {
+  server.on('connection', (socket) => {
     socket.setNoDelay(true);
     socket.on('error', () => {});
 
@@ -81,7 +239,7 @@ export function createSenderServer(files, code, onProgress, onComplete) {
       try {
         const startTime = performance.now();
         // 1. Enviar manifiesto de archivos cifrado (tipo 0 = control JSON)
-        const manifest = { files: files.map((f) => ({ name: path.basename(f.path), size: f.size })) };
+        const manifest = { v: PROTOCOL_VERSION, files: files.map((f) => ({ name: path.basename(f.path), size: f.size })) };
         const encManifest = encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(manifest))]), key);
         socket.write(frame(encManifest));
 
@@ -164,9 +322,17 @@ export function createSenderServer(files, code, onProgress, onComplete) {
 }
 
 /**
+ * Servidor TCP del emisor que transmite archivos al receptor
+ */
+export function createSenderServer(files, code, onProgress, onComplete) {
+  return attachSender(net.createServer(), files, code, onProgress, onComplete);
+}
+
+/**
  * Cliente TCP del receptor que se conecta al emisor y guarda los archivos
  */
-export function receiveFiles(host, port, code, outputDir, onProgress, connectTimeoutMs = 0) {
+export function receiveFiles(host, port, code, outputDir, onProgress, connectTimeoutMs = 0, options = {}) {
+  const { overwrite = false } = options;
   return new Promise((resolve, reject) => {
     const key = deriveKey(code);
     const socket = net.connect({ host, port });
@@ -189,9 +355,9 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
     let manifest = null;
     let destPaths = [];
     let currentFileIndex = 0;
-    let currentFd = null;
-    let currentFileHash = null;
-    let currentFileBytes = 0;
+    let sink = null;
+    let committed = 0;
+    const reserved = new Set();
     let totalReceived = 0;
     let totalBytes = 0;
     let lastReport = performance.now();
@@ -228,121 +394,119 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
         }
         if (decrypted.length === 0) continue;
 
-        let isControl = false;
-        let payload = decrypted;
-
-        if (decrypted[0] === 0) {
-          isControl = true;
-          payload = decrypted.subarray(1);
-        } else if (decrypted[0] === 1) {
-          isControl = false;
-          payload = decrypted.subarray(1);
-        } else if (!manifest && decrypted[0] === 0x7b) {
-          // Compatibilidad con emisor antiguo sin prefijo
-          isControl = true;
-          payload = decrypted;
+        // El tipo de trama ya no se adivina por el contenido: 0x00 es control,
+        // 0x01 son datos y cualquier otra cosa es un emisor que habla otro
+        // protocolo. Antes se colaba una tercera rama para el emisor sin prefijo,
+        // donde ese byte era CONTENIDO del archivo.
+        const type = decrypted[0];
+        if (type !== 0 && type !== 1) {
+          const err = new Error(
+            `Trama de tipo ${type} desconocida: el emisor usa una versión de drop incompatible. Actualiza drop en los dos equipos.`
+          );
+          err.code = 'PROTOCOL_FRAME';
+          throw err;
         }
+        const payload = decrypted.subarray(1);
 
-        if (isControl) {
+        if (type === 0) {
           let msg;
           try {
             msg = JSON.parse(payload.toString());
           } catch {
-            continue;
+            const err = new Error('El emisor ha mandado un marco de control ilegible.');
+            err.code = 'PROTOCOL_ERROR';
+            throw err;
           }
 
-          if (!manifest && msg.files) {
+          if (!manifest) {
+            // El primer marco de control TIENE que ser el manifiesto y TIENE que
+            // declarar su version: sin eso no se sabe como leer lo que venga
+            // detras, y adivinarlo es exactamente lo que corrompia archivos.
+            if (msg.v !== PROTOCOL_VERSION) {
+              const err = new Error(
+                `El emisor usa la versión ${msg.v ?? '0 (drop anterior a la 0.5.0)'} del protocolo y este receptor la ${PROTOCOL_VERSION}: actualiza drop en los dos equipos.`
+              );
+              err.code = 'PROTOCOL_VERSION';
+              err.senderVersion = msg.v ?? 0;
+              err.supportedVersion = PROTOCOL_VERSION;
+              throw err;
+            }
+            if (!Array.isArray(msg.files)) {
+              const err = new Error('El primer marco del emisor no es el manifiesto de archivos.');
+              err.code = 'PROTOCOL_ERROR';
+              throw err;
+            }
+
             manifest = msg;
             totalBytes = manifest.files.reduce((acc, f) => acc + f.size, 0);
-            // Los nombres se validan TODOS aqui, antes de abrir el primer
-            // descriptor: si el manifiesto trae una ruta que se sale del destino,
-            // la transferencia se corta sin haber escrito ni un byte.
-            destPaths = manifest.files.map((f) => safeOutputPath(outputDir, f.name));
+            // Los nombres se validan y se RESERVAN todos aqui, antes de abrir el
+            // primer descriptor: si el manifiesto trae una ruta que se sale del
+            // destino, la transferencia se corta sin haber escrito ni un byte, y
+            // dos archivos con el mismo nombre reciben ya destinos distintos.
+            destPaths = manifest.files.map((f) => reserveOutputPath(outputDir, f.name, reserved, { overwrite }));
             startTime = performance.now();
             if (manifest.files.length > 0) {
-              const dest = destPaths[0];
-              currentFd = await fs.promises.open(dest, 'w');
-              currentFileHash = crypto.createHash('sha256');
-              receivedFiles.push({ path: dest, name: path.basename(dest), verified: false });
+              sink = await openFileSink({ ...destPaths[0], name: manifest.files[0].name, index: 0, overwrite });
+              receivedFiles.push({ path: sink.finalPath, name: path.basename(sink.finalPath), verified: false });
             }
             continue;
           }
 
           if (msg.k === 'end') {
-            if (currentFd) {
-              await currentFd.close();
-              currentFd = null;
-            }
-            const calcHash = currentFileHash ? currentFileHash.digest('hex') : null;
-            currentFileHash = null;
-            const target = manifest?.files[msg.index];
-            if (msg.sha256 && calcHash && calcHash !== msg.sha256) {
-              const err = new Error(`Error de integridad SHA-256 en ${target?.name || 'archivo'}: esperado ${msg.sha256}, calculado ${calcHash}`);
-              err.code = 'INTEGRITY_MISMATCH';
-              err.fileIndex = msg.index;
-              err.expectedHash = msg.sha256;
-              err.actualHash = calcHash;
+            if (!sink) {
+              const err = new Error('El emisor cierra un archivo que nunca abrió.');
+              err.code = 'PROTOCOL_ERROR';
               throw err;
             }
+            // `commit` verifica, borra el `.part` si el hash no cuadra y solo
+            // entonces renombra: el nombre bueno nunca llega a existir con bytes
+            // sin verificar.
+            const calcHash = await sink.commit(msg.sha256);
+            sink = null;
+            committed++;
             const item = receivedFiles[msg.index] || receivedFiles[receivedFiles.length - 1];
             if (item) {
               item.verified = true;
               item.sha256 = calcHash || msg.sha256;
             }
             currentFileIndex = msg.index + 1;
-            currentFileBytes = 0;
             if (currentFileIndex < manifest.files.length) {
-              const dest = destPaths[currentFileIndex];
-              currentFd = await fs.promises.open(dest, 'w');
-              currentFileHash = crypto.createHash('sha256');
-              receivedFiles.push({ path: dest, name: path.basename(dest), verified: false });
+              sink = await openFileSink({
+                ...destPaths[currentFileIndex],
+                name: manifest.files[currentFileIndex].name,
+                index: currentFileIndex,
+                overwrite,
+              });
+              receivedFiles.push({ path: sink.finalPath, name: path.basename(sink.finalPath), verified: false });
             }
             continue;
           }
 
-          if (msg.k === 'done') {
-            continue;
-          }
+          // `done` y cualquier control que no conozcamos se ignoran. Lo que NO
+          // pueden hacer es caer al camino de datos: antes un `k` desconocido
+          // acababa escrito dentro del archivo y sumado a su SHA-256.
+          continue;
         }
 
-        // Escribir datos en el archivo actual
-        if (currentFd && payload.length > 0) {
-          await currentFd.write(payload);
-          if (currentFileHash) currentFileHash.update(payload);
-          currentFileBytes += payload.length;
-          totalReceived += payload.length;
+        // Tipo 0x01: datos del archivo en curso.
+        if (payload.length === 0) continue;
+        if (!sink) {
+          const err = new Error('El emisor manda datos sin haber abierto ningún archivo.');
+          err.code = 'PROTOCOL_ERROR';
+          throw err;
+        }
 
-          const now = performance.now();
-          const dt = (now - lastReport) / 1000;
-          if (dt >= 0.15) {
-            const inst = (totalReceived - lastBytes) / dt;
-            speed = speed ? speed * 0.7 + inst * 0.3 : inst;
-            lastBytes = totalReceived;
-            lastReport = now;
-            if (onProgress) onProgress(totalReceived, totalBytes, speed);
-          }
+        await sink.write(payload);
+        totalReceived += payload.length;
 
-          // Compatibilidad: si un emisor antiguo no manda k === 'end'
-          const currentTarget = manifest?.files[currentFileIndex];
-          if (currentTarget && currentFileBytes >= currentTarget.size && decrypted[0] !== 0 && decrypted[0] !== 1) {
-            await currentFd.close();
-            currentFd = null;
-            const calcHash = currentFileHash ? currentFileHash.digest('hex') : null;
-            currentFileHash = null;
-            const item = receivedFiles[currentFileIndex];
-            if (item) {
-              item.verified = true;
-              item.sha256 = calcHash;
-            }
-            currentFileBytes = 0;
-            currentFileIndex++;
-            if (currentFileIndex < manifest.files.length) {
-              const dest = destPaths[currentFileIndex];
-              currentFd = await fs.promises.open(dest, 'w');
-              currentFileHash = crypto.createHash('sha256');
-              receivedFiles.push({ path: dest, name: path.basename(dest), verified: false });
-            }
-          }
+        const now = performance.now();
+        const dt = (now - lastReport) / 1000;
+        if (dt >= 0.15) {
+          const inst = (totalReceived - lastBytes) / dt;
+          speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+          lastBytes = totalReceived;
+          lastReport = now;
+          if (onProgress) onProgress(totalReceived, totalBytes, speed);
         }
       }
     }
@@ -356,8 +520,16 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
         } finally {
           socket.resume();
         }
-      }).catch((err) => {
-        socket.destroy(err);
+      }).catch(async (err) => {
+        // El `.part` a medias se borra ANTES de rechazar: quien espera la promesa
+        // mira el directorio en cuanto le llega el error, y `socket.destroy` de
+        // aqui abajo hace su limpieza demasiado tarde para eso.
+        if (sink) {
+          const abandoned = sink;
+          sink = null;
+          await abandoned.abort().catch(() => {});
+        }
+        socket.destroy();
         reject(err);
       });
     });
@@ -369,7 +541,18 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
           clearTimeout(connTimer);
           connTimer = null;
         }
-        if (currentFd) await currentFd.close();
+        // Antes esto resolvia pasara lo que pasara: un emisor que se moria a
+        // media transferencia dejaba archivos cortos con su nombre bueno y la
+        // promesa daba la descarga por buena.
+        if (!manifest || committed < manifest.files.length) {
+          if (sink) {
+            await sink.abort();
+            sink = null;
+          }
+          const err = new Error('El emisor ha cerrado la conexión antes de terminar la transferencia.');
+          err.code = 'TRUNCATED';
+          throw err;
+        }
         const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
         const avgSpeed = totalBytes / totalTimeSec;
         receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
@@ -387,7 +570,13 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
         clearTimeout(connTimer);
         connTimer = null;
       }
-      if (currentFd) currentFd.close().catch(() => {});
+      // El `.part` a medias se borra: dejarlo haria que el siguiente intento lo
+      // viera ocupado y acabase escribiendo `archivo (2).zip`.
+      if (sink) {
+        const abandoned = sink;
+        sink = null;
+        abandoned.abort().catch(() => {});
+      }
       reject(err);
     });
   });
@@ -396,11 +585,11 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 /**
  * Cliente Relay que recibe los archivos en streaming a través del WebSocket de señalización
  */
-export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
+export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = {}) {
+  const { overwrite = false } = options;
   return new Promise((resolve, reject) => {
-    let currentFd = null;
-    let currentFileHash = null;
-    let currentTarget = null;
+    let sink = null;
+    const reserved = new Set();
     let totalBytes = manifest.reduce((acc, f) => acc + (f.size || 0), 0);
     let totalReceived = 0;
     let lastReport = performance.now();
@@ -436,9 +625,12 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
         clearTimeout(idleTimer);
         idleTimer = null;
       }
-      if (currentFd) {
-        currentFd.close().catch(() => {});
-        currentFd = null;
+      if (sink) {
+        // Se abandona el archivo a medias sin dejar el `.part` de rastro; el
+        // nombre bueno nunca se creó, así que no hay nada que corregir.
+        const abandoned = sink;
+        sink = null;
+        abandoned.abort().catch(() => {});
       }
     };
 
@@ -457,9 +649,8 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
           const chunk = Buffer.isBuffer(data)
             ? data
             : Buffer.from(data instanceof ArrayBuffer ? data : await data.arrayBuffer());
-          if (currentFd) {
-            await currentFd.write(chunk);
-            if (currentFileHash) currentFileHash.update(chunk);
+          if (sink) {
+            await sink.write(chunk);
             totalReceived += chunk.length;
 
             const now = performance.now();
@@ -495,30 +686,31 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
         if (data?.type === 'cli-start') {
           if (!startTime) startTime = performance.now();
           writeQueue = writeQueue.then(async () => {
-            if (currentFd) {
-              await currentFd.close();
-              currentFd = null;
+            // Un `cli-start` con un archivo todavía abierto significa que el
+            // emisor se ha saltado su `cli-end`: no está verificado, así que no
+            // se promociona al nombre bueno.
+            if (sink) {
+              await sink.abort();
+              sink = null;
             }
             const idx = data.index || 0;
-            currentTarget = manifest[idx] || { name: data.name, size: data.size };
-            currentFileHash = crypto.createHash('sha256');
-            const dest = safeOutputPath(outputDir, data.name || 'archivo');
-            currentFd = await fs.promises.open(dest, 'w');
-            receivedFiles.push({ path: dest, name: path.basename(dest), verified: false });
+            // Aquí los nombres llegan de uno en uno, así que el conjunto de
+            // reservas se arrastra entre mensajes en vez de calcularse de golpe.
+            const paths = reserveOutputPath(outputDir, data.name || 'archivo', reserved, { overwrite });
+            sink = await openFileSink({ ...paths, name: data.name, index: idx, overwrite });
+            receivedFiles.push({ path: sink.finalPath, name: path.basename(sink.finalPath), verified: false });
           }).catch(failWithError);
         } else if (data?.type === 'cli-end') {
           writeQueue = writeQueue.then(async () => {
-            if (currentFd) {
-              await currentFd.close();
-              currentFd = null;
-            }
-            const calcHash = currentFileHash ? currentFileHash.digest('hex') : null;
-            currentFileHash = null;
-            if (data.sha256 && calcHash && calcHash !== data.sha256) {
-              const err = new Error(`Error de integridad SHA-256 en ${currentTarget?.name || 'archivo'}: esperado ${data.sha256}, calculado ${calcHash}`);
-              err.code = 'INTEGRITY_MISMATCH';
+            if (!sink) {
+              const err = new Error('El emisor cierra un archivo que nunca abrió.');
+              err.code = 'PROTOCOL_ERROR';
               throw err;
             }
+            // Verifica, borra el `.part` si no cuadra y solo entonces renombra.
+            const closing = sink;
+            sink = null;
+            const calcHash = await closing.commit(data.sha256);
             const item = receivedFiles[data.index] || receivedFiles[receivedFiles.length - 1];
             if (item) {
               item.verified = true;
@@ -527,9 +719,11 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress) {
           }).catch(failWithError);
         } else if (data?.type === 'cli-done') {
           writeQueue = writeQueue.then(async () => {
-            if (currentFd) {
-              await currentFd.close();
-              currentFd = null;
+            // Un archivo todavía abierto aquí no llegó a verificarse: se tira su
+            // `.part` en vez de darlo por bueno con el nombre definitivo.
+            if (sink) {
+              await sink.abort();
+              sink = null;
             }
             // El emisor espera este mensaje para dar la transferencia por buena y
             // soltar la ventana: se manda con todo ya escrito en disco.

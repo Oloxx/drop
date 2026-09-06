@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createSenderServer, receiveFiles } from '../cli/src/transfer.js';
+import { createSenderServer, receiveFiles, PROTOCOL_VERSION } from '../cli/src/transfer.js';
 
 // Replicate the client-side Sha256 class to unit-test it directly in node:test
 const SHA256_K = new Uint32Array([
@@ -240,7 +240,7 @@ test('TCP transfer detects corrupted chunks and triggers INTEGRITY_MISMATCH', as
   const server = net.createServer((socket) => {
     socket.setNoDelay(true);
     // 1. Manifest
-    const manifest = { files: [{ name: 'file1.bin', size: content1.length }] };
+    const manifest = { v: PROTOCOL_VERSION, files: [{ name: 'file1.bin', size: content1.length }] };
     socket.write(frame(encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(manifest))]), key)));
 
     // 2. Data
@@ -267,6 +267,10 @@ test('TCP transfer detects corrupted chunks and triggers INTEGRITY_MISMATCH', as
         return true;
       }
     );
+    // The bad bytes never reach the final name: they stay in the `.part`, which
+    // is removed on failure, so the output directory is left untouched.
+    assert.equal(fs.existsSync(path.join(outDir, 'file1.bin')), false);
+    assert.deepEqual(fs.readdirSync(outDir), []);
   } finally {
     server.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });

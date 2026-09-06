@@ -1,4 +1,5 @@
-// Receptor de archivos: saneado de los nombres que manda el emisor.
+// Receptor de archivos: saneado de los nombres que manda el emisor, colisiones
+// con lo que ya hay en el destino y version del protocolo.
 // Este fichero no necesita el servidor levantado.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,13 +8,17 @@ import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
 
-import { safeOutputPath, receiveFiles } from '../cli/src/transfer.js';
+import { safeOutputPath, receiveFiles, PROTOCOL_VERSION } from '../cli/src/transfer.js';
 import { deriveKey, encryptChunk } from '../cli/src/crypto.js';
 import { newCode, randomRoomId } from '../public/shared/codes.js';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 function tmpdir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function sha256(buf) {
+  return createHash('sha256').update(buf).digest('hex');
 }
 
 // ------------------------------------------------------- saneado del nombre
@@ -39,48 +44,100 @@ test('safeOutputPath rechaza los nombres que no dan un archivo', () => {
   fs.rmSync(out, { recursive: true, force: true });
 });
 
-// -------------------------------------------- emisor hostil contra el receptor
+// -------------------------------------------- emisor de mentira contra el receptor
 
 /**
- * Emisor minimo que manda el manifiesto que se le diga, sin el `path.basename`
- * que aplica el emisor honesto. Es justo el escenario del que protege el
- * receptor: la garantia no puede estar en el otro lado.
+ * Emisor minimo, controlable trama a trama. No aplica el `path.basename` del
+ * emisor honesto ni ninguna otra garantia: es justo el escenario del que
+ * protege el receptor, porque la garantia no puede estar en el otro lado.
+ *
+ * `files` son las entradas del manifiesto; `bodies[i]` es el contenido del
+ * archivo `i`. Opciones:
+ *   - `version`: valor del campo `v` del manifiesto. `null` lo omite (emisor
+ *     anterior a la 0.5.0).
+ *   - `dataType`: byte de tipo de las tramas de datos (1 en un emisor sano).
+ *   - `truncateAfter`: numero de archivos a cerrar con `k:'end'` antes de
+ *     cortar la conexion a pelo, sin `k:'done'`.
+ *   - `badHash`: manda un SHA-256 que no corresponde al cuerpo.
  */
-function hostileSender(code, manifestFiles, body) {
+function fakeSender(code, files, bodies, opts = {}) {
+  const {
+    version = PROTOCOL_VERSION,
+    dataType = 1,
+    truncateAfter = null,
+    badHash = false,
+  } = opts;
+
   const key = deriveKey(code);
   const frame = (buf) => {
     const header = Buffer.allocUnsafe(4);
     header.writeUInt32BE(buf.length, 0);
     return Buffer.concat([header, buf]);
   };
-  const control = (obj) => frame(encryptChunk(
-    Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(obj))]), key));
+  const packet = (type, payload) => frame(encryptChunk(
+    Buffer.concat([Buffer.from([type]), payload]), key));
+  const control = (obj) => packet(0, Buffer.from(JSON.stringify(obj)));
+
+  const manifest = { files };
+  if (version !== null) manifest.v = version;
 
   const server = net.createServer((socket) => {
     socket.on('error', () => {});
-    socket.write(control({ files: manifestFiles }));
-    socket.write(frame(encryptChunk(Buffer.concat([Buffer.from([1]), body]), key)));
-    socket.write(control({ k: 'end', index: 0 }));
+    socket.write(control(manifest));
+
+    for (let i = 0; i < bodies.length; i++) {
+      if (truncateAfter !== null && i >= truncateAfter) {
+        socket.write(packet(dataType, bodies[i]));
+        socket.end();
+        return;
+      }
+      socket.write(packet(dataType, bodies[i]));
+      socket.write(control({
+        k: 'end',
+        index: i,
+        sha256: badHash ? sha256(Buffer.from('otra cosa')) : sha256(bodies[i]),
+      }));
+    }
+
     socket.write(control({ k: 'done' }));
     socket.end();
   });
+
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
   });
 }
 
-test('un manifiesto con ../ no escribe fuera del directorio de destino', async () => {
-  const root = tmpdir('drop-traversal-');
+/**
+ * Levanta el emisor de mentira y garantiza que el servidor se cierra pase lo
+ * que pase: sin esto un test que falla deja un socket escuchando y `node --test`
+ * no termina nunca.
+ */
+async function withSender(t, code, files, bodies, opts) {
+  const { server, port } = await fakeSender(code, files, bodies, opts);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return port;
+}
+
+function scratch(t, prefix) {
+  const root = tmpdir(prefix);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+const someCode = () => newCode(randomRoomId(randomBytes), randomBytes);
+
+// ------------------------------------------------------------ path traversal
+
+test('un manifiesto con ../ no escribe fuera del directorio de destino', async (t) => {
+  const root = scratch(t, 'drop-traversal-');
   const out = path.join(root, 'a', 'b');
   fs.mkdirSync(out, { recursive: true });
 
-  const code = newCode(randomRoomId(randomBytes), randomBytes);
+  const code = someCode();
   const escaped = path.join(root, 'escapado.txt');
-  const { server, port } = await hostileSender(
-    code,
-    [{ name: '../../escapado.txt', size: 5 }],
-    Buffer.from('PWNED')
-  );
+  const body = Buffer.from('PWNED');
+  const port = await withSender(t, code, [{ name: '../../escapado.txt', size: body.length }], [body]);
 
   const received = await receiveFiles('127.0.0.1', port, code, out, () => {});
 
@@ -89,23 +146,21 @@ test('un manifiesto con ../ no escribe fuera del directorio de destino', async (
   assert.deepEqual(fs.readdirSync(root), ['a']);
   assert.deepEqual(fs.readdirSync(out), ['escapado.txt']);
   assert.equal(received[0].path, path.join(out, 'escapado.txt'));
-
-  server.close();
-  fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('un manifiesto con un nombre imposible corta la transferencia sin escribir nada', async () => {
-  const root = tmpdir('drop-traversal-');
+test('un manifiesto con un nombre imposible corta la transferencia sin escribir nada', async (t) => {
+  const root = scratch(t, 'drop-traversal-');
   const out = path.join(root, 'destino');
   fs.mkdirSync(out, { recursive: true });
 
-  const code = newCode(randomRoomId(randomBytes), randomBytes);
+  const code = someCode();
   // Dos archivos, y el malo es el SEGUNDO: la validacion es de todo el manifiesto
   // de golpe, asi que no llega a escribirse ni el primero.
-  const { server, port } = await hostileSender(
-    code,
+  const body = Buffer.from('DATA');
+  const port = await withSender(
+    t, code,
     [{ name: 'bueno.txt', size: 4 }, { name: '..', size: 4 }],
-    Buffer.from('DATA')
+    [body, body]
   );
 
   await assert.rejects(
@@ -113,29 +168,202 @@ test('un manifiesto con un nombre imposible corta la transferencia sin escribir 
     (err) => err.code === 'UNSAFE_NAME'
   );
   assert.deepEqual(fs.readdirSync(out), []);
-
-  server.close();
-  fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('un manifiesto con ruta absoluta se guarda como un archivo suelto en el destino', async () => {
-  const root = tmpdir('drop-traversal-');
+test('un manifiesto con ruta absoluta se guarda como un archivo suelto en el destino', async (t) => {
+  const root = scratch(t, 'drop-traversal-');
   const out = path.join(root, 'destino');
   fs.mkdirSync(out, { recursive: true });
 
-  const code = newCode(randomRoomId(randomBytes), randomBytes);
+  const code = someCode();
   const body = Buffer.from('contenido');
-  const { server, port } = await hostileSender(
-    code,
-    [{ name: '/tmp/absoluto.txt', size: body.length }],
-    body
-  );
+  const port = await withSender(t, code, [{ name: '/tmp/absoluto.txt', size: body.length }], [body]);
 
   const received = await receiveFiles('127.0.0.1', port, code, out, () => {});
   assert.equal(received.length, 1);
   assert.equal(received[0].path, path.join(out, 'absoluto.txt'));
   assert.equal(fs.readFileSync(path.join(out, 'absoluto.txt'), 'utf-8'), 'contenido');
+});
 
-  server.close();
-  fs.rmSync(root, { recursive: true, force: true });
+// ------------------------------------------------------- colisiones de nombre
+
+test('no pisa un archivo que ya existe: lo guarda como "nombre (2)"', async (t) => {
+  const out = scratch(t, 'drop-colision-');
+  fs.writeFileSync(path.join(out, 'archivo.bin'), 'VIEJO');
+
+  const code = someCode();
+  const body = Buffer.from('NUEVO');
+  const port = await withSender(t, code, [{ name: 'archivo.bin', size: body.length }], [body]);
+
+  const received = await receiveFiles('127.0.0.1', port, code, out, () => {});
+
+  assert.equal(fs.readFileSync(path.join(out, 'archivo.bin'), 'utf-8'), 'VIEJO');
+  assert.equal(fs.readFileSync(path.join(out, 'archivo (2).bin'), 'utf-8'), 'NUEVO');
+  assert.equal(received[0].path, path.join(out, 'archivo (2).bin'));
+  // El sufijo va antes de la extension, no detras del nombre completo.
+  assert.equal(fs.existsSync(path.join(out, 'archivo.bin (2)')), false);
+});
+
+test('--overwrite si pisa el archivo existente', async (t) => {
+  const out = scratch(t, 'drop-colision-');
+  fs.writeFileSync(path.join(out, 'archivo.bin'), 'VIEJO');
+
+  const code = someCode();
+  const body = Buffer.from('NUEVO');
+  const port = await withSender(t, code, [{ name: 'archivo.bin', size: body.length }], [body]);
+
+  const received = await receiveFiles(
+    '127.0.0.1', port, code, out, () => {}, 0, { overwrite: true }
+  );
+
+  assert.equal(fs.readFileSync(path.join(out, 'archivo.bin'), 'utf-8'), 'NUEVO');
+  assert.equal(received[0].path, path.join(out, 'archivo.bin'));
+  assert.deepEqual(fs.readdirSync(out), ['archivo.bin']);
+});
+
+test('dos archivos con el mismo nombre en un manifiesto no se pisan', async (t) => {
+  const out = scratch(t, 'drop-colision-');
+
+  const code = someCode();
+  const uno = Buffer.from('PRIMERO');
+  const dos = Buffer.from('SEGUNDO');
+  // En el momento de reservar el segundo destino el primero todavia no existe en
+  // disco (esta en su `.part`), asi que mirar el disco no basta.
+  const port = await withSender(
+    t, code,
+    [{ name: 'a.bin', size: uno.length }, { name: 'a.bin', size: dos.length }],
+    [uno, dos]
+  );
+
+  const received = await receiveFiles('127.0.0.1', port, code, out, () => {});
+
+  assert.equal(received.length, 2);
+  assert.equal(fs.readFileSync(path.join(out, 'a.bin'), 'utf-8'), 'PRIMERO');
+  assert.equal(fs.readFileSync(path.join(out, 'a (2).bin'), 'utf-8'), 'SEGUNDO');
+  assert.deepEqual(fs.readdirSync(out).sort(), ['a (2).bin', 'a.bin']);
+});
+
+// --------------------------------------------------------------- integridad
+
+test('un SHA-256 que no cuadra no deja el archivo con el nombre bueno', async (t) => {
+  const out = scratch(t, 'drop-integridad-');
+
+  const code = someCode();
+  const body = Buffer.from('contenido');
+  const port = await withSender(
+    t, code, [{ name: 'archivo.bin', size: body.length }], [body], { badHash: true }
+  );
+
+  await assert.rejects(
+    receiveFiles('127.0.0.1', port, code, out, () => {}),
+    (err) => err.code === 'INTEGRITY_MISMATCH'
+  );
+
+  // Ni el nombre final ni el `.part`: el destino queda como estaba.
+  assert.deepEqual(fs.readdirSync(out), []);
+});
+
+// ---------------------------------------------------------- version y tramas
+
+test('un emisor sin version de protocolo da error de version, no un archivo corrupto', async (t) => {
+  const out = scratch(t, 'drop-version-');
+
+  const code = someCode();
+  const body = Buffer.from('contenido');
+  const port = await withSender(
+    t, code, [{ name: 'archivo.bin', size: body.length }], [body], { version: null }
+  );
+
+  await assert.rejects(
+    receiveFiles('127.0.0.1', port, code, out, () => {}),
+    (err) => {
+      assert.equal(err.code, 'PROTOCOL_VERSION');
+      assert.equal(err.senderVersion, 0);
+      assert.equal(err.supportedVersion, PROTOCOL_VERSION);
+      return true;
+    }
+  );
+  assert.deepEqual(fs.readdirSync(out), []);
+});
+
+test('un emisor con una version futura tambien se rechaza', async (t) => {
+  const out = scratch(t, 'drop-version-');
+
+  const code = someCode();
+  const body = Buffer.from('contenido');
+  const port = await withSender(
+    t, code, [{ name: 'archivo.bin', size: body.length }], [body],
+    { version: PROTOCOL_VERSION + 1 }
+  );
+
+  await assert.rejects(
+    receiveFiles('127.0.0.1', port, code, out, () => {}),
+    (err) => err.code === 'PROTOCOL_VERSION'
+  );
+  assert.deepEqual(fs.readdirSync(out), []);
+});
+
+test('una trama de tipo desconocido no acaba dentro del archivo', async (t) => {
+  const out = scratch(t, 'drop-trama-');
+
+  const code = someCode();
+  const body = Buffer.from('contenido');
+  const port = await withSender(
+    t, code, [{ name: 'archivo.bin', size: body.length }], [body], { dataType: 7 }
+  );
+
+  await assert.rejects(
+    receiveFiles('127.0.0.1', port, code, out, () => {}),
+    (err) => err.code === 'PROTOCOL_FRAME'
+  );
+  assert.deepEqual(fs.readdirSync(out), []);
+});
+
+test('un emisor que corta a media transferencia no deja el archivo con el nombre bueno', async (t) => {
+  const out = scratch(t, 'drop-truncado-');
+
+  const code = someCode();
+  const body = Buffer.from('a medias');
+  const port = await withSender(
+    t, code, [{ name: 'archivo.bin', size: 999 }], [body], { truncateAfter: 0 }
+  );
+
+  await assert.rejects(
+    receiveFiles('127.0.0.1', port, code, out, () => {}),
+    (err) => err.code === 'TRUNCATED'
+  );
+  assert.deepEqual(fs.readdirSync(out), []);
+});
+
+// -------------------------------------------- colisiones por el camino relay
+
+test('el receptor por relay tampoco pisa un archivo que ya existe', async (t) => {
+  const { EventEmitter } = await import('node:events');
+  const { receiveFromRelay } = await import('../cli/src/transfer.js');
+
+  const out = scratch(t, 'drop-relay-colision-');
+  fs.writeFileSync(path.join(out, 'archivo.bin'), 'VIEJO');
+
+  const body = Buffer.from('NUEVO');
+  class MockWs extends EventEmitter {
+    send() {}
+    addEventListener(evt, fn) { this.on(evt, fn); }
+    removeEventListener(evt, fn) { this.off(evt, fn); }
+  }
+
+  const ws = new MockWs();
+  // Por relay los nombres llegan de uno en uno con `cli-start`, no de golpe en
+  // el manifiesto: la reserva tiene que hacerse ahi.
+  const recibiendo = receiveFromRelay(ws, [{ name: 'archivo.bin', size: body.length }], out, () => {});
+
+  const signal = (data) => ws.emit('message', { data: JSON.stringify({ t: 'signal', data }) });
+  signal({ type: 'cli-start', index: 0, name: 'archivo.bin', size: body.length });
+  ws.emit('message', { data: body });
+  signal({ type: 'cli-end', index: 0, sha256: sha256(body) });
+  signal({ type: 'cli-done' });
+
+  const received = await recibiendo;
+  assert.equal(fs.readFileSync(path.join(out, 'archivo.bin'), 'utf-8'), 'VIEJO');
+  assert.equal(fs.readFileSync(path.join(out, 'archivo (2).bin'), 'utf-8'), 'NUEVO');
+  assert.equal(received[0].path, path.join(out, 'archivo (2).bin'));
 });

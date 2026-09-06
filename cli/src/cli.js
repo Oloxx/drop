@@ -10,13 +10,14 @@ import crypto from 'node:crypto';
 import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
-import { createSenderServer, receiveFiles, receiveFromRelay, RELAY_IDLE_TIMEOUT_MS } from './transfer.js';
+import { attachSender, receiveFiles, receiveFromRelay, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
+import { listenOrExplain, watchServerErrors } from './listen.js';
 import { secretProof } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 
-const VERSION = '0.4.2';
+const VERSION = '0.5.0';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -406,6 +407,8 @@ ${c.bold}OPCIONES:${c.reset}
   -o, --out <directorio> Directorio de destino para descargas (por defecto: actual)
   --relay                Fuerza la transferencia a través del servidor de Relay
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
+  --overwrite            Sobrescribe los archivos que ya existan en el destino
+                         (por defecto se guarda como "archivo (2).zip")
   --update               Comprueba y actualiza a la última versión
   --force                Fuerza la reinstalación en 'drop update'
   --skip-verify          Omite la comprobación SHA-256 en 'drop update' (no recomendado)
@@ -456,16 +459,36 @@ async function runSend(args, options) {
   console.log(`\n${c.bold}Preparando envío:${c.reset} ${files.length} archivo(s) · ${c.cyan}${fmtBytes(totalBytes)}${c.reset}`);
 
   // 1. Reservar el puerto TCP antes de nada, para poder lanzar el mapeo UPnP en
-  // paralelo con la señalización. Aquí solo hace falta el número de puerto: el
-  // servidor de verdad se monta abajo, cuando ya existe el código. Antes se creaba
-  // aquí un `createSenderServer` con token vacío y se tiraba; ahora derivar la
-  // clave cuesta 62 ms de scrypt y no tiene ningún sentido pagarlos para nada.
+  // paralelo con la señalización. Aquí solo hace falta el número de puerto, no la
+  // clave: derivarla cuesta 62 ms de scrypt y el código todavía no existe. Es UN
+  // solo servidor: antes se abría uno para sondear el puerto, se cerraba sin
+  // esperar y se abría otro sobre el mismo puerto, en carrera con el `close()`.
   let broadcaster = null;
   let ws = null;
+  let upnpResult = null;
+  let activeServer = null;
 
-  const portProbe = net.createServer();
-  await new Promise((resolve) => portProbe.listen(options.port || 0, '0.0.0.0', resolve));
-  const tcpPort = portProbe.address().port;
+  // Los manejadores de proceso van ANTES del primer `listen`. Estaban registrados
+  // al final, dentro del `await` que deja el canal abierto, o sea cuando el bind ya
+  // habia funcionado: un EADDRINUSE o un EACCES salia como excepcion no capturada.
+  installExitHandlers(() => ({ broadcaster, ws, activeServer, upnpResult }));
+
+  activeServer = net.createServer();
+  // Entre el bind y el momento en que se conoce el codigo no hay nada que servir:
+  // un socket aceptado aqui se quedaria colgado sin que nadie lo lea.
+  const rejectEarly = (socket) => socket.destroy();
+  activeServer.on('connection', rejectEarly);
+
+  try {
+    await listenOrExplain(activeServer, options.port || 0, '0.0.0.0');
+  } catch (err) {
+    console.error(`\n  ${c.red}${err.message}${c.reset}\n`);
+    process.exit(1);
+  }
+  watchServerErrors(activeServer, (err) => {
+    console.error(`\n  ${c.red}Error en el canal de escucha: ${err.message}${c.reset}\n`);
+  });
+  const tcpPort = activeServer.address().port;
 
   // `--relay` (o DROP_FORCE_RELAY) fuerza el camino por el servidor: ni UPnP, ni
   // anuncio por LAN, ni IPs en la oferta. Sirve para probarlo a mano y es lo que
@@ -474,7 +497,6 @@ async function runSend(args, options) {
 
   // Iniciar mapeo UPnP en el router en segundo plano
   let upnpPromise = null;
-  let upnpResult = null;
   if (!forceRelay && !process.env.DROP_NO_UPNP) {
     upnpPromise = mapPort(tcpPort, options.port || tcpPort, 'drop-send', 7200, {
       onRenewError: (err) => {
@@ -497,6 +519,11 @@ async function runSend(args, options) {
   let roomId = null;
   try {
     ws = await connectSignaling(options.server);
+    // `connectSignaling` solo vigila el error mientras conecta. Sin este listener
+    // permanente, un corte con el canal ya abierto se queda mudo.
+    ws.addEventListener('error', () => {
+      console.warn(`\n  ${c.yellow}Aviso: se ha perdido la conexión con el servidor de señalización. El canal TCP directo sigue abierto.${c.reset}\n`);
+    });
     roomId = await createRoom(ws);
   } catch (err) {
     // Sin servidor no hay quien reparta salas, así que el identificador lo
@@ -509,8 +536,11 @@ async function runSend(args, options) {
   const code = newCode(roomId, crypto.randomBytes);
   const { secret } = parseCode(code);
 
-  portProbe.close();
-  const activeServer = createSenderServer(
+  // Ya hay código: el servidor que lleva escuchando desde el principio pasa a
+  // servir de verdad, sin cerrar nada ni volver a bindear.
+  activeServer.off('connection', rejectEarly);
+  attachSender(
+    activeServer,
     files,
     code,
     (current, total, speed) => {
@@ -522,7 +552,6 @@ async function runSend(args, options) {
       console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
     }
   );
-  await new Promise((resolve) => activeServer.listen(tcpPort, '0.0.0.0', resolve));
 
   // 3. Iniciar descubrimiento LAN. Por el broadcast UDP solo viaja un hash del
   // identificador público: las palabras no se emiten a la subred (ver discovery.js).
@@ -720,6 +749,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             to: msg.guestId,
             data: {
               type: 'cli-offer',
+              v: PROTOCOL_VERSION,
               ips: candidateIps,
               port: forceRelay ? 0 : (upnp?.externalPort || tcpPort),
               upnp: Boolean(upnp?.success),
@@ -744,6 +774,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
               to: msg.from,
               data: {
                 type: 'cli-manifest',
+                v: PROTOCOL_VERSION,
                 manifest: files.map((f) => ({
                   name: path.basename(f.path),
                   size: f.size,
@@ -839,44 +870,66 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
 
   console.log(`  ${c.dim}Canal abierto permanentemente. Presiona ${c.bold}Ctrl + C${c.reset}${c.dim} para cerrarlo cuando hayas terminado.${c.reset}\n`);
 
-  await new Promise(() => {
-    let closing = false;
-    const onExit = async (exitCode = 0) => {
-      if (closing) return;
-      closing = true;
-      if (exitCode === 0) {
-        console.log(`\n\n  ${c.yellow}Cerrando canal de transferencia...${c.reset}`);
-      }
-      if (broadcaster) broadcaster.stop();
-      if (ws) {
-        try { ws.close(); } catch {}
-      }
-      try { activeServer.close(); } catch {}
-      if (upnpResult?.unmap) {
-        try { await upnpResult.unmap(); } catch {}
-      }
-      if (exitCode === 0) {
-        console.log(`  ${c.green}✔ ¡Canal cerrado con éxito!${c.reset}\n`);
-      }
-      process.exit(exitCode);
-    };
+  // El canal se queda abierto hasta que alguien lo cierre; el cierre ordenado lo
+  // llevan los manejadores instalados arriba.
+  await new Promise(() => {});
+}
 
-    process.on('SIGINT', () => onExit(0));
-    process.on('SIGTERM', () => onExit(0));
-    process.on('uncaughtException', async (err) => {
-      console.error(`\n  ${c.red}Error no capturado:${c.reset}`, err);
-      await onExit(1);
-    });
-    process.on('unhandledRejection', async (reason) => {
-      console.error(`\n  ${c.red}Promesa rechazada no capturada:${c.reset}`, reason);
-      await onExit(1);
-    });
-    process.on('exit', () => {
-      if (upnpResult?.unmapSync) {
-        try { upnpResult.unmapSync(); } catch {}
-      }
-    });
+/**
+ * Cierre ordenado del emisor: para el anuncio LAN, cierra la señalización y el
+ * servidor TCP y deshace el mapeo UPnP.
+ *
+ * `getState` se pasa como funcion y no como objeto porque esto se instala antes de
+ * que exista nada de eso: la gracia es cubrir tambien los fallos del arranque.
+ */
+function installExitHandlers(getState) {
+  let closing = false;
+
+  const onExit = async (exitCode = 0) => {
+    if (closing) return;
+    closing = true;
+    const { broadcaster, ws, activeServer, upnpResult } = getState();
+    if (exitCode === 0) {
+      console.log(`\n\n  ${c.yellow}Cerrando canal de transferencia...${c.reset}`);
+    }
+    if (broadcaster) broadcaster.stop();
+    if (ws) {
+      try { ws.close(); } catch {}
+    }
+    if (activeServer) {
+      try { activeServer.close(); } catch {}
+    }
+    if (upnpResult?.unmap) {
+      try { await upnpResult.unmap(); } catch {}
+    }
+    if (exitCode === 0) {
+      console.log(`  ${c.green}✔ ¡Canal cerrado con éxito!${c.reset}\n`);
+    }
+    process.exit(exitCode);
+  };
+
+  process.on('SIGINT', () => onExit(0));
+  process.on('SIGTERM', () => onExit(0));
+  // El mensaje primero; la pila solo con DROP_DEBUG. Lo que necesita quien lo lee
+  // es la frase, no cuarenta lineas de `at ...`.
+  process.on('uncaughtException', async (err) => {
+    console.error(`\n  ${c.red}Error no capturado:${c.reset} ${err?.message || err}`);
+    if (process.env.DROP_DEBUG) console.error(err);
+    await onExit(1);
   });
+  process.on('unhandledRejection', async (reason) => {
+    console.error(`\n  ${c.red}Promesa rechazada no capturada:${c.reset} ${reason?.message || reason}`);
+    if (process.env.DROP_DEBUG) console.error(reason);
+    await onExit(1);
+  });
+  process.on('exit', () => {
+    const { upnpResult } = getState();
+    if (upnpResult?.unmapSync) {
+      try { upnpResult.unmapSync(); } catch {}
+    }
+  });
+
+  return onExit;
 }
 
 function printSuccess(received, outputDir) {
@@ -979,7 +1032,7 @@ async function runRecv(args, options) {
     try {
       const received = await receiveFiles(target.host, target.port, code, outputDir, (current, total, speed) => {
         renderProgressBar(current, total, speed);
-      });
+      }, 0, { overwrite: options.overwrite });
       if (received.stats) {
         renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
       }
@@ -1052,7 +1105,7 @@ async function runRecv(args, options) {
       try {
         const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed) => {
           renderProgressBar(current, total, speed);
-        }, 3000);
+        }, 3000, { overwrite: options.overwrite });
         if (ws) ws.close();
         if (received.stats) {
           renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1063,6 +1116,16 @@ async function runRecv(args, options) {
         if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
           if (ws) ws.close();
           return askRetry(err, () => runRecv(args, options));
+        }
+        // Cambiar de camino no arregla ninguno de estos: cortar aqui y decirlo.
+        // Antes se tragaban y se reintentaba por relay, donde volvian a fallar
+        // igual pero sesenta segundos mas tarde.
+        if (['PROTOCOL_VERSION', 'PROTOCOL_FRAME', 'PROTOCOL_ERROR', 'BAD_CODE', 'UNSAFE_NAME'].includes(err.code)) {
+          if (ws) ws.close();
+          console.error(`
+${c.red}${err.message}${c.reset}
+`);
+          process.exit(1);
         }
       }
     }
@@ -1088,6 +1151,14 @@ async function runRecv(args, options) {
           if (msg.t === 'signal' && msg.data?.type === 'cli-manifest') {
             clearTimeout(timeout);
             ws.removeEventListener('message', onMsg);
+            if (msg.data.v !== PROTOCOL_VERSION) {
+              const err = new Error(
+                `El emisor usa la versión ${msg.data.v ?? '0 (drop anterior a la 0.5.0)'} del protocolo y este receptor la ${PROTOCOL_VERSION}: actualiza drop en los dos equipos.`
+              );
+              err.code = 'PROTOCOL_VERSION';
+              reject(err);
+              return;
+            }
             resolve(msg.data.manifest || []);
           } else if (msg.t === 'error') {
             clearTimeout(timeout);
@@ -1111,7 +1182,7 @@ async function runRecv(args, options) {
   try {
     const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed) => {
       renderProgressBar(current, total, speed);
-    });
+    }, { overwrite: options.overwrite });
     if (ws) ws.close();
     if (received.stats) {
       renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1182,6 +1253,7 @@ async function main() {
     port: 0,
     directOnly: false,
     relay: false,
+    overwrite: false,
   };
 
   const cleanArgs = [];
@@ -1198,6 +1270,8 @@ async function main() {
       options.directOnly = true;
     } else if (argv[i] === '--relay') {
       options.relay = true;
+    } else if (argv[i] === '--overwrite') {
+      options.overwrite = true;
     } else {
       cleanArgs.push(argv[i]);
     }

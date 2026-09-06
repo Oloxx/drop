@@ -15,8 +15,10 @@ export function connectSignaling(serverUrl) {
   const target = getSignalingUrl(serverUrl);
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(target);
-    ws.onopen = () => resolve(ws);
-    ws.onerror = (err) => reject(new Error(`No se pudo conectar al servidor de señalización: ${target}`));
+    // A partir del `open` manda el llamante: si se deja este `onerror` puesto, un
+    // corte posterior intentaria rechazar una promesa ya resuelta y se perderia.
+    ws.onopen = () => { ws.onerror = null; resolve(ws); };
+    ws.onerror = () => reject(new Error(`No se pudo conectar al servidor de señalización: ${target}`));
   });
 }
 
