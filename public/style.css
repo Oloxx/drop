@@ -302,6 +302,10 @@ button {
 #offer .hint {
   margin-top: -0.5rem;
 }
+#offer .sas {
+  margin-top: -0.9rem;
+  word-break: break-word;
+}
 
 /* -------------------------------------------------------------- enlace */
 
@@ -398,6 +402,14 @@ button {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .peer-file .rate { font-variant-numeric: tabular-nums; }
+
+/* La huella de sesion: se lee en voz alta, asi que va suelta y sin cortar. */
+.peer-sas {
+  font-size: .74rem;
+  color: var(--muted);
+  letter-spacing: .02em;
+  word-break: break-word;
+}
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }

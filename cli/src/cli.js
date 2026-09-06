@@ -12,7 +12,7 @@ import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from 
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
 import { attachSender, receiveFiles, receiveFromRelay, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
 import { listenOrExplain, watchServerErrors } from './listen.js';
-import { secretProof } from './crypto.js';
+import { secretProof, sasFromKey, deriveKey } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
@@ -411,6 +411,8 @@ ${c.bold}OPCIONES:${c.reset}
                          (por defecto se guarda como "archivo (2).zip")
   --update               Comprueba y actualiza a la última versión
   --force                Fuerza la reinstalación en 'drop update'
+  -y, --yes              No pide confirmación antes de servir a cada receptor
+                         (se activa solo si no hay terminal interactiva)
   --skip-verify          Omite la comprobación SHA-256 en 'drop update' (no recomendado)
   -h, --help             Muestra esta ayuda
   -v, --version          Muestra la versión
@@ -536,6 +538,18 @@ async function runSend(args, options) {
   const code = newCode(roomId, crypto.randomBytes);
   const { secret } = parseCode(code);
 
+  // Huella de la sesión: sale de la clave AES ya derivada, no de las palabras del
+  // código. Es la misma que ve el receptor por TCP directo, y sirve para comprobar
+  // de viva voz que los dos están en la misma transferencia (public/shared/sas.js).
+  const sas = sasFromKey(deriveKey(code), roomId);
+
+  // Sin terminal interactiva no hay a quién preguntar: se aprueba solo, igual que
+  // con --yes, y se dice en el aviso de cada receptor.
+  const askPeer = makePeerGate({
+    auto: options.yes || !process.stdin.isTTY,
+    motivo: options.yes ? '--yes' : 'sin terminal interactiva',
+  });
+
   // Ya hay código: el servidor que lleva escuchando desde el principio pasa a
   // servir de verdad, sin cerrar nada ni volver a bindear.
   activeServer.off('connection', rejectEarly);
@@ -550,6 +564,15 @@ async function runSend(args, options) {
       renderProgressBarComplete(totalBytes, totalTimeSec, avgSpeed);
       console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${socket.remoteAddress})!${c.reset}`);
       console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
+    },
+    {
+      // Nada se escribe en el socket hasta que esto devuelve true: quien conecta
+      // sabe el código, pero saber el código no da derecho a los archivos.
+      onPeer: ({ address, sas: peerSas }) => askPeer({
+        who: address || '(dirección desconocida)',
+        sas: peerSas,
+        path: 'TCP directo',
+      }),
     }
   );
 
@@ -562,6 +585,7 @@ async function runSend(args, options) {
   ${c.green}✔ Canal abierto.${c.reset}
   ${c.bold}Código:${c.reset}  ${c.cyan}${c.bold}${code}${c.reset}
   ${c.bold}Enlace:${c.reset}  ${c.dim}${shareLink}${c.reset}
+  ${c.bold}Huella:${c.reset}  ${c.cyan}${sas}${c.reset} ${c.dim}(el receptor tiene que ver esta misma por TCP directo)${c.reset}
 
   ${c.dim}Díctaselo tal cual, o pásale el enlace. En el otro equipo:${c.reset}
     ${c.yellow}drop recv ${code}${c.reset}
@@ -573,6 +597,8 @@ const activeStreams = new Set();
 const guestAcks = new Map();
 // Reto pendiente por receptor: guestId -> nonce.
 const pendingProofs = new Map();
+// IP con la que cada receptor entró en la sala, para poder decir a quién se sirve.
+const guestIps = new Map();
 
 async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
@@ -721,6 +747,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.t === 'guest') {
+          if (msg.ip) guestIps.set(msg.guestId, msg.ip);
           let upnp = upnpResult;
           if (!upnp && upnpPromise) {
             upnp = await Promise.race([
@@ -769,6 +796,19 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
               reportBadGuest(ws, msg.from);
               return;
             }
+            // Sabe las palabras, pero eso no le da derecho a los archivos: la
+            // última palabra la tiene quien envía. Por relay no hay huella que
+            // enseñar (los datos pasan por el servidor de todas formas).
+            const permitido = await askPeer({
+              who: guestIps.get(msg.from) || `receptor ${msg.from}`,
+              sas: null,
+              path: 'relay por servidor',
+            });
+            if (!permitido) {
+              ws.send(JSON.stringify({ t: 'signal', to: msg.from, data: { type: 'cli-denied' } }));
+              return;
+            }
+
             ws.send(JSON.stringify({
               t: 'signal',
               to: msg.from,
@@ -851,6 +891,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
         } else if (msg.t === 'guest-gone') {
           activeStreams.delete(msg.guestId);
           pendingProofs.delete(msg.guestId);
+          guestIps.delete(msg.guestId);
           const ackInfo = guestAcks.get(msg.guestId);
           if (ackInfo?.notify) {
             const cb = ackInfo.notify;
@@ -944,6 +985,50 @@ function printSuccess(received, outputDir) {
   console.log('');
 }
 
+/**
+ * Pide permiso al humano antes de servirle los archivos a alguien.
+ *
+ * Las peticiones se encolan: con dos receptores a la vez, dos prompts de readline
+ * compitiendo por el mismo stdin se comen las teclas del otro.
+ *
+ * Sin TTY (un script, un cron, la suite de tests) NO se pregunta: se aprueba y se
+ * dice por que. Bloquear ahi seria colgar el proceso esperando una tecla que no va
+ * a llegar nunca.
+ */
+function makePeerGate({ auto, motivo }) {
+  let cola = Promise.resolve();
+
+  return function askPeer({ who, sas, path: via }) {
+    const turno = cola.then(async () => {
+      const huella = sas
+        ? `\n  ${c.bold}Huella de la sesión:${c.reset} ${c.cyan}${sas}${c.reset} ${c.dim}(tiene que coincidir con la que ve el receptor)${c.reset}`
+        : `\n  ${c.dim}Sin huella: por esta ruta los datos pasan por el servidor de relay.${c.reset}`;
+
+      const donde = via ? ` ${c.dim}(${via})${c.reset}` : '';
+      console.log(`\n  ${c.bold}Alguien quiere descargar:${c.reset} ${c.yellow}${who}${c.reset}${donde}${huella}`);
+
+      if (auto) {
+        console.log(`  ${c.dim}Autorizado sin preguntar (${motivo}).${c.reset}\n`);
+        return true;
+      }
+
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const respuesta = await new Promise((r) => rl.question(`  ¿Le dejas descargar? (s/N): `, r));
+      rl.close();
+      const ok = ['s', 'si', 'sí', 'y', 'yes'].includes(respuesta.trim().toLowerCase());
+      console.log(ok
+        ? `  ${c.green}✔ Autorizado.${c.reset}\n`
+        : `  ${c.yellow}✖ Rechazado.${c.reset} ${c.dim}El canal sigue abierto para otros receptores.${c.reset}\n`);
+      return ok;
+    });
+
+    // La cola no se puede romper por un fallo de un prompt: si no, el siguiente
+    // receptor se quedaria esperando un turno que no llega nunca.
+    cola = turno.catch(() => {});
+    return turno;
+  };
+}
+
 async function askRetry(err, retryFn) {
   if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
     console.error(`\n  ${c.red}✖ Alerta de discrepancia de integridad:${c.reset} ${err.message}`);
@@ -958,6 +1043,17 @@ async function askRetry(err, retryFn) {
     }
   }
   process.exit(1);
+}
+
+/**
+ * Se llama al conectar por TCP directo, antes de que llegue el manifiesto.
+ *
+ * Enseña la huella para poder compararla con la del emisor por otro canal, y avisa
+ * de que la espera es normal: el emisor puede estar pidiéndole permiso a un humano.
+ */
+function printSasAndWait(sas) {
+  console.log(`  ${c.bold}Huella de la sesión:${c.reset} ${c.cyan}${sas}${c.reset} ${c.dim}(compárala con la del emisor)${c.reset}`);
+  console.log(`  ${c.dim}Esperando a que el emisor autorice la descarga...${c.reset}\n`);
 }
 
 async function runRecv(args, options) {
@@ -1032,7 +1128,7 @@ async function runRecv(args, options) {
     try {
       const received = await receiveFiles(target.host, target.port, code, outputDir, (current, total, speed) => {
         renderProgressBar(current, total, speed);
-      }, 0, { overwrite: options.overwrite });
+      }, 0, { overwrite: options.overwrite, onConnected: printSasAndWait });
       if (received.stats) {
         renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
       }
@@ -1105,7 +1201,7 @@ async function runRecv(args, options) {
       try {
         const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed) => {
           renderProgressBar(current, total, speed);
-        }, 3000, { overwrite: options.overwrite });
+        }, 3000, { overwrite: options.overwrite, onConnected: printSasAndWait });
         if (ws) ws.close();
         if (received.stats) {
           renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1137,13 +1233,22 @@ ${c.red}${err.message}${c.reset}
   // que conocemos las palabras. Aquí sí la damos, y solo aquí: por este camino
   // los datos pasan por el servidor de todas formas, así que no hay cifrado
   // nuestro que proteger. Por TCP directo no se manda nunca (ver crypto.js).
-  console.log(`  ${c.cyan}[MODO RELAY POR INTERNET]${c.reset} ${c.dim}Descargando archivos en streaming...${c.reset}\n`);
+  console.log(`  ${c.cyan}[MODO RELAY POR INTERNET]${c.reset} ${c.dim}Descargando archivos en streaming...${c.reset}`);
+  // Sin huella a propósito: por esta ruta los bytes pasan por el servidor, así que
+  // una huella daría una garantía que no existe (ver public/shared/sas.js).
+  console.log(`  ${c.dim}Ruta por el servidor: sin huella de sesión y sin cifrado extremo a extremo propio.${c.reset}`);
+  console.log(`  ${c.dim}Esperando a que el emisor autorice la descarga...${c.reset}\n`);
   // @deprecated Un emisor v0.3.5 manda el manifiesto dentro de la propia oferta y
   // no entiende de retos: si viene, se usa tal cual. Se elimina en la v0.5.0.
   let manifest = offer.manifest || null;
   try {
     if (!manifest) manifest = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('El emisor no ha aceptado el código')), 10000);
+      // Generoso a proposito: al otro lado puede haber alguien decidiendo si
+      // autoriza la descarga, y eso no cabe en diez segundos.
+      const timeout = setTimeout(
+        () => reject(new Error('El emisor no ha respondido: puede que no haya autorizado la descarga.')),
+        90_000
+      );
       const onMsg = (ev) => {
         try {
           if (typeof ev.data !== 'string') return;
@@ -1160,6 +1265,11 @@ ${c.red}${err.message}${c.reset}
               return;
             }
             resolve(msg.data.manifest || []);
+          } else if (msg.t === 'signal' && msg.data?.type === 'cli-denied') {
+            // El código era correcto: quien envía ha dicho que no.
+            clearTimeout(timeout);
+            ws.removeEventListener('message', onMsg);
+            reject(new Error('El emisor no ha autorizado esta descarga.'));
           } else if (msg.t === 'error') {
             clearTimeout(timeout);
             ws.removeEventListener('message', onMsg);
@@ -1254,6 +1364,7 @@ async function main() {
     directOnly: false,
     relay: false,
     overwrite: false,
+    yes: false,
   };
 
   const cleanArgs = [];
@@ -1272,6 +1383,8 @@ async function main() {
       options.relay = true;
     } else if (argv[i] === '--overwrite') {
       options.overwrite = true;
+    } else if (argv[i] === '-y' || argv[i] === '--yes') {
+      options.yes = true;
     } else {
       cleanArgs.push(argv[i]);
     }

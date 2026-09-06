@@ -37,6 +37,7 @@
 // nuestro que proteger. Diseno completo en shared/codes.js.
 
 import { parseCode, randomSecretWords, formatCode, CodeError } from './shared/codes.js';
+import { sasInput, sasWords, formatSas, dtlsFingerprints } from './shared/sas.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -303,9 +304,35 @@ async function applySignal(conn, data) {
     for (const cand of conn.pendingIce.splice(0)) {
       await pc.addIceCandidate(cand).catch(() => {});
     }
+    reportSas(conn);
   } else if (data.ice) {
     if (pc.remoteDescription) await pc.addIceCandidate(data.ice).catch(() => {});
     else conn.pendingIce.push(data.ice);
+  }
+}
+
+/**
+ * Huella corta de la sesion, atada a los fingerprints DTLS de los dos extremos.
+ *
+ * ESTO ES LO QUE DETECTA UN MITM. El SDP pasa por el servidor, asi que un servidor
+ * comprometido puede sustituir los fingerprints y hablar DTLS con cada lado por
+ * separado. Si lo hace, cada extremo ve el certificado del intruso y no el del
+ * otro: las huellas dejan de coincidir y basta con leerlas en voz alta para verlo.
+ *
+ * Por eso la huella NO viaja por el cable: se calcula aqui, con lo que ya hay en
+ * las dos descripciones. Detalle completo en shared/sas.js.
+ */
+function reportSas(conn) {
+  if (!conn.onSas) return;
+  const fps = [
+    ...dtlsFingerprints(conn.pc.localDescription && conn.pc.localDescription.sdp),
+    ...dtlsFingerprints(conn.pc.remoteDescription && conn.pc.remoteDescription.sdp),
+  ];
+  if (fps.length < 2) return;      // todavia no estan las dos mitades
+  try {
+    conn.onSas(formatSas(sasWords(sha256Hex(sasInput('webrtc', fps)))));
+  } catch {
+    // Una huella que no se puede calcular no puede romper la transferencia.
   }
 }
 
@@ -317,7 +344,8 @@ function makeProgressRow(container, title) {
   el.innerHTML =
     '<div class="peer-head"><span class="who"></span><span class="state"></span></div>' +
     '<div class="bar"><i></i></div>' +
-    '<div class="peer-file"><span class="grow"></span><span class="rate"></span></div>';
+    '<div class="peer-file"><span class="grow"></span><span class="rate"></span></div>' +
+    '<div class="peer-sas" hidden></div>';
 
   // Guardamos los nodos una vez: progress() se llama por cada trozo recibido y
   // buscarlos cada vez cuesta un ~10% del rendimiento de la transferencia.
@@ -326,6 +354,7 @@ function makeProgressRow(container, title) {
   const elGrow = el.querySelector('.grow');
   const elRate = el.querySelector('.rate');
   const elWho = el.querySelector('.who');
+  const elSas = el.querySelector('.peer-sas');
   elWho.textContent = title;
   container.appendChild(el);
 
@@ -372,6 +401,11 @@ function makeProgressRow(container, title) {
       if (cls) el.classList.add(cls);
     },
     file(text) { elGrow.textContent = text; },
+    // Huella de la sesion: se compara de viva voz con la del otro extremo.
+    sas(words) {
+      elSas.textContent = 'fingerprint: ' + words;
+      elSas.hidden = false;
+    },
     // Por donde van los bytes de verdad. Va pegado al nombre, no al estado, que
     // lo repinta progress() en cada fotograma.
     path(text) { elWho.textContent = text ? title + ' · ' + text : title; },
@@ -553,6 +587,7 @@ function onGuestJoined(guestId) {
     dc: null,
     pendingIce: [],
     row,
+    onSas: (words) => row.sas(words),
     acked: 0,
     cancelled: false,
     started: false,     // ya le estamos sirviendo (directo o por cadena)
@@ -878,6 +913,9 @@ const rx = {
 function makeLink(peerId) {
   const conn = {
     peerId,
+    // Solo interesa la huella del enlace con el emisor: los eslabones de la cadena
+    // reenvian bytes que ya vienen del emisor y no aportan nada que comparar.
+    onSas: peerId === 0 ? showSas : null,
     pc: new RTCPeerConnection(iceConfig),
     dc: null,
     pendingIce: [],
@@ -1193,6 +1231,16 @@ function sendHost(obj) {
   if (rx.host && rx.host.readyState === 'open') rx.host.send(JSON.stringify(obj));
 }
 
+/**
+ * Pinta la huella en el bloque de la oferta, para poder compararla ANTES de
+ * aceptar la descarga.
+ */
+function showSas(words) {
+  const el = $('#offer-sas');
+  el.textContent = 'session fingerprint: ' + words + ' — must match the sender';
+  el.hidden = false;
+}
+
 function showOffer(files) {
   $('#recv-title').textContent = 'incoming payload';
   $('#offer').hidden = false;
@@ -1392,10 +1440,22 @@ function routeSignal(from, data) {
     wsSend({ t: 'signal', data: { type: 'cli-proof', proof: secretProof(data.nonce || '', rx.secret || '') } });
     return;
   }
+  // El emisor ha dicho que no. El codigo era correcto: esto no es un fallo de
+  // emparejamiento, asi que se dice tal cual.
+  if (data.type === 'cli-denied') {
+    setStatus('sender declined', 'error');
+    $('#join-error').hidden = false;
+    $('#join-error').textContent = 'The sender did not authorize this download.';
+    return;
+  }
   if (data.type === 'cli-manifest') {
     rx.manifest = data.manifest || [];
     rx.total = rx.manifest.reduce((sum, f) => sum + f.size, 0);
     showOffer(rx.manifest);
+    // Sin huella a proposito: por el relay los bytes pasan por el servidor, asi que
+    // una huella prometeria algo que esta ruta no da (ver shared/sas.js).
+    $('#offer-sas').textContent = 'relayed through the server: no end-to-end fingerprint on this route';
+    $('#offer-sas').hidden = false;
     setStatus('channel ready · CLI host', 'live');
     return;
   }

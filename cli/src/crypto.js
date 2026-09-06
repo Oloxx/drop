@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { splitForKey } from '../../public/shared/codes.js';
+import { sasInput, sasWords, formatSas } from '../../public/shared/sas.js';
 
 // Coste de scrypt. N=2^15 con r=8 son 128 x N x r = 32 MB de memoria por intento,
 // y 62 ms medidos en un MacBook (Apple Silicon, Node 24).
@@ -78,6 +79,26 @@ export function deriveKey(code) {
  */
 export function secretProof(nonce, secret) {
   return crypto.createHash('sha256').update(`drop-proof-v2|${nonce}|${secret}`).digest('hex');
+}
+
+/**
+ * Huella corta de la sesion para el camino TCP directo entre dos CLI.
+ *
+ * Sale de la clave AES ya derivada, no del codigo: la clave viene de scrypt, asi
+ * que ensenarla en pantalla no regala un verificador barato del secreto (ver el
+ * razonamiento entero en public/shared/sas.js). El identificador de sala entra
+ * para que la misma clave en dos salas distintas no de la misma huella.
+ *
+ * En este camino un MITM ya es imposible -- sin las palabras, AES-GCM rechaza el
+ * primer paquete --, asi que aqui la huella no detecta intrusos: sirve para ver de
+ * un vistazo que los dos extremos estan en la misma transferencia y no en otra.
+ * Donde SI detecta MITM es en el navegador, con los fingerprints DTLS.
+ */
+export function sasFromKey(key, roomId) {
+  const digest = crypto.createHmac('sha256', key)
+    .update(sasInput('tcp', [roomId]))
+    .digest('hex');
+  return formatSas(sasWords(digest));
 }
 
 // Cifra un trozo de datos con AES-256-GCM.

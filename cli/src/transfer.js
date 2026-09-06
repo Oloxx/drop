@@ -2,7 +2,8 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { deriveKey, encryptChunk, decryptChunk } from './crypto.js';
+import { deriveKey, encryptChunk, decryptChunk, sasFromKey } from './crypto.js';
+import { splitForKey } from '../../public/shared/codes.js';
 
 const CHUNK_SIZE = 512 * 1024; // 512 KB por bloque para equilibrar streaming y memoria
 
@@ -226,9 +227,34 @@ export async function openFileSink({ finalPath, partPath, name, index = null, ov
  * con el puerto — y antes esto se resolvia creando dos servidores y rebindeando el
  * mismo puerto en carrera.
  */
-export function attachSender(server, files, code, onProgress, onComplete) {
+// Antes de conectarse de verdad, el receptor sondea el puerto con una conexion TCP
+// que cierra al instante (`probeCandidateIPs` en discovery.js). Preguntarle al
+// humano por ese sondeo seria preguntarle dos veces por el mismo receptor, y la
+// primera por algo que ya no existe: se espera este momento y solo se pregunta por
+// lo que sigue ahi. Es tiempo muerto solo cuando hay confirmacion activada.
+const PEER_SETTLE_MS = 400;
+
+/** true si el socket sigue abierto pasado `ms`; false si se cerro antes. */
+function stillConnected(socket, ms) {
+  return new Promise((resolve) => {
+    if (socket.destroyed) return resolve(false);
+    const timer = setTimeout(() => {
+      socket.off('close', onClose);
+      resolve(!socket.destroyed);
+    }, ms);
+    function onClose() {
+      clearTimeout(timer);
+      resolve(false);
+    }
+    socket.once('close', onClose);
+  });
+}
+
+export function attachSender(server, files, code, onProgress, onComplete, options = {}) {
   // La clave se deriva una vez por servidor, no por socket: scrypt cuesta 62 ms.
   const key = deriveKey(code);
+  const { onPeer } = options;
+  const senderSas = sasFromKey(key, splitForKey(code).roomId);
   let totalBytes = files.reduce((acc, f) => acc + f.size, 0);
 
   server.on('connection', (socket) => {
@@ -237,6 +263,26 @@ export function attachSender(server, files, code, onProgress, onComplete) {
 
     (async () => {
       try {
+        // Nada se escribe antes de que `onPeer` diga que si: el receptor se queda
+        // esperando con el socket abierto, que es lo que le permite ensenar "el
+        // emisor todavia no ha autorizado" en vez de fallar. Sin `onPeer` (tests,
+        // benches, `--yes`) se sirve directamente, como siempre.
+        if (onPeer) {
+          if (!await stillConnected(socket, PEER_SETTLE_MS)) return;
+          const aprobado = await onPeer({
+            address: socket.remoteAddress,
+            port: socket.remotePort,
+            sas: senderSas,
+          });
+          if (!aprobado) {
+            socket.end();
+            return;
+          }
+          if (socket.destroyed || !socket.writable) return;
+        }
+
+        // El cronometro arranca DESPUES de la autorizacion: lo que tarde un humano
+        // en decidir no es ancho de banda y no tiene que salir en la media.
         const startTime = performance.now();
         // 1. Enviar manifiesto de archivos cifrado (tipo 0 = control JSON)
         const manifest = { v: PROTOCOL_VERSION, files: files.map((f) => ({ name: path.basename(f.path), size: f.size })) };
@@ -324,19 +370,28 @@ export function attachSender(server, files, code, onProgress, onComplete) {
 /**
  * Servidor TCP del emisor que transmite archivos al receptor
  */
-export function createSenderServer(files, code, onProgress, onComplete) {
-  return attachSender(net.createServer(), files, code, onProgress, onComplete);
+export function createSenderServer(files, code, onProgress, onComplete, options = {}) {
+  return attachSender(net.createServer(), files, code, onProgress, onComplete, options);
 }
 
 /**
  * Cliente TCP del receptor que se conecta al emisor y guarda los archivos
  */
 export function receiveFiles(host, port, code, outputDir, onProgress, connectTimeoutMs = 0, options = {}) {
-  const { overwrite = false } = options;
+  const { overwrite = false, onConnected } = options;
   return new Promise((resolve, reject) => {
     const key = deriveKey(code);
     const socket = net.connect({ host, port });
     socket.setNoDelay(true);
+
+    // El emisor puede tardar en mandar el manifiesto si esta pidiendo confirmacion
+    // a un humano. Avisar en cuanto hay socket es lo que distingue "esperando a
+    // que autorice" de "esto se ha colgado".
+    if (onConnected) {
+      socket.once('connect', () => {
+        try { onConnected(sasFromKey(key, splitForKey(code).roomId)); } catch { /* solo es un aviso */ }
+      });
+    }
 
     let connTimer = null;
     if (connectTimeoutMs > 0) {
