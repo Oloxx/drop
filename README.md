@@ -142,7 +142,22 @@ drop recv https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
 
 # Opcional: especificar carpeta de destino (-o o --out)
 drop recv 4271-lemon-radar-tiger-orbit -o D:\Descargas
+
+# Opcional: sobrescribir los archivos que ya existan en el destino
+drop recv 4271-lemon-radar-tiger-orbit --overwrite
 ```
+
+**Qué pasa si el archivo ya existe:** por defecto no se pisa nada. Cada archivo se
+escribe primero como `nombre.ext.part` y solo pasa a llamarse `nombre.ext` cuando su
+SHA-256 cuadra; si ese nombre ya está ocupado, el archivo nuevo se guarda como
+`nombre (2).ext`. Con `--overwrite` se reemplaza el archivo existente. Una transferencia
+que se corta a medias no deja nada con el nombre definitivo: el `.part` se borra.
+
+> **Compatibilidad:** desde la versión 0.5.0 el manifiesto lleva un número de versión de
+> protocolo, así que un receptor 0.5.0+ **rechaza** con un mensaje explícito a un emisor
+> 0.4.2 o anterior en lugar de escribir archivos corruptos. En sentido contrario (emisor
+> nuevo, receptor viejo) todo sigue funcionando. Si ves un error de versión, actualiza
+> `drop` en los dos equipos con `drop update`.
 
 #### 3. Test de velocidad entre terminales (`drop speed`)
 Mide la latencia (RTT), velocidad simétrica de subida/bajada y ruta de red (TCP directa o Relay) entre dos clientes CLI:
