@@ -17,7 +17,7 @@ import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
