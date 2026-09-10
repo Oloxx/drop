@@ -157,7 +157,7 @@ export async function openFileSink({ finalPath, partPath, name, index = null, ov
   const close = async () => {
     if (closed) return;
     closed = true;
-    await fd.close();
+    await fd.close().catch(() => {});
   };
 
   return {
@@ -297,41 +297,60 @@ export function attachSender(server, files, code, onProgress, onComplete, option
         // 2. Transmitir cada archivo bloque a bloque con backpressure
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
+          if (socket.destroyed) break;
           const fd = await fs.promises.open(file.path, 'r');
-          const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
-          let fileOffset = 0;
           const fileHash = crypto.createHash('sha256');
 
-          while (fileOffset < file.size) {
-            const bytesToRead = Math.min(CHUNK_SIZE, file.size - fileOffset);
-            const { bytesRead } = await fd.read(buffer, 0, bytesToRead, fileOffset);
-            if (bytesRead === 0) break;
+          try {
+            const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
+            let fileOffset = 0;
 
-            const slice = buffer.subarray(0, bytesRead);
-            fileHash.update(slice);
+            while (fileOffset < file.size) {
+              if (socket.destroyed) throw new Error('Socket cerrado por el receptor');
+              const bytesToRead = Math.min(CHUNK_SIZE, file.size - fileOffset);
+              const { bytesRead } = await fd.read(buffer, 0, bytesToRead, fileOffset);
+              if (bytesRead === 0) break;
 
-            const enc = encryptChunk(Buffer.concat([Buffer.from([1]), slice]), key);
-            const packet = frame(enc);
+              const slice = buffer.subarray(0, bytesRead);
+              fileHash.update(slice);
 
-            if (!socket.write(packet)) {
-              await new Promise((r) => socket.once('drain', r));
+              const enc = encryptChunk(Buffer.concat([Buffer.from([1]), slice]), key);
+              const packet = frame(enc);
+
+              if (!socket.write(packet)) {
+                await new Promise((resolve, reject) => {
+                  const onDrain = () => { cleanup(); resolve(); };
+                  const onClose = () => { cleanup(); reject(new Error('Socket cerrado')); };
+                  const onError = (err) => { cleanup(); reject(err); };
+                  const cleanup = () => {
+                    socket.off('drain', onDrain);
+                    socket.off('close', onClose);
+                    socket.off('error', onError);
+                  };
+                  socket.once('drain', onDrain);
+                  socket.once('close', onClose);
+                  socket.once('error', onError);
+                });
+              }
+
+              fileOffset += bytesRead;
+              sentTotal += bytesRead;
+
+              const now = performance.now();
+              const dt = (now - lastReport) / 1000;
+              if (dt >= 0.15) {
+                const inst = (sentTotal - lastBytes) / dt;
+                speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+                lastBytes = sentTotal;
+                lastReport = now;
+                if (onProgress) onProgress(sentTotal, totalBytes, speed);
+              }
             }
-
-            fileOffset += bytesRead;
-            sentTotal += bytesRead;
-
-            const now = performance.now();
-            const dt = (now - lastReport) / 1000;
-            if (dt >= 0.15) {
-              const inst = (sentTotal - lastBytes) / dt;
-              speed = speed ? speed * 0.7 + inst * 0.3 : inst;
-              lastBytes = sentTotal;
-              lastReport = now;
-              if (onProgress) onProgress(sentTotal, totalBytes, speed);
-            }
+          } finally {
+            await fd.close().catch(() => {});
           }
 
-          await fd.close();
+          if (socket.destroyed) break;
 
           // Enviar control de fin de archivo con SHA-256 (tipo 0)
           const sha256 = fileHash.digest('hex');
@@ -341,6 +360,8 @@ export function attachSender(server, files, code, onProgress, onComplete, option
           ]);
           socket.write(frame(encryptChunk(endPayload, key)));
         }
+
+        if (socket.destroyed) return;
 
         // Enviar control done (tipo 0)
         const donePayload = Buffer.concat([

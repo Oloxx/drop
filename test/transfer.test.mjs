@@ -469,3 +469,37 @@ test('la huella que ve el emisor es la misma que ve el receptor', async () => {
     fs.rmSync(outDir, { recursive: true, force: true });
   }
 });
+
+test('un cliente que corta la conexion a mitad no deja el descriptor de archivo abierto', async (t) => {
+  const root = scratch(t, 'drop-leak-');
+  const filePath = path.join(root, 'testfile.bin');
+  fs.writeFileSync(filePath, Buffer.alloc(1024 * 1024, 0x55));
+
+  const code = someCode();
+  const server = createSenderServer([{ path: filePath, size: 1024 * 1024 }], code);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const port = server.address().port;
+
+  let warningEmitted = false;
+  const onWarning = (warning) => {
+    if (warning.message?.includes('Closing file descriptor') || warning.code === 'DEP0137') {
+      warningEmitted = true;
+    }
+  };
+  process.on('warning', onWarning);
+  t.after(() => process.off('warning', onWarning));
+
+  const s = net.connect({ host: '127.0.0.1', port });
+  await new Promise((resolve) => s.once('connect', resolve));
+  s.destroy();
+
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  if (global.gc) {
+    global.gc();
+  }
+
+  assert.equal(warningEmitted, false, 'No debe emitir DEP0137 de descriptor cerrado en garbage collection');
+});
