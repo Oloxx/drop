@@ -239,10 +239,19 @@ function showView(name) {
 let ws = null;
 let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-fetch('/config')
-  .then((r) => r.json())
-  .then((cfg) => { if (cfg.iceServers) iceConfig = cfg; })
-  .catch(() => { /* nos quedamos con el STUN por defecto */ });
+// Las credenciales del TURN caducan (las firma el servidor con una marca de
+// tiempo dentro), asi que una pestana abierta muchas horas tiene que refrescarlas
+// o se quedaria sin relay justo cuando lo necesita. Se relee de fondo: `iceConfig`
+// sigue siendo la misma variable y crear la conexion sigue siendo sincrono.
+function loadIceConfig() {
+  return fetch('/config')
+    .then((r) => r.json())
+    .then((cfg) => { if (cfg.iceServers) iceConfig = cfg; })
+    .catch(() => { /* nos quedamos con el STUN por defecto */ });
+}
+
+loadIceConfig();
+setInterval(loadIceConfig, 60 * 60 * 1000);
 
 function connectSignaling() {
   return new Promise((resolve, reject) => {
@@ -960,12 +969,24 @@ const JOIN_ERRORS = {
   RATE_LIMITED: 'Too many failed attempts from this network. Wait a minute and try again.',
   BAD_SECRET: 'The sender rejected the code: the words do not match.',
   BURNED: 'The room was closed after several wrong codes.',
+  ROOM_FULL: 'This channel already has all the receivers it takes. Ask the sender to open another.',
+  TOO_MANY_ROOMS: 'Too many channels opened from this network. Wait a minute and try again.',
+  EXPIRED: 'Channel expired: it sat idle too long. Ask for a fresh one.',
+  FLOOD: 'The server cut the connection: too many messages.',
+};
+
+// Lo que ve el emisor cuando el servidor le cierra la sala por su cuenta.
+const HOST_ERRORS = {
+  BURNED: 'room closed · wrong codes tried',
+  EXPIRED: 'channel expired · idle',
+  TOO_MANY_ROOMS: 'too many channels · wait a minute',
+  FLOOD: 'disconnected · too many messages',
 };
 
 function onJoinError(reason) {
   if (out.code) {
     // Somos el emisor: el servidor nos avisa de que ha cerrado la sala.
-    setStatus(reason === 'BURNED' ? 'room closed · wrong codes tried' : 'server error', 'bad');
+    setStatus(HOST_ERRORS[reason] || 'server error', 'bad');
     return;
   }
   $('#recv-title').textContent = 'dead link';

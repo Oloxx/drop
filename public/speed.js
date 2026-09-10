@@ -52,10 +52,17 @@ function showError(text) {
 let ws = null;
 let iceConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-fetch('/config')
-  .then((r) => r.json())
-  .then((cfg) => { if (cfg.iceServers) iceConfig = cfg; })
-  .catch(() => {});
+// Igual que en app.js: las credenciales del TURN caducan, asi que se refrescan
+// de fondo para que una pestana vieja no se quede sin relay.
+function loadIceConfig() {
+  return fetch('/config')
+    .then((r) => r.json())
+    .then((cfg) => { if (cfg.iceServers) iceConfig = cfg; })
+    .catch(() => {});
+}
+
+loadIceConfig();
+setInterval(loadIceConfig, 60 * 60 * 1000);
 
 function connectSignaling() {
   return new Promise((resolve, reject) => {

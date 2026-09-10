@@ -1,6 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { WebSocketServer } from 'ws';
@@ -18,9 +18,18 @@ const PORT = process.env.PORT || 3000;
 // limita los `join` fallidos por IP y quema las salas cuyo emisor denuncia
 // receptores que no saben el secreto.
 
-/** @type {Map<string, {host: import('ws').WebSocket, guests: Map<number, import('ws').WebSocket>, createdAt: number, badGuests: number}>} */
+/** @type {Map<string, {host: import('ws').WebSocket, guests: Map<number, import('ws').WebSocket>, createdAt: number, lastActivity: number, badGuests: number}>} */
 const rooms = new Map();
 let nextGuestId = 1;
+
+// Todo lo que sigue es ajustable por entorno porque los tests necesitan valores
+// ridiculos (una sala que caduca en segundo y medio) y un despliegue casero puede
+// necesitar lo contrario. `num()` deja el valor por defecto si la variable no esta
+// o no es un numero, que es lo que hace falta cuando alguien escribe `MAX=si`.
+const num = (name, fallback) => {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+};
 
 // Token base64url de 96 bits: el formato de la v0.3.5. Se sigue sirviendo a
 // quien no pide `v:2` por dos motivos distintos:
@@ -90,6 +99,76 @@ const sweepFails = setInterval(() => {
 }, JOIN_FAIL_WINDOW);
 sweepFails.unref?.();
 
+// ------------------------------------------------------------- cuotas y TTL
+//
+// Las salas viven en un Map en memoria de este proceso, asi que todo lo que las
+// crea sin control es memoria que no vuelve. Lo que se limita aqui:
+//
+//   · cuantas salas abre una IP por minuto,
+//   · cuantos receptores caben en una sala,
+//   · cuantas salas hay en total,
+//   · cuanto vive una sala sin que pase nada por ella,
+//   · cuantos mensajes de control manda un socket por segundo.
+//
+// QUE FRENA Y QUE NO: frena que un cliente hostil tire el proceso por memoria o
+// por CPU. No frena a una botnet repartida (cada IP tiene su propio cupo), igual
+// que el limite de fuerza bruta de arriba. Los numeros estan puestos muy por
+// encima del uso real: un emisor normal abre una sala, no treinta por minuto.
+const ROOM_RATE_MAX = num('DROP_ROOM_RATE_MAX', 30);
+const ROOM_RATE_WINDOW = num('DROP_ROOM_RATE_WINDOW_MS', 60_000);
+const MAX_GUESTS = num('DROP_MAX_GUESTS', 25);
+const MAX_ROOMS = num('DROP_MAX_ROOMS', 5000);
+const ROOM_TTL = num('DROP_ROOM_TTL_MS', 30 * 60_000);
+const ROOM_SWEEP = num('DROP_ROOM_SWEEP_MS', 60_000);
+
+// Cubo de fichas por socket, solo para los frames JSON. Un emisor con 25
+// receptores manda cientos de candidatos ICE en pocos segundos, de ahi que la
+// rafaga sea holgada; lo que corta es el goteo sostenido de miles por segundo.
+const MSG_BURST = num('DROP_MSG_BURST', 300);
+const MSG_RATE = num('DROP_MSG_RATE', 100);
+
+/** @type {Map<string, {count: number, since: number}>} */
+const roomsPerIp = new Map();
+
+function tooManyRooms(ip) {
+  if (!ip) return false;
+  const now = Date.now();
+  const entry = roomsPerIp.get(ip);
+  if (!entry || now - entry.since > ROOM_RATE_WINDOW) return false;
+  return entry.count >= ROOM_RATE_MAX;
+}
+
+function noteRoom(ip) {
+  if (!ip) return;
+  const now = Date.now();
+  const entry = roomsPerIp.get(ip);
+  if (!entry || now - entry.since > ROOM_RATE_WINDOW) roomsPerIp.set(ip, { count: 1, since: now });
+  else entry.count++;
+}
+
+const sweepRooms = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of roomsPerIp) {
+    if (now - entry.since > ROOM_RATE_WINDOW) roomsPerIp.delete(ip);
+  }
+}, ROOM_RATE_WINDOW);
+sweepRooms.unref?.();
+
+// El cubo se rellena solo con el tiempo transcurrido: no hace falta un timer por
+// socket, basta con mirar el reloj cuando llega un mensaje.
+function takeToken(ws) {
+  const now = Date.now();
+  if (ws.tokens === undefined) {
+    ws.tokens = MSG_BURST;
+    ws.tokensAt = now;
+  }
+  ws.tokens = Math.min(MSG_BURST, ws.tokens + ((now - ws.tokensAt) * MSG_RATE) / 1000);
+  ws.tokensAt = now;
+  if (ws.tokens < 1) return false;
+  ws.tokens--;
+  return true;
+}
+
 // ------------------------------------------------------- origenes permitidos
 //
 // El limite de arriba cuenta la IP de quien conecta, y contra un navegador eso es
@@ -142,12 +221,48 @@ function originAllowed(origin) {
   return ALLOWED_ORIGINS.has(normOrigin(origin));
 }
 
-function closeRoom(token, reason) {
+function closeRoom(token, reason, { hangUp = false } = {}) {
   const room = rooms.get(token);
   if (!room) return;
-  for (const guest of room.guests.values()) send(guest, { t: 'host-gone' });
+  for (const guest of room.guests.values()) {
+    send(guest, { t: 'host-gone' });
+    if (hangUp) guest.close();
+  }
   send(room.host, { t: 'error', reason });
+  // La sala que cierra el servidor por su cuenta tiene que colgar tambien el
+  // socket: si no, el emisor se queda con la conexion viva creyendo que sigue
+  // publicando, y el proceso con el socket abierto para nada.
+  if (hangUp) room.host?.close();
   rooms.delete(token);
+}
+
+// Detras de Caddy la IP real llega en X-Forwarded-For; en local no hay proxy y
+// vale la del socket. Lo usan el limite de fuerza bruta, el cupo de salas y el
+// `publicIp` que se devuelve al cliente.
+function clientIp(req) {
+  return (
+    req?.headers?.['x-forwarded-for']?.split(',')[0] ||
+    req?.socket?.remoteAddress ||
+    ''
+  ).replace(/^::ffff:/, '').trim();
+}
+
+// -------------------------------------------------------- credenciales TURN
+//
+// El TURN no se autentica con un usuario fijo, sino con el mecanismo REST de
+// coturn (`--use-auth-secret`): el servidor firma con un secreto compartido un
+// usuario que lleva dentro su propia fecha de caducidad, y coturn valida la firma
+// sin saber nada de quien pide. Asi una credencial robada de /config deja de
+// servir sola, en vez de abrir un relay gratis y perpetuo a cualquiera.
+//
+// El HMAC es SHA-1 porque es lo que dice la especificacion del mecanismo; no es
+// una eleccion de seguridad nuestra y cambiarlo por SHA-256 lo rompe.
+const TURN_TTL = num('TURN_TTL_SECONDS', 12 * 3600);
+
+function turnCredentials(secret) {
+  const username = `${Math.floor(Date.now() / 1000) + TURN_TTL}:drop`;
+  const credential = createHmac('sha1', secret).update(username).digest('base64');
+  return { username, credential };
 }
 
 const app = express();
@@ -158,14 +273,15 @@ app.get('/config', (_req, res) => {
   const iceServers = [
     { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
   ];
-  if (process.env.TURN_URL) {
+  if (process.env.TURN_URL && process.env.TURN_SECRET) {
     iceServers.push({
       urls: process.env.TURN_URL,
-      username: process.env.TURN_USER,
-      credential: process.env.TURN_PASS,
+      ...turnCredentials(process.env.TURN_SECRET),
     });
   }
-  res.json({ iceServers });
+  // Estas credenciales caducan: que no se queden pegadas en ningun intermediario.
+  res.set('Cache-Control', 'no-store');
+  res.json({ iceServers, ttl: TURN_TTL });
 });
 
 app.get('/healthz', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
@@ -175,13 +291,15 @@ app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['htm
 const server = http.createServer(app);
 const wss = new WebSocketServer({
   server,
+  // El frame legitimo mas grande es un paquete de relay del CLI: 4 bytes de
+  // guestId mas un chunk de 64 KiB. Con 256 KiB hay margen de sobra y un cliente
+  // no puede reservar 100 MiB de golpe, que es lo que permite `ws` por defecto.
+  maxPayload: 256 * 1024,
   // Se rechaza en el upgrade, no en `connection`: asi el navegador recibe un 403
   // y el socket no llega a existir.
   verifyClient: ({ origin, req }, done) => {
     if (originAllowed(origin)) return done(true);
-    const ip = (req?.headers?.['x-forwarded-for']?.split(',')[0] || req?.socket?.remoteAddress || '')
-      .replace(/^::ffff:/, '').trim();
-    log('origen no permitido', origin, 'desde', ip || '(ip desconocida)');
+    log('origen no permitido', origin, 'desde', clientIp(req) || '(ip desconocida)');
     done(false, 403, 'Forbidden origin');
   },
 });
@@ -195,11 +313,7 @@ wss.on('connection', (ws, req) => {
   ws.role = null;     // 'host' | 'guest'
   ws.token = null;
   ws.guestId = null;
-  ws.clientIp = (
-    req?.headers?.['x-forwarded-for']?.split(',')[0] ||
-    req?.socket?.remoteAddress ||
-    ''
-  ).replace(/^::ffff:/, '').trim();
+  ws.clientIp = clientIp(req);
 
   ws.on('pong', () => { ws.isAlive = true; });
 
@@ -208,6 +322,10 @@ wss.on('connection', (ws, req) => {
     if (isBinary) {
       const room = rooms.get(ws.token);
       if (!room) return;
+      // Una transferencia por relay del CLI son solo frames binarios durante
+      // minutos u horas: si esto no cuenta como actividad, el barrido de salas
+      // inactivas cierra la sala en mitad del envio.
+      room.lastActivity = Date.now();
       if (ws.role === 'host') {
         if (raw.length < 4) return;
         const toGuestId = raw.readUInt32BE(0);
@@ -217,6 +335,15 @@ wss.on('connection', (ws, req) => {
       } else if (ws.role === 'guest') {
         if (room.host && room.host.readyState === 1) room.host.send(raw, { binary: true });
       }
+      return;
+    }
+
+    // El cubo solo mide frames de control. Los binarios ya van acotados por
+    // `maxPayload` y por el hecho de que hay que estar dentro de una sala.
+    if (!takeToken(ws)) {
+      send(ws, { t: 'error', reason: 'FLOOD' });
+      log('socket cortado por inundacion desde', ws.clientIp || '(ip desconocida)');
+      ws.close();
       return;
     }
 
@@ -230,6 +357,21 @@ wss.on('connection', (ws, req) => {
     switch (msg.t) {
       case 'host': {
         if (ws.role) return;
+        // Un socket abre como mucho una sala (`ws.role` lo impide despues), asi
+        // que abrir muchas es abrir muchos sockets: lo que se cuenta es la IP.
+        if (tooManyRooms(ws.clientIp)) {
+          send(ws, { t: 'error', reason: 'TOO_MANY_ROOMS' });
+          log('demasiadas salas abiertas desde', ws.clientIp || '(ip desconocida)');
+          ws.close();
+          return;
+        }
+        // Con codigos de 4 digitos `newRoomId` ya se niega a las ~10.000 salas,
+        // pero los tokens largos de la v0.3.5 no tienen ese techo natural.
+        if (rooms.size >= MAX_ROOMS) {
+          send(ws, { t: 'error', reason: 'NO_ROOMS' });
+          log('tope de salas alcanzado |', rooms.size);
+          return;
+        }
         // `v:2` es el cliente diciendo "se de codigos memorizables, dame solo el
         // identificador publico". Quien no lo manda es un binario v0.3.5 y se le
         // sigue dando el token largo de siempre. @deprecated
@@ -240,7 +382,9 @@ wss.on('connection', (ws, req) => {
           log('sin identificadores de sala libres | salas activas:', rooms.size);
           return;
         }
-        rooms.set(token, { host: ws, guests: new Map(), createdAt: Date.now(), badGuests: 0 });
+        const now = Date.now();
+        rooms.set(token, { host: ws, guests: new Map(), createdAt: now, lastActivity: now, badGuests: 0 });
+        noteRoom(ws.clientIp);
         ws.role = 'host';
         ws.token = token;
         send(ws, { t: 'hosted', token, room: token, v: legacy ? 1 : 2, publicIp: ws.clientIp });
@@ -271,7 +415,17 @@ wss.on('connection', (ws, req) => {
           log('enlace caducado o invalido', token ? tag(token) : '(vacio)');
           return;
         }
+        // La cadena de reenvio reparte una sola copia entre todos los receptores,
+        // pero cada uno sigue siendo una conexion que el emisor sostiene: por
+        // encima de este numero es mas probable que sea alguien llenando la sala
+        // que una entrega de verdad.
+        if (room.guests.size >= MAX_GUESTS) {
+          send(ws, { t: 'error', reason: 'ROOM_FULL' });
+          log('sala llena', tag(token), '| receptores:', room.guests.size);
+          return;
+        }
         joinFails.delete(ws.clientIp);
+        room.lastActivity = Date.now();
         const guestId = nextGuestId++;
         room.guests.set(guestId, ws);
         ws.role = 'guest';
@@ -313,6 +467,7 @@ wss.on('connection', (ws, req) => {
       case 'signal': {
         const room = rooms.get(ws.token);
         if (!room) return;
+        room.lastActivity = Date.now();
         if (ws.role === 'host') {
           send(room.guests.get(msg.to), { t: 'signal', from: 0, data: msg.data });
         } else if (msg.to) {
@@ -355,9 +510,31 @@ const heartbeat = setInterval(() => {
 }, 30_000);
 wss.on('close', () => clearInterval(heartbeat));
 
+// El ping de arriba mantiene vivo el socket, no la sala: un emisor que abre un
+// canal y se olvida de la pestana deja una sala en memoria para siempre. Aqui se
+// cierran las que llevan `ROOM_TTL` sin que pase nada por ellas. Cuenta como
+// actividad cualquier senal y cualquier byte del relay, no el simple estar.
+const sweepIdle = setInterval(() => {
+  const now = Date.now();
+  for (const [token, room] of rooms) {
+    if (now - room.lastActivity < ROOM_TTL) continue;
+    log('sala caducada por inactividad', tag(token), '| vivio',
+        Math.round((now - room.createdAt) / 1000) + 's');
+    closeRoom(token, 'EXPIRED', { hangUp: true });
+  }
+}, ROOM_SWEEP);
+sweepIdle.unref?.();
+
 server.listen(PORT, () => {
   log(`Drop escuchando en http://localhost:${PORT}`);
   // Una lista mal puesta se nota como "la web no conecta" y nada mas: dejarla
   // escrita al arrancar es lo que ahorra buscarlo a ciegas.
   log('origenes permitidos:', ORIGIN_ANY ? '(cualquiera)' : [...ALLOWED_ORIGINS].join(', '));
+  // Un TURN configurado a medias no da error: simplemente no se ofrece, y las
+  // conexiones que necesitaban relay fallan sin explicacion. Mejor decirlo aqui.
+  if (process.env.TURN_URL && !process.env.TURN_SECRET) {
+    log('AVISO: hay TURN_URL pero no TURN_SECRET, no se sirve TURN (ver .env.example)');
+  } else if (process.env.TURN_URL) {
+    log('TURN:', process.env.TURN_URL, '| credenciales efimeras de', TURN_TTL + 's');
+  }
 });

@@ -70,7 +70,8 @@ mkdir -p ~/drop && tar -xzf ~/drop.tgz -C ~/drop && cd ~/drop
 ```bash
 cp .env.example .env
 ip -4 addr show                 # la IP privada, para el .env (suele ser 10.0.0.x)
-nano .env                       # dominio, IPs y una contraseña larga para el TURN
+openssl rand -hex 32            # el TURN_SECRET, cópialo en el .env
+nano .env                       # dominio, IPs y TURN_SECRET
 docker compose up -d --build
 ```
 
@@ -96,11 +97,25 @@ abrir salas contra tu servidor. Si sirves el frontend desde otro sitio (un domin
 un CDN), añádelo con `DROP_ALLOWED_ORIGINS` separando por comas. El CLI no manda cabecera
 `Origin`, así que no le afecta.
 
-Para verificar que el TURN responde de verdad, abre la
-[herramienta Trickle ICE de WebRTC](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/),
-mete `turn:TU_DOMINIO:3478` con tu usuario y contraseña, y comprueba que aparece algún candidato
-de tipo `relay`. Si solo salen `host` y `srflx`, el TURN no está llegando: casi siempre es el
-paso 1b, o las IPs de `--external-ip`.
+El TURN no tiene usuario ni contraseña fijos: el servidor firma con `TURN_SECRET` unas
+credenciales que llevan dentro su propia caducidad (12 h por defecto, `TURN_TTL_SECONDS`) y
+coturn las valida sin guardar ninguna. Si falta el secreto, al arrancar lo dice:
+
+```text
+AVISO: hay TURN_URL pero no TURN_SECRET, no se sirve TURN (ver .env.example)
+```
+
+Para verificar que el TURN responde de verdad, saca unas credenciales del propio servidor:
+
+```bash
+curl -s https://TU_DOMINIO/config
+# {"iceServers":[{"urls":[...]},{"urls":"turn:TU_DOMINIO:3478","username":"1757...:drop","credential":"..."}],"ttl":43200}
+```
+
+Abre la [herramienta Trickle ICE de WebRTC](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/),
+mete `turn:TU_DOMINIO:3478` con ese `username` y ese `credential`, y comprueba que aparece algún
+candidato de tipo `relay`. Si solo salen `host` y `srflx`, el TURN no está llegando: casi siempre
+es el paso 1b, o las IPs de `--external-ip`.
 
 Actualizar después de tocar código:
 
