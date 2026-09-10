@@ -9,6 +9,10 @@ const ERRORS = {
   RATE_LIMITED: 'Demasiados intentos fallidos desde esta IP. Espera un minuto.',
   BAD_SECRET: 'El emisor ha rechazado el codigo: las palabras no coinciden.',
   BURNED: 'La sala se ha cerrado tras varios intentos con codigos incorrectos.',
+  ROOM_FULL: 'La sala esta llena: ya tiene todos los receptores que admite.',
+  TOO_MANY_ROOMS: 'Demasiadas salas abiertas desde esta IP. Espera un minuto.',
+  EXPIRED: 'La sala ha caducado por inactividad.',
+  FLOOD: 'El servidor ha cortado la conexion: demasiados mensajes seguidos.',
 };
 
 export function connectSignaling(serverUrl) {

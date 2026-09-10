@@ -17,10 +17,11 @@ services:
       # WebSocket del navegador por Origin (ver server/index.js).
       DROP_DOMAIN: "${DROP_DOMAIN}"
       DROP_ALLOWED_ORIGINS: "${DROP_ALLOWED_ORIGINS:-}"
-      # El cliente recibe esto desde /config y lo usa como TURN.
+      # El cliente recibe esto desde /config y lo usa como TURN. Las credenciales
+      # no van aqui: el servidor las firma al vuelo con TURN_SECRET y caducan.
       TURN_URL: "turn:${DROP_DOMAIN}:3478"
-      TURN_USER: "${TURN_USER}"
-      TURN_PASS: "${TURN_PASS}"
+      TURN_SECRET: "${TURN_SECRET}"
+      TURN_TTL_SECONDS: "${TURN_TTL_SECONDS:-43200}"
 
   # Caddy saca y renueva el certificado de Let's Encrypt solo, y proxea
   # WebSockets sin configuracion extra.
@@ -50,8 +51,12 @@ services:
       - "--log-file=stdout"
       - "--listening-port=3478"
       - "--realm=${DROP_DOMAIN}"
-      - "--lt-cred-mech"
-      - "--user=${TURN_USER}:${TURN_PASS}"
+      # Autenticacion por secreto compartido (el mecanismo REST): coturn acepta
+      # usuarios que llevan dentro su caducidad y vienen firmados con este
+      # secreto, en vez de un usuario y contrasena fijos que valdrian para
+      # siempre a quien los pillase de /config. El --realm es obligatorio con el.
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SECRET}"
       # Oracle da IP publica por NAT 1:1, asi que hay que decirle las dos.
       - "--external-ip=${PUBLIC_IP}/${PRIVATE_IP}"
       - "--min-port=49160"
