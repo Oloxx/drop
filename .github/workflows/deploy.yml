@@ -33,6 +33,10 @@ jobs:
 
             echo "==> Reconstruyendo contenedor Docker..."
             docker compose up -d --build drop
+            # coturn tambien: sus credenciales y sus flags salen del compose y del
+            # .env, asi que un cambio ahi no llega a produccion si no se recrea.
+            # `up -d` es idempotente, solo lo toca cuando su definicion ha cambiado.
+            docker compose up -d coturn
 
             echo "==> Comprobando estado del servicio..."
             sleep 3
