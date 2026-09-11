@@ -268,6 +268,57 @@ function turnCredentials(secret) {
 const app = express();
 app.disable('x-powered-by');
 
+// ------------------------------------------------------ cabeceras de seguridad
+//
+// Van aqui y no en el Caddyfile (salvo HSTS, que solo tiene sentido donde acaba
+// el TLS) para que viajen con la aplicacion: valen igual en `npm run dev`, en la
+// suite y en cualquier despliegue que no pase por Caddy, y asi se prueban de
+// verdad en vez de confiar en que el proxy de produccion este bien.
+//
+// La CSP esta ajustada a lo que la web usa REALMENTE, que es poco: no hay
+// scripts ni estilos en linea, ni una sola peticion a terceros (la fuente esta
+// servida desde public/fonts). Si algun dia se anade algo de fuera, esto lo
+// parte, y esa es justo la idea.
+//
+// QUE FRENA Y QUE NO: frena que una inyeccion de HTML acabe ejecutando codigo o
+// mandando el token de sala a otro sitio. No protege del servidor mismo: el
+// token viaja en el fragmento de la URL, que no llega hasta aqui, pero quien
+// controle este proceso puede servir el JavaScript que quiera.
+//
+// WebRTC no lo cubre `connect-src`: los candidatos STUN/TURN salen de /config y
+// ningun navegador aplica CSP sobre ellos. Lo que si cubre es el WebSocket de
+// senalizacion, que es del mismo origen.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "font-src 'self'",
+  "img-src 'self' data:",
+  // Los archivos recibidos se entregan como blob: cuando no hay File System Access.
+  "media-src 'self' blob:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  // No hay ningun formulario: cualquier envio seria de algo inyectado.
+  "form-action 'none'",
+  // Enmarcar la pagina permitiria un clickjacking sobre el boton de aceptar.
+  "frame-ancestors 'none'",
+].join('; ');
+
+app.use((_req, res, next) => {
+  res.set('Content-Security-Policy', CSP);
+  // Sin esto, un archivo servido desde /public podria interpretarse como script
+  // por el olfato del navegador en vez de por su Content-Type.
+  res.set('X-Content-Type-Options', 'nosniff');
+  // El token ya va en el fragmento, que no se manda en Referer. Esto tapa lo que
+  // quede: nada de esta aplicacion tiene por que llegar a un tercero.
+  res.set('Referrer-Policy', 'no-referrer');
+  // Ni camara, ni micro, ni ubicacion: la aplicacion no los usa. WebRTC aqui solo
+  // mueve datos, asi que quitarle los permisos de captura no le cuesta nada.
+  res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
 // La configuracion ICE se sirve desde el servidor para poder anadir TURN sin tocar el cliente.
 app.get('/config', (_req, res) => {
   const iceServers = [

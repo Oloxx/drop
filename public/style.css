@@ -186,6 +186,9 @@ h1 {
   letter-spacing: .12em;
 }
 
+/* El color va aqui y no en un atributo style: la CSP prohibe los estilos en linea. */
+.label.bad { color: var(--red); }
+
 /* ------------------------------------------------------------- botones */
 
 button {
