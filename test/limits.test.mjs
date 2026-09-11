@@ -4,80 +4,17 @@
 // (tres salas por IP, dos receptores, salas que caducan en segundo y medio) para
 // no tener que esperar treinta minutos a que salte nada.
 //
-// Servidor propio a propósito: test/signaling.test.mjs comparte los contadores
-// por IP entre sus casos y el último deja el cupo de 127.0.0.1 agotado. Meter
-// aquí las cuotas los volvería interdependientes.
+// Un servidor por caso a propósito: los contadores por IP son del proceso, y el
+// test de fuerza bruta de signaling.test.mjs deja el cupo de 127.0.0.1 agotado.
+// Compartiendo servidor, estos casos serían interdependientes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { WebSocket } from 'ws';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SERVER = path.join(ROOT, 'server', 'index.js');
+import { startServer, open, sleep } from './helpers.mjs';
 
 const TURN_SECRET = 'secreto-de-prueba';
 const TURN_URL = 'turn:turn.example:3478';
-
-function freePort() {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-/** Servidor con los límites que pida cada test, ya escuchando. */
-async function startServer(env = {}) {
-  const port = await freePort();
-  const proc = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, PORT: String(port), ...env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('el servidor no arrancó')), 10_000);
-    proc.stdout.on('data', (d) => {
-      if (d.toString().includes('Drop escuchando')) { clearTimeout(timer); resolve(); }
-    });
-    proc.on('error', reject);
-  });
-  return {
-    proc,
-    http: `http://127.0.0.1:${port}`,
-    ws: `ws://127.0.0.1:${port}`,
-    stop: () => proc.kill(),
-  };
-}
-
-/** Mismo ayudante que en signaling.test.mjs: cola de mensajes y `next()`. */
-function open(url) {
-  const ws = new WebSocket(url);
-  ws.queue = [];
-  ws.waiters = [];
-  ws.on('message', (raw, isBinary) => {
-    if (isBinary) return;   // los chunks del relay no son mensajes de control
-    const msg = JSON.parse(raw);
-    const waiter = ws.waiters.shift();
-    if (waiter) waiter(msg);
-    else ws.queue.push(msg);
-  });
-  ws.next = () => new Promise((resolve) => {
-    if (ws.queue.length) resolve(ws.queue.shift());
-    else ws.waiters.push(resolve);
-  });
-  ws.say = (obj) => ws.send(JSON.stringify(obj));
-  return new Promise((resolve, reject) => {
-    ws.on('open', () => resolve(ws));
-    ws.on('error', reject);
-  });
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ------------------------------------------------------------------ TURN
 

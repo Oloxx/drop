@@ -12,17 +12,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
-import net from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { receiveFromRelay, RELAY_ACK_EVERY } from '../cli/src/transfer.js';
+import { startServer } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
-const SERVER = path.join(ROOT, 'server', 'index.js');
 
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
@@ -81,32 +80,6 @@ test('el receptor por relay acusa recibo cada 2 MB y confirma el final', async (
 
 // ------------------------------------- transferencia CLI -> CLI (extremo a extremo)
 
-function freePort() {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-async function startSignalingServer() {
-  const port = await freePort();
-  const proc = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, PORT: String(port) },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('el servidor no arrancó')), 10_000);
-    proc.stdout.on('data', (d) => {
-      if (d.toString().includes('Drop escuchando')) { clearTimeout(timer); resolve(); }
-    });
-    proc.on('error', reject);
-  });
-  return { proc, url: `http://127.0.0.1:${port}` };
-}
-
 /** Lanza el CLI y deja esperar a que aparezca algo en su salida. */
 function runCli(args) {
   const proc = spawn(process.execPath, [CLI, ...args], {
@@ -133,7 +106,7 @@ function runCli(args) {
 }
 
 test('relay CLI -> CLI entrega un archivo por encima de la ventana de 8 MB', { timeout: 120_000 }, async () => {
-  const server = await startSignalingServer();
+  const server = await startServer();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-e2e-'));
   const outDir = path.join(work, 'destino');
   fs.mkdirSync(outDir);
@@ -144,13 +117,13 @@ test('relay CLI -> CLI entrega un archivo por encima de la ventana de 8 MB', { t
   const src = path.join(work, 'grande.bin');
   fs.writeFileSync(src, body);
 
-  const sender = runCli(['send', src, '--server', server.url, '--relay']);
+  const sender = runCli(['send', src, '--server', server.http, '--relay']);
   let receiver = null;
 
   try {
     const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
 
-    receiver = runCli(['recv', code, '--server', server.url, '--relay', '-o', outDir]);
+    receiver = runCli(['recv', code, '--server', server.http, '--relay', '-o', outDir]);
     const exitCode = await receiver.exited;
 
     assert.equal(exitCode, 0, `el receptor falló:\n${receiver.output}\n--- emisor ---\n${sender.output}`);
