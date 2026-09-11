@@ -14,16 +14,31 @@ on:
       - '.github/workflows/deploy.yml'
 
 jobs:
+  # Los mismos tests que en CI, y el despliegue depende de ellos: el VPS hace
+  # `git reset --hard origin/main`, asi que sin esta puerta un commit roto llega
+  # a produccion y solo se descubre usandolo.
+  tests:
+    name: Tests
+    uses: ./.github/workflows/ci.yml
+
   deploy:
     name: Deploy to Production
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          # El dominio publico sale de una variable del repositorio. Escrito en el
+          # script, cualquiera que bifurque el repo comprobaria la salud del
+          # servidor de otro. Si no esta puesta, solo se comprueba por dentro del
+          # contenedor.
+          HEALTH_URL: ${{ vars.DROP_PUBLIC_URL }}
         with:
           host: ${{ secrets.DROP_HOST }}
           username: ${{ secrets.DROP_USER }}
           key: ${{ secrets.DROP_SSH_KEY }}
+          envs: HEALTH_URL
           script: |
             set -e
             echo "==> Actualizando código en ~/drop..."
@@ -40,5 +55,12 @@ jobs:
 
             echo "==> Comprobando estado del servicio..."
             sleep 3
-            curl -sf https://drop.oloxx.dev/healthz || docker compose exec -T drop node -e "fetch('http://localhost:3000/healthz').then(r => process.exit(r.ok ? 0 : 1))"
+            interno() {
+              docker compose exec -T drop node -e "fetch('http://localhost:3000/healthz').then(r => process.exit(r.ok ? 0 : 1))"
+            }
+            if [ -n "$HEALTH_URL" ]; then
+              curl -sf "$HEALTH_URL/healthz" || interno
+            else
+              interno
+            fi
             echo "==> ¡Despliegue completado con éxito!"

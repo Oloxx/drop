@@ -30,34 +30,23 @@ jobs:
           node-version: 22
           cache: npm
 
-      # La version vive en dos sitios a mano (package.json y la constante
-      # VERSION de cli/src/cli.js). Si divergen, `drop update` compara contra la
-      # constante y los clientes no detectan la actualizacion, o la detectan en
-      # bucle. Mientras eso no se arregle (issue #26), esto lo caza aqui.
-      - name: Comprobar que el tag, package.json y cli.js coinciden
+      # La version del CLI sale del package.json (issue #26), asi que aqui solo
+      # queda contrastar el tag: etiquetar v0.5.3 con el package.json en 0.5.2
+      # publicaria binarios que se presentan con otra version que la release.
+      - name: Comprobar que el tag y el package.json coinciden
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG=$(node -p "require('./package.json').version")
-          CLI=$(node -p "require('fs').readFileSync('cli/src/cli.js','utf8').match(/const VERSION = '([^']+)'/)[1]")
-          echo "tag=$TAG  package.json=$PKG  cli.js=$CLI"
-          if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$CLI" ]; then
-            echo "::error::La version no coincide en los tres sitios. Corrige y vuelve a etiquetar."
+          echo "tag=$TAG  package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::El tag $GITHUB_REF_NAME no cuadra con la version $PKG del package.json."
             exit 1
           fi
 
       - run: npm ci
 
-      # `test/signaling.test.mjs` se conecta a un servidor que espera ya
-      # levantado. Hasta que la suite arranque el suyo (issue #23), se levanta
-      # aqui y se espera a que /healthz responda.
-      - name: Levantar el servidor de senializacion
-        run: |
-          node server/index.js &
-          for i in $(seq 1 30); do
-            curl -sf http://localhost:3000/healthz && break
-            sleep 1
-          done
-
+      # La suite levanta su propio servidor de senializacion (issue #23): aqui no
+      # hay que preparar nada.
       - run: npm test
 
   # ------------------------------------------------------------------- macOS

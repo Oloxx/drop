@@ -1,40 +1,34 @@
 // Prueba del servidor de emparejamiento: codigos, reenvio de SDP/ICE y desconexiones.
-// Ejecutar con:  npm test   (necesita el servidor levantado en PORT o 3000)
-import test from 'node:test';
+// Ejecutar con:  npm test
+//
+// La suite arranca su propio servidor en un puerto efimero y lo apaga al acabar,
+// asi que no hace falta levantar nada a mano. `DROP_URL` sigue sirviendo para
+// apuntar a uno externo: en ese caso hay que darle tambien un
+// `DROP_ALLOWED_ORIGINS` que incluya el origen que se prueba mas abajo.
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 
-const URL = process.env.DROP_URL || 'ws://localhost:3000';
+import { startServer, open as openSocket } from './helpers.mjs';
 
-function open(options) {
-  const ws = new WebSocket(URL, options);
-  ws.queue = [];
-  ws.waiters = [];
-  ws.on('message', (raw) => {
-    const msg = JSON.parse(raw);
-    const waiter = ws.waiters.shift();
-    if (waiter) waiter(msg);
-    else ws.queue.push(msg);
-  });
-  ws.next = () => new Promise((resolve) => {
-    if (ws.queue.length) resolve(ws.queue.shift());
-    else ws.waiters.push(resolve);
-  });
-  ws.say = (obj) => ws.send(JSON.stringify(obj));
-  // Los avisos de `guest-gone` se cuelan entre medias cuando el servidor echa a
-  // un receptor: para afirmar sobre un mensaje concreto hay que saltarse el ruido.
-  ws.until = async (pred) => {
-    for (let i = 0; i < 20; i++) {
-      const msg = await ws.next();
-      if (pred(msg)) return msg;
-    }
-    throw new Error('no llego el mensaje esperado');
-  };
-  return new Promise((resolve, reject) => {
-    ws.on('open', () => resolve(ws));
-    ws.on('error', reject);
-  });
-}
+let server = null;
+let URL = process.env.DROP_URL || '';
+// El origen que el servidor acepta por defecto, derivado de su puerto.
+let ALLOWED_ORIGIN = process.env.DROP_TEST_ORIGIN || '';
+
+before(async () => {
+  if (URL) {                          // servidor externo: no levantamos nada
+    if (!ALLOWED_ORIGIN) ALLOWED_ORIGIN = `http://localhost:${URL.split(':')[2] || '80'}`;
+    return;
+  }
+  server = await startServer();
+  URL = server.ws;
+  if (!ALLOWED_ORIGIN) ALLOWED_ORIGIN = server.origin;
+});
+
+after(() => { server?.stop(); });
+
+const open = (options) => openSocket(URL, options);
 
 test('el emisor recibe un identificador de sala y el receptor puede unirse', async () => {
   const host = await open();
@@ -222,12 +216,6 @@ test('un receptor no alcanza a otro de una sala distinta', async () => {
 
   host1.close(); host2.close(); a.close(); b.close();
 });
-
-// El origen por defecto que acepta el servidor cuando no se le configura otro.
-// Tiene que cuadrar con el puerto de URL: si se prueba contra otro servidor con
-// DROP_URL, hay que darle tambien un DROP_ALLOWED_ORIGINS que lo incluya.
-const ALLOWED_ORIGIN = process.env.DROP_TEST_ORIGIN
-  || `http://localhost:${URL.split(':')[2] || '80'}`;
 
 test('el servidor rechaza un origen que no esta en la lista', async () => {
   // Una pagina no puede falsear su Origin, asi que esto es lo que impide que una

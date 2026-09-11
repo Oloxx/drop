@@ -1,0 +1,49 @@
+# Tests en las tres plataformas donde se publica un binario.
+#
+# Lo llama tambien deploy.yml antes de tocar produccion: hasta ahora un push a
+# main se desplegaba sin ejecutar nada, asi que un commit que rompiese el
+# servidor de senializacion llegaba al VPS y solo se notaba al usarlo.
+#
+# La matriz no es ceremonia: la suite arranca procesos, abre puertos y escribe
+# ficheros temporales, y eso es justo lo que se comporta distinto en Windows y en
+# macOS. El CLI se publica para las tres.
+
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+  # En un push a main, deploy.yml ya llama a este workflow antes de desplegar.
+  # Aqui quedan las rutas que no despliegan nada y que se quedarian sin probar:
+  # el CLI, la propia suite y los scripts de compilacion y firma.
+  push:
+    branches:
+      - main
+    paths:
+      - 'cli/**'
+      - 'test/**'
+      - 'scripts/**'
+      - 'sea-config.json'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # La suite levanta su propio servidor en un puerto efimero y lo apaga al
+      # acabar, asi que no hay nada que preparar antes.
+      - run: npm test
