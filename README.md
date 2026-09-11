@@ -48,7 +48,17 @@ Descarga directa de los binarios autónomos (sin necesidad de tener Node.js inst
 
 ### Verificar la descarga
 
-Cada release publica un `SHA256SUMS` con el hash de todos los binarios. Para comprobar el que has bajado:
+Cada release publica un `SHA256SUMS` con el hash de todos los binarios y un `SHA256SUMS.minisig` con su firma. Son dos comprobaciones distintas y conviene hacer las dos: el hash dice que el binario ha llegado entero, la firma dice que lo publicó quien tiene la clave del proyecto.
+
+**1. La firma** (a partir de la v0.5.2), con [minisign](https://jedisct1.github.io/minisign/):
+
+```bash
+minisign -Vm SHA256SUMS -P RWQqNnfqvCrj+eavJ9njz2vCoHaC8YnLqjsvNBMndz3hBroQLpou7+Kp
+```
+
+Esa clave pública es la del proyecto; la privada solo la usa el workflow de release. Si `minisign` responde `Signature and comment signature verified`, el `SHA256SUMS` es auténtico.
+
+**2. El hash** del binario que has bajado:
 
 ```bash
 # Linux / macOS
@@ -58,7 +68,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 Get-FileHash drop-v0.5.1-windows-x64.exe -Algorithm SHA256
 ```
 
-`drop update` lo verifica solo antes de sustituir el ejecutable, y aborta si no coincide.
+`drop update` hace las dos por su cuenta antes de sustituir el ejecutable y aborta si algo no cuadra. Con una release anterior a la v0.5.2, que no lleva firma, avisa y exige `--allow-unsigned` para seguir: así, borrar la firma no basta para que se conforme con el hash.
 
 ---
 

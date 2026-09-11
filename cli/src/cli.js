@@ -16,8 +16,18 @@ import { secretProof, sasFromKey, deriveKey } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
+import { verifySignature } from './minisign.js';
 
 const VERSION = '0.5.1';
+
+// Clave publica con la que se firma cada release (formato minisign). La privada
+// vive como secret del repositorio y solo la toca el workflow de publicacion.
+//
+// Va empotrada aqui a proposito: si se bajase de la red junto con la firma, quien
+// pudiera servir una respuesta falsa serviria las dos y no se estaria comprobando
+// nada. Rotarla obliga a publicar una version nueva del CLI, porque los binarios
+// ya instalados siguen llevando la vieja.
+const PUBLIC_KEY = 'RWQqNnfqvCrj+eavJ9njz2vCoHaC8YnLqjsvNBMndz3hBroQLpou7+Kp';
 const DEFAULT_SERVER = process.env.DROP_SERVER || 'https://drop.oloxx.dev';
 
 function getInstallDir() {
@@ -193,35 +203,30 @@ async function downloadWithProgress(url, headers, onProgress) {
 }
 
 /**
- * Descarga el SHA256SUMS de la release y devuelve el hash esperado del asset.
- *
- * El binario que baja `drop update` se escribe encima del ejecutable en marcha:
- * es la superficie mas sensible que tiene la herramienta. Hasta ahora toda la
- * confianza estaba en TLS, asi que cualquiera capaz de servir una respuesta a
- * api.github.com (proxy corporativo con su propia CA, DNS envenenado, cuenta de
- * GitHub comprometida) podia colocar un ejecutable arbitrario en el PATH.
- *
- * El SHA256SUMS lo genera el workflow de release a partir de los binarios que el
- * mismo acaba de compilar. No protege de una release maliciosa firmada por el
- * proyecto -- para eso hace falta firma con clave, que es el siguiente paso --,
- * pero si de que el binario llegue alterado o incompleto.
+ * Descarga un asset de texto de la release. Devuelve `null` si la release no lo
+ * incluye, y lanza si la descarga falla: no es lo mismo "esta release es vieja y
+ * no lo trae" que "alguien esta cortando la peticion", y arriba se tratan
+ * distinto.
  */
-async function fetchExpectedHash(release, assetName, headers) {
-  const sumsAsset = release.assets?.find((a) => a.name === 'SHA256SUMS');
-  if (!sumsAsset) return null;
+async function fetchTextAsset(release, name, headers) {
+  const asset = release.assets?.find((a) => a.name === name);
+  if (!asset) return null;
 
-  const url = headers['Authorization'] ? sumsAsset.url : sumsAsset.browser_download_url;
-  const res = await fetch(url, {
+  const authorized = Boolean(headers['Authorization']);
+  const res = await fetch(authorized ? asset.url : asset.browser_download_url, {
     headers: {
       'User-Agent': 'drop-cli',
-      ...(headers['Authorization'] ? { 'Authorization': headers['Authorization'], 'Accept': 'application/octet-stream' } : {})
+      ...(authorized ? { 'Authorization': headers['Authorization'], 'Accept': 'application/octet-stream' } : {})
     },
     redirect: 'follow',
   });
-  if (!res.ok) return null;
+  if (!res.ok) throw new Error(`HTTP ${res.status} descargando ${name}`);
+  return await res.text();
+}
 
-  const text = await res.text();
-  for (const line of text.split('\n')) {
+/** Busca en un SHA256SUMS el hash de un asset concreto. */
+function expectedHashFor(sums, assetName) {
+  for (const line of String(sums).split('\n')) {
     // Formato de sha256sum: "<hash>  <nombre>" (dos espacios, o " *" en binario).
     const match = line.trim().match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
     if (match && path.basename(match[2].trim()) === assetName) return match[1].toLowerCase();
@@ -229,7 +234,82 @@ async function fetchExpectedHash(release, assetName, headers) {
   return null;
 }
 
-async function updateSelf(force = false, skipVerify = false) {
+/**
+ * Comprueba el binario descargado ANTES de escribirlo encima del ejecutable en
+ * marcha, que es la superficie mas sensible que tiene la herramienta.
+ *
+ * Son dos comprobaciones encadenadas y hacen falta las dos:
+ *
+ *   · la FIRMA del SHA256SUMS dice que ese indice de hashes lo publico quien
+ *     tiene la clave privada del proyecto. Sin ella, cualquiera capaz de servir
+ *     una respuesta a api.github.com (un proxy con su propia CA, un DNS
+ *     envenenado, la cuenta de GitHub comprometida) publica su binario Y su
+ *     SHA256SUMS, y las dos mitades cuadran entre si;
+ *   · el HASH dice que el binario que ha llegado es el que nombra ese indice.
+ *
+ * Una release sin firma corta el proceso en vez de conformarse con el hash: si
+ * bastara con borrar el .minisig para volver al nivel anterior, la firma no
+ * garantizaria nada. `--allow-unsigned` esta para las releases anteriores a la
+ * v0.5.2, que no la llevan porque no existia.
+ */
+async function verifyDownload(release, asset, binaryBuffer, headers, allowUnsigned) {
+  let sums = null;
+  let signature = null;
+  try {
+    sums = await fetchTextAsset(release, 'SHA256SUMS', headers);
+    if (sums !== null) signature = await fetchTextAsset(release, 'SHA256SUMS.minisig', headers);
+  } catch (err) {
+    console.error(`\n\n  ${c.red}No se ha podido comprobar la release:${c.reset} ${err.message}`);
+    console.error(`  ${c.dim}No se instala nada. Vuelve a intentarlo.${c.reset}\n`);
+    process.exit(1);
+  }
+
+  if (sums === null) {
+    console.error(`\n\n  ${c.red}Esta release no publica SHA256SUMS: no se puede verificar el binario.${c.reset}`);
+    console.error(`  ${c.dim}Las releases anteriores a la v0.4.1 no lo incluyen. Si aun asi quieres`);
+    console.error(`  actualizar, repite con:${c.reset} ${c.yellow}drop update --skip-verify${c.reset}\n`);
+    process.exit(1);
+  }
+
+  if (signature === null) {
+    if (!allowUnsigned) {
+      console.error(`\n\n  ${c.red}Esta release no esta firmada.${c.reset}`);
+      console.error(`  ${c.dim}Las anteriores a la v0.5.2 no llevan firma. Para instalarla igualmente,`);
+      console.error(`  comprobando solo el hash:${c.reset} ${c.yellow}drop update --allow-unsigned${c.reset}\n`);
+      process.exit(1);
+    }
+    console.log(`\n\n  ${c.yellow}Aviso: release sin firmar, solo se comprueba el hash (--allow-unsigned).${c.reset}`);
+  } else {
+    const check = verifySignature({ content: sums, signature, publicKey: PUBLIC_KEY });
+    if (!check.ok) {
+      console.error(`\n\n  ${c.red}✖ La firma de la release no es valida.${c.reset}`);
+      console.error(`  ${c.dim}${check.reason}${c.reset}`);
+      console.error(`\n  No se instala nada. Si se repite, descargar el binario a mano no es la`);
+      console.error(`  salida: el problema no esta en la descarga, sino en quien la sirve.\n`);
+      process.exit(1);
+    }
+    console.log(`\n\n  ${c.green}✔ Firma de la release verificada (Ed25519).${c.reset}`);
+  }
+
+  const expected = expectedHashFor(sums, asset.name);
+  if (!expected) {
+    console.error(`\n  ${c.red}El SHA256SUMS de la release no menciona ${asset.name}.${c.reset}\n`);
+    process.exit(1);
+  }
+
+  const actual = crypto.createHash('sha256').update(binaryBuffer).digest('hex');
+  if (actual !== expected) {
+    console.error(`\n  ${c.red}✖ El binario descargado no coincide con el hash publicado.${c.reset}`);
+    console.error(`  ${c.dim}Esperado:  ${expected}${c.reset}`);
+    console.error(`  ${c.dim}Calculado: ${actual}${c.reset}`);
+    console.error(`\n  No se instala nada. Vuelve a intentarlo; si persiste, descarga el binario`);
+    console.error(`  a mano desde GitHub y comprueba el hash tu mismo.\n`);
+    process.exit(1);
+  }
+  console.log(`  ${c.green}✔ Integridad verificada (SHA-256).${c.reset}`);
+}
+
+async function updateSelf(force = false, skipVerify = false, allowUnsigned = false) {
   console.log(`\n${c.bold}Comprobando actualizaciones en GitHub...${c.reset}`);
 
   const headers = {
@@ -305,34 +385,11 @@ async function updateSelf(force = false, skipVerify = false) {
     process.exit(1);
   }
 
-  // Comprobar el binario ANTES de escribirlo encima del ejecutable en marcha.
+  // Firma y hash ANTES de escribir nada encima del ejecutable en marcha.
   if (skipVerify) {
     console.log(`\n\n  ${c.yellow}Aviso: verificación de integridad omitida (--skip-verify).${c.reset}`);
   } else {
-    let expected = null;
-    try {
-      expected = await fetchExpectedHash(release, asset.name, headers);
-    } catch {
-      // Se trata igual que no encontrarlo: se corta abajo con el mismo mensaje.
-    }
-
-    if (!expected) {
-      console.error(`\n\n  ${c.red}Esta release no publica SHA256SUMS: no se puede verificar el binario.${c.reset}`);
-      console.error(`  ${c.dim}Las releases anteriores a la v0.4.1 no lo incluyen. Si aun asi quieres`);
-      console.error(`  actualizar, repite con:${c.reset} ${c.yellow}drop update --skip-verify${c.reset}\n`);
-      process.exit(1);
-    }
-
-    const actual = crypto.createHash('sha256').update(binaryBuffer).digest('hex');
-    if (actual !== expected) {
-      console.error(`\n\n  ${c.red}✖ El binario descargado no coincide con el hash publicado.${c.reset}`);
-      console.error(`  ${c.dim}Esperado:  ${expected}${c.reset}`);
-      console.error(`  ${c.dim}Calculado: ${actual}${c.reset}`);
-      console.error(`\n  No se instala nada. Vuelve a intentarlo; si persiste, descarga el binario`);
-      console.error(`  a mano desde GitHub y comprueba el hash tu mismo.\n`);
-      process.exit(1);
-    }
-    console.log(`\n\n  ${c.green}✔ Integridad verificada (SHA-256).${c.reset}`);
+    await verifyDownload(release, asset, binaryBuffer, headers, allowUnsigned);
   }
 
   console.log(`  ${c.dim}Instalando nueva versión...${c.reset}`);
@@ -413,7 +470,8 @@ ${c.bold}OPCIONES:${c.reset}
   --force                Fuerza la reinstalación en 'drop update'
   -y, --yes              No pide confirmación antes de servir a cada receptor
                          (se activa solo si no hay terminal interactiva)
-  --skip-verify          Omite la comprobación SHA-256 en 'drop update' (no recomendado)
+  --allow-unsigned       Permite actualizar a una release sin firma (anteriores a la v0.5.2)
+  --skip-verify          Omite firma y hash en 'drop update' (no recomendado)
   -h, --help             Muestra esta ayuda
   -v, --version          Muestra la versión
 
@@ -1337,7 +1395,8 @@ async function main() {
   if (argv.includes('update') || argv.includes('--update')) {
     const force = argv.includes('--force');
     const skipVerify = argv.includes('--skip-verify');
-    await updateSelf(force, skipVerify);
+    const allowUnsigned = argv.includes('--allow-unsigned');
+    await updateSelf(force, skipVerify, allowUnsigned);
     return;
   }
 
