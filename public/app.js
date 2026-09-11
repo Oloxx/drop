@@ -1308,6 +1308,13 @@ async function acceptTransfer() {
   sendHost({ k: 'accept' });
 }
 
+// Lado RECEPTOR WEB del protocolo de relay del CLI (los mensajes `cli-*`): el
+// emisor es un `drop send` y los bytes pasan por el servidor porque el
+// navegador no habla el TCP del CLI. El protocolo esta descrito entero en
+// cli/src/transfer.js, encima de receiveFromRelay; aqui hay que mantener sobre
+// todo el `cli-ack` cada ACK_EVERY, que es lo que mueve la ventana del emisor.
+//
+// Lo demas que pasa por aqui es la senializacion normal de WebRTC entre pares.
 function routeSignal(from, data) {
   if (data.type === 'cli-offer') {
     rx.isCli = true;
