@@ -166,6 +166,16 @@ jobs:
     needs: [macos, linux, windows]
     runs-on: ubuntu-latest
     steps:
+      # El repositorio hace falta aqui para firmar: el firmador y la clave
+      # publica contra la que se comprueba salen del propio codigo.
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - uses: actions/download-artifact@v4
         with:
           path: artefactos
@@ -192,6 +202,31 @@ jobs:
           sha256sum drop-v* > SHA256SUMS
           cat SHA256SUMS
 
+      # La firma cubre el SHA256SUMS y, a traves de el, los cinco binarios: el
+      # hash dice que el binario llego entero, la firma dice quien lo publico.
+      # Sin el secret la release se para: una release sin firmar no la instalaria
+      # `drop update` sin --allow-unsigned, y es mejor enterarse aqui.
+      - name: Firmar el SHA256SUMS
+        env:
+          DROP_SIGNING_KEY: ${{ secrets.DROP_SIGNING_KEY }}
+        run: |
+          if [ -z "$DROP_SIGNING_KEY" ]; then
+            echo "::error::Falta el secret DROP_SIGNING_KEY. Generalo con 'node scripts/keygen.mjs'."
+            exit 1
+          fi
+          node repo/scripts/sign-release.mjs dist/SHA256SUMS
+          cat dist/SHA256SUMS.minisig
+
+      # Comprobacion cruzada con el minisign de verdad: nuestro firmador escribe
+      # el formato a mano, y un fallo ahi no se notaria hasta que alguien
+      # intentase verificar una descarga siguiendo el README.
+      - name: Verificar la firma con minisign
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          PUBKEY=$(grep -o "RW[A-Za-z0-9+/=]\{40,\}" repo/cli/src/cli.js | head -1)
+          echo "clave publica del CLI: $PUBKEY"
+          minisign -V -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig -P "$PUBKEY"
+
       - name: Crear la release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -199,6 +234,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/drop-v* \
             dist/SHA256SUMS \
+            dist/SHA256SUMS.minisig \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes

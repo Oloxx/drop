@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "node --watch --env-file-if-exists=.env server/index.js",
     "start": "node --env-file-if-exists=.env server/index.js",
+    "keygen": "node scripts/keygen.mjs",
+    "sign": "node scripts/sign-release.mjs",
     "cli": "node cli/src/cli.js",
     "build:exe": "node scripts/build-cross.mjs win-x64",
     "build:linux": "node scripts/build-cross.mjs linux-x64",
