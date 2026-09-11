@@ -43,8 +43,16 @@ jobs:
             set -e
             echo "==> Actualizando código en ~/drop..."
             cd ~/drop
+            # El Caddyfile entra en el contenedor como bind-mount de UN FICHERO, y
+            # eso ata el montaje al inode: `git reset --hard` escribe un fichero
+            # nuevo y Caddy se queda sirviendo el contenido viejo para siempre. Hay
+            # que recrear el contenedor, y un `up -d` a secas no lo hace porque su
+            # definicion en el compose no ha cambiado. Paso de verdad con las
+            # cabeceras de seguridad: se desplegaron y HSTS no llego a produccion.
+            CADDY_ANTES=$(sha256sum Caddyfile | cut -d" " -f1)
             git fetch origin main
             git reset --hard origin/main
+            CADDY_DESPUES=$(sha256sum Caddyfile | cut -d" " -f1)
 
             echo "==> Reconstruyendo contenedor Docker..."
             docker compose up -d --build drop
@@ -52,6 +60,11 @@ jobs:
             # .env, asi que un cambio ahi no llega a produccion si no se recrea.
             # `up -d` es idempotente, solo lo toca cuando su definicion ha cambiado.
             docker compose up -d coturn
+
+            if [ "$CADDY_ANTES" != "$CADDY_DESPUES" ]; then
+              echo "==> El Caddyfile ha cambiado: recreando Caddy..."
+              docker compose up -d --force-recreate caddy
+            fi
 
             echo "==> Comprobando estado del servicio..."
             sleep 3
