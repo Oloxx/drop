@@ -15,6 +15,8 @@ Las notas de cada release, con los binarios, están en
 - Tests en Linux, macOS y Windows antes de desplegar a producción, y la suite arranca su propio
   servidor de señalización: `npm test` ya no necesita nada levantado a mano (#22, #23).
 - `LICENSE` (Apache 2.0), `CONTRIBUTING.md` y este `CHANGELOG.md` (#31).
+- El despliegue recrea Caddy cuando cambia su configuracion: el bind-mount de un fichero suelto
+  ata el montaje al inode y el contenedor seguia sirviendo el Caddyfile viejo.
 - Cabeceras de seguridad en todas las respuestas: CSP ajustada a lo que la web usa de verdad,
   `X-Content-Type-Options`, `Referrer-Policy` y `Permissions-Policy`; HSTS en Caddy (#30).
 
