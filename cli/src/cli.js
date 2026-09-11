@@ -17,8 +17,14 @@ import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 import { verifySignature } from './minisign.js';
+import pkg from '../../package.json' with { type: 'json' };
 
-const VERSION = '0.5.2';
+// La version sale del package.json y de ningun otro sitio. Estuvo escrita a mano
+// tambien aqui, y desincronizarlas no es cosmetico: `drop update` compara la
+// release de GitHub contra esta constante, asi que una constante vieja deja al
+// CLI creyendose desactualizado para siempre, o al reves. Al empaquetar, esbuild
+// mete el JSON dentro del bundle, asi que el binario tampoco lee nada en marcha.
+const VERSION = pkg.version;
 
 // Clave publica con la que se firma cada release (formato minisign). La privada
 // vive como secret del repositorio y solo la toca el workflow de publicacion.
