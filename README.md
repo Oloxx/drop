@@ -346,3 +346,23 @@ El servidor solo acepta WebSockets de navegador desde su propio dominio (`DROP_D
 localhost, para que una web cualquiera no pueda abrir salas con el navegador de quien la visita.
 Si sirves el frontend desde otro sitio, añade el origen con `DROP_ALLOWED_ORIGINS`. Las
 conexiones sin cabecera `Origin` —el CLI— no se ven afectadas.
+
+Las respuestas llevan una **CSP** ajustada a lo que la web usa de verdad —ni scripts ni estilos
+en línea, ni una sola petición a terceros—, además de `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer` y `Permissions-Policy` sin cámara, micrófono ni ubicación. HSTS lo
+pone Caddy, que es donde acaba el TLS. El contenedor corre como usuario sin privilegios y declara
+un `HEALTHCHECK` contra `/healthz`.
+
+---
+
+## 🤝 Contribuir
+
+Las convenciones del proyecto (idiomas, estilo de comentarios, formato de commits) y cómo montar
+el entorno están en **[CONTRIBUTING.md](CONTRIBUTING.md)**. El historial de versiones, en
+**[CHANGELOG.md](CHANGELOG.md)**.
+
+## 📄 Licencia
+
+[Apache License 2.0](LICENSE). Puedes usar, modificar y redistribuir drop, incluso
+comercialmente, conservando el aviso de copyright y la licencia, e indicando los cambios que
+hagas. La licencia incluye además una concesión expresa de patentes.

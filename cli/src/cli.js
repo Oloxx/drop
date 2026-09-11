@@ -664,6 +664,12 @@ const pendingProofs = new Map();
 // IP con la que cada receptor entró en la sala, para poder decir a quién se sirve.
 const guestIps = new Map();
 
+// Lado EMISOR del protocolo de relay del CLI: manda cli-start, los trozos
+// binarios, cli-end y cli-done, y avanza la ventana con los cli-ack que le
+// llegan. El protocolo entero -- cada mensaje, quien lo emite y que espera de
+// vuelta -- esta descrito en cli/src/transfer.js, encima de receiveFromRelay.
+// Cambiar algo aqui sin mirar alli es como se llego a que el receptor no
+// acusara recibo y el envio se parase a los 8 MB.
 async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
   const MAX_IN_FLIGHT = 8 * 1024 * 1024; // Ventana deslizante de 8 MB máximo sin confirmar

@@ -658,8 +658,81 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
   });
 }
 
+// ============================================================================
+// PROTOCOLO DE RELAY DEL CLI  (la descripcion canonica: esta solo aqui)
+// ============================================================================
+//
+// Cuando no hay ruta TCP directa -- NAT estricta, cortafuegos, o el receptor es
+// un navegador -- los bytes viajan por el WebSocket de senializacion. Hay TRES
+// implementaciones parciales de esto: el emisor en cli/src/cli.js
+// (`streamToWebGuest` y el bucle de `signal`), el receptor de aqui
+// (`receiveFromRelay`) y el receptor web en public/app.js (`routeSignal`).
+// Estaban sin describir en ningun sitio, y las divergencias entre ellas son
+// exactamente la causa de que el receptor CLI no mandase los acuses que el
+// emisor esperaba y la transferencia se parase en seco a los 8 MB.
+//
+// El servidor no entiende nada de esto: reenvia `{t:'signal', to, data}` a quien
+// diga `to`, dentro de la misma sala, y los frames binarios tal cual (del emisor
+// llevan 4 bytes de guestId por delante que el servidor quita; del receptor van
+// siempre al emisor). Ver la rama binaria de server/index.js.
+//
+// MENSAJES, en el orden en que ocurren
+//
+//   cli-offer      emisor -> receptor. Al entrar alguien en la sala. Lleva `v`
+//                  (PROTOCOL_VERSION), las IPs y el puerto para intentar TCP
+//                  directo, y un `nonce` nuevo por receptor. NO lleva el
+//                  manifiesto: acertar una sala son 4 digitos y los nombres de
+//                  los archivos ya son informacion.
+//   cli-proof      receptor -> emisor. `secretProof(nonce, secreto)`: demuestra
+//                  que sabe las palabras del codigo. Solo lo manda quien va a
+//                  comer por el relay; por TCP directo la prueba es que AES-GCM
+//                  autentique.
+//   cli-denied     emisor -> receptor. El codigo era bueno pero quien envia ha
+//                  dicho que no. Es un rechazo, no un fallo de emparejamiento.
+//   cli-manifest   emisor -> receptor. La lista de archivos, ya autorizada.
+//   cli-accept     receptor -> emisor. "Listo para recibir": abre el envio.
+//
+//   cli-start      emisor -> receptor. Empieza el archivo `index`, con nombre,
+//                  tamano y mime. Un `cli-start` con un archivo aun abierto
+//                  significa que el emisor se salto su `cli-end`: lo que hubiera
+//                  a medias no esta verificado y su `.part` se tira.
+//   (binario)      emisor -> receptor. Trozos de 64 KiB del archivo en curso, en
+//                  orden. No llevan cabecera: el receptor solo cuenta bytes.
+//   cli-ack        receptor -> emisor. Bytes totales recibidos, cada
+//                  RELAY_ACK_EVERY (2 MB). Ver el control de flujo abajo.
+//   cli-end        emisor -> receptor. Cierra el archivo `index` con su
+//                  `sha256`. El receptor compara, borra el `.part` si no cuadra
+//                  y solo entonces renombra al nombre definitivo.
+//   cli-done       emisor -> receptor. No quedan archivos.
+//   cli-complete   receptor -> emisor. Se manda con TODO ya escrito en disco, no
+//                  al recibir `cli-done`: es lo que permite al emisor dar la
+//                  transferencia por buena y soltar la ventana.
+//
+//   cli-retry      receptor -> emisor. Reenvia desde el archivo `index`
+//                  (inclusive). Lo usa el receptor web cuando un hash no cuadra.
+//   cli-error      receptor -> emisor. Algo se ha roto de este lado; el emisor
+//                  suelta la ventana y da ese receptor por perdido.
+//
+// CONTROL DE FLUJO: es lo que se rompio, y es una ventana de acuses
+//
+// El emisor no manda mas de MAX_IN_FLIGHT (8 MB, cli.js) sin confirmar, y se
+// para tambien si su propio `ws.bufferedAmount` pasa de 4 MB. Lo unico que mueve
+// esa marca es el `cli-ack` del receptor. Un receptor que no acuse recibo no va
+// "un poco mas lento": los dos extremos se quedan esperando para siempre en
+// cuanto se llenan los 8 MB. Por eso los dos receptores acusan cada 2 MB
+// (RELAY_ACK_EVERY aqui, ACK_EVERY en public/app.js) y ese numero tiene que
+// quedarse muy por debajo de la ventana.
+//
+// El acuse dice BYTES TOTALES de la transferencia, no del archivo: es
+// monotono creciente y el emisor se queda con el maximo, asi que un acuse que
+// llegue tarde o repetido no hace retroceder nada.
+//
+// Y hay un reloj de inactividad en el receptor (RELAY_IDLE_TIMEOUT_MS) que se
+// rearma con cualquier senial de vida: sin el, un fallo del emisor dejaba al
+// receptor colgado sin error y sin salida.
 /**
- * Cliente Relay que recibe los archivos en streaming a través del WebSocket de señalización
+ * Cliente Relay que recibe los archivos en streaming a traves del WebSocket de
+ * senializacion. La descripcion del protocolo esta justo arriba.
  */
 export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = {}) {
   const { overwrite = false } = options;

@@ -2,6 +2,9 @@
   "name": "drop",
   "version": "0.5.2",
   "private": true,
+  "license": "Apache-2.0",
+  "author": "Àlex Rodriguez (Oloxx)",
+  "repository": { "type": "git", "url": "git+https://github.com/Oloxx/drop.git" },
   "type": "module",
   "description": "Envio de archivos P2P entre navegadores (WebRTC). El servidor solo empareja: los archivos nunca pasan por el.",
   "scripts": {

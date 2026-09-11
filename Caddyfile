@@ -1,5 +1,16 @@
 # Caddy pide y renueva el certificado solo. Los WebSockets pasan sin configurar nada.
 {$DROP_DOMAIN} {
 	encode gzip
+
+	# HSTS vive aqui y no en la aplicacion porque es lo unico que depende de donde
+	# acaba el TLS: anunciarlo desde un servidor que tambien habla http (el `npm
+	# run dev` de cualquiera) dejaria ese localhost inaccesible en el navegador
+	# durante meses. El resto de cabeceras (CSP, nosniff, Referrer-Policy) las
+	# pone server/index.js, para que viajen con la aplicacion y se prueben.
+	#
+	# Dos anos, subdominios incluidos. Sin `preload`: pedir la lista de precarga
+	# es un camino de ida, y el dominio tendria que servir HTTPS para siempre.
+	header Strict-Transport-Security "max-age=63072000; includeSubDomains"
+
 	reverse_proxy drop:3000
 }
