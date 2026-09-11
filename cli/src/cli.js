@@ -18,7 +18,7 @@ import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 import { verifySignature } from './minisign.js';
 
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 
 // Clave publica con la que se firma cada release (formato minisign). La privada
 // vive como secret del repositorio y solo la toca el workflow de publicacion.

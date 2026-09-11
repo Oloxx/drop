@@ -35,15 +35,15 @@ de cifrado y no salen nunca de tu equipo. Detalle completo en
 
 ---
 
-## 📥 Descargas (Versión v0.5.1)
+## 📥 Descargas (Versión v0.5.2)
 
-Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.5.1](https://github.com/Oloxx/drop/releases/tag/v0.5.1):
+Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.5.2](https://github.com/Oloxx/drop/releases/tag/v0.5.2):
 
-* **Windows (x64):** [`drop-v0.5.1-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.5.1/drop-v0.5.1-windows-x64.exe)
-* **Linux (x64):** [`drop-v0.5.1-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.5.1/drop-v0.5.1-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-v0.5.1-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.5.1/drop-v0.5.1-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-v0.5.1-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.5.1/drop-v0.5.1-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.5.1-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.5.1/drop-v0.5.1-macos-x64.tar.gz)
+* **Windows (x64):** [`drop-v0.5.2-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.5.2/drop-v0.5.2-windows-x64.exe)
+* **Linux (x64):** [`drop-v0.5.2-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.5.2/drop-v0.5.2-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-v0.5.2-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.5.2/drop-v0.5.2-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-v0.5.2-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.5.2/drop-v0.5.2-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-v0.5.2-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.5.2/drop-v0.5.2-macos-x64.tar.gz)
 
 
 ### Verificar la descarga
@@ -65,7 +65,7 @@ Esa clave pública es la del proyecto; la privada solo la usa el workflow de rel
 sha256sum -c SHA256SUMS --ignore-missing
 
 # Windows (PowerShell)
-Get-FileHash drop-v0.5.1-windows-x64.exe -Algorithm SHA256
+Get-FileHash drop-v0.5.2-windows-x64.exe -Algorithm SHA256
 ```
 
 `drop update` hace las dos por su cuenta antes de sustituir el ejecutable y aborta si algo no cuadra. Con una release anterior a la v0.5.2, que no lleva firma, avisa y exige `--allow-unsigned` para seguir: así, borrar la firma no basta para que se conforme con el hash.
@@ -75,7 +75,7 @@ Get-FileHash drop-v0.5.1-windows-x64.exe -Algorithm SHA256
 ## 🛠️ Instalación en el Sistema
 
 ### Windows
-Simplemente **descarga [`drop-v0.5.1-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.5.1/drop-v0.5.1-windows-x64.exe) y haz doble clic sobre él**.
+Simplemente **descarga [`drop-v0.5.2-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.5.2/drop-v0.5.2-windows-x64.exe) y haz doble clic sobre él**.
 1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
 2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
 3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
@@ -83,8 +83,8 @@ Simplemente **descarga [`drop-v0.5.1-windows-x64.exe`](https://github.com/Oloxx/
 ### Linux / macOS
 Descarga el archivo correspondiente, extráelo y ejecútalo con `install`:
 ```bash
-tar -xzf drop-v0.5.1-linux-x64.tar.gz
-./drop-v0.5.1-linux-x64 install
+tar -xzf drop-v0.5.2-linux-x64.tar.gz
+./drop-v0.5.2-linux-x64 install
 ```
 *(O muévelo manualmente a tu ruta del sistema: `sudo mv drop-linux-x64 /usr/local/bin/drop && chmod +x /usr/local/bin/drop`)*
 
