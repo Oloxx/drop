@@ -304,7 +304,7 @@ npm run dev
 # Ejecutar el CLI en modo desarrollo
 npm run cli -- send mi_archivo.zip
 
-# Ejecutar la suite de tests
+# Ejecutar la suite de tests (levanta su propio servidor, no hace falta nada mas)
 npm test
 
 # Benchmarks de velocidad
