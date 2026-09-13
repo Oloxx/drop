@@ -42,6 +42,10 @@ Las notas de cada release, con los binarios, están en
   `X-Content-Type-Options`, `Referrer-Policy` y `Permissions-Policy`; HSTS en Caddy (#30).
 
 ### Cambiado
+- Un solo idioma por superficie: la web entera en inglés (se han ido los `verificado`,
+  `reintentar` y `Discrepancia de integridad` sueltos) y el CLI en español; los errores de
+  código inválido de `public/shared/codes.js` salen en el idioma de quien los pide
+  (`parseCode(input, { lang })`) (#41).
 - La versión del CLI sale solo del `package.json` y esbuild la mete en el binario al compilar:
   se acabó la constante escrita a mano que descuadraba `drop update` (#26).
 - El contenedor corre como el usuario `node`, sin privilegios, y declara un `HEALTHCHECK` (#30).

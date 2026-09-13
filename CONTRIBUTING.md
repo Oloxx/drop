@@ -59,8 +59,16 @@ instalado (`CHROME_PATH` si no está donde se espera).
 ## Convenciones
 
 **Idiomas.** El código, los comentarios, los commits, las issues y los PR van en **español**.
-Los textos de la interfaz web van en **inglés**, en minúscula y escuetos (`open channel`,
-`transmitting…`, `delivered`). No es capricho: mezclarlo ya pasó y quedó a medias.
+Cada superficie habla un solo idioma, decidido y sin mezclar:
+
+- la **web** va en **inglés**, en minúscula y escueta (`open channel`, `transmitting…`,
+  `delivered`);
+- el **CLI** va en **español**, incluidos sus errores;
+- el código compartido que produce texto para el usuario (`public/shared/codes.js`) recibe
+  el idioma como parámetro (`parseCode(input, { lang })`) en vez de imponer uno: la web pasa
+  `en` y el CLI usa el `es` por defecto.
+
+No es capricho: mezclarlo ya pasó y quedó a medias (#41).
 
 **Comentarios.** Se comenta el *porqué*, no el *qué*. Un comentario que repite el nombre de la
 función sobra; uno que dice "esto no puede ir en el canal directo porque adelanta a los últimos

@@ -111,14 +111,63 @@ for (const word of WORDLIST) {
   }
 }
 
-/** Error de codigo con una sugerencia legible para enseniar al usuario. */
+/**
+ * Error de codigo con una sugerencia legible para enseniar al usuario.
+ * `key` identifica el motivo con independencia del idioma del mensaje.
+ */
 export class CodeError extends Error {
-  constructor(message, hint = '') {
+  constructor(message, hint = '', key = 'BAD_CODE') {
     super(hint ? `${message} ${hint}` : message);
     this.name = 'CodeError';
     this.code = 'BAD_CODE';
+    this.key = key;
     this.hint = hint;
   }
+}
+
+// Los mensajes se ensenan tal cual a quien teclea el codigo, y cada superficie
+// habla un idioma: el CLI en castellano y la web en ingles. Por eso el parser
+// admite `lang` en vez de imponer uno; el valor por defecto es el del CLI, que
+// es quien mas lo llama.
+const EXAMPLE = '4271-lemon-radar-tiger-orbit';
+const MESSAGES = {
+  es: {
+    empty: () => ['Codigo vacio.', `Formato: ${EXAMPLE}`],
+    badRoom: (roomId) => [
+      `"${roomId}" no es un identificador de sala valido.`,
+      `Un codigo empieza por ${ROOM_ID_DIGITS} digitos: ${EXAMPLE}`,
+    ],
+    wordCount: (n) => [`Un codigo lleva ${SECRET_WORDS} palabras y has escrito ${n}.`, `Formato: ${EXAMPLE}`],
+    ambiguous: (token, matches) => [
+      `"${token}" es ambiguo: encaja con ${matches.length} palabras.`,
+      `Escribe al menos 4 letras (${matches.slice(0, 3).join(', ')}...).`,
+    ],
+    unknown: (token, near) => [
+      `"${token}" no esta en la lista de palabras.`,
+      near.length ? `¿Querias decir ${near.join(' o ')}?` : '',
+    ],
+  },
+  en: {
+    empty: () => ['Empty code.', `Format: ${EXAMPLE}`],
+    badRoom: (roomId) => [
+      `"${roomId}" is not a valid room id.`,
+      `A code starts with ${ROOM_ID_DIGITS} digits: ${EXAMPLE}`,
+    ],
+    wordCount: (n) => [`A code has ${SECRET_WORDS} words and you typed ${n}.`, `Format: ${EXAMPLE}`],
+    ambiguous: (token, matches) => [
+      `"${token}" is ambiguous: it matches ${matches.length} words.`,
+      `Type at least 4 letters (${matches.slice(0, 3).join(', ')}...).`,
+    ],
+    unknown: (token, near) => [
+      `"${token}" is not in the word list.`,
+      near.length ? `Did you mean ${near.join(' or ')}?` : '',
+    ],
+  },
+};
+
+function fail(lang, key, ...args) {
+  const [message, hint] = (MESSAGES[lang] || MESSAGES.es)[key](...args);
+  return new CodeError(message, hint, key);
 }
 
 // La aleatoriedad por defecto sale de WebCrypto, que esta tanto en el navegador
@@ -214,8 +263,7 @@ function isDistanceOne(a, b) {
 }
 
 function suggestFor(token) {
-  const near = WORDLIST.filter((w) => isDistanceOne(token, w)).slice(0, 3);
-  return near.length ? `¿Querias decir ${near.join(' o ')}?` : '';
+  return WORDLIST.filter((w) => isDistanceOne(token, w)).slice(0, 3);
 }
 
 /**
@@ -225,19 +273,14 @@ function suggestFor(token) {
  * es unica ahi), y si el prefijo es ambiguo se dicen los candidatos en vez de
  * elegir uno al azar y descifrar basura.
  */
-export function resolveWord(token) {
+export function resolveWord(token, lang = 'es') {
   if (WORD_SET.has(token)) return token;
   if (token.length >= MIN_PREFIX) {
     const matches = BY_PREFIX.get(token);
     if (matches && matches.length === 1) return matches[0];
-    if (matches && matches.length > 1) {
-      throw new CodeError(
-        `"${token}" es ambiguo: encaja con ${matches.length} palabras.`,
-        `Escribe al menos 4 letras (${matches.slice(0, 3).join(', ')}...).`,
-      );
-    }
+    if (matches && matches.length > 1) throw fail(lang, 'ambiguous', token, matches);
   }
-  throw new CodeError(`"${token}" no esta en la lista de palabras.`, suggestFor(token));
+  throw fail(lang, 'unknown', token, suggestFor(token));
 }
 
 /** El identificador publico de sala tal cual lo genera el servidor. */
@@ -255,12 +298,13 @@ export function isLegacyToken(value) {
 
 /**
  * Valida y descompone un codigo. Lanza `CodeError` con un mensaje que se puede
- * enseniar tal cual. Se llama ANTES de tocar la red: no tiene sentido abrir un
- * websocket para descubrir que faltaba una palabra.
+ * enseniar tal cual, en el idioma de `lang` (`es` o `en`). Se llama ANTES de
+ * tocar la red: no tiene sentido abrir un websocket para descubrir que faltaba
+ * una palabra.
  *
  * Devuelve `{ roomId, words, secret, code, legacy }`.
  */
-export function parseCode(input) {
+export function parseCode(input, { lang = 'es' } = {}) {
   const raw = String(input == null ? '' : input).trim();
 
   // Camino viejo: token base64url de 16 caracteres de la v0.3.5. Sensible a
@@ -272,27 +316,16 @@ export function parseCode(input) {
   }
 
   const normalized = normalizeCode(raw);
-  if (!normalized) throw new CodeError('Codigo vacio.', 'Formato: 4271-lemon-radar-tiger-orbit');
+  if (!normalized) throw fail(lang, 'empty');
 
   const parts = normalized.split('-').filter(Boolean);
   const roomId = parts[0];
-
-  if (!isRoomId(roomId)) {
-    throw new CodeError(
-      `"${roomId}" no es un identificador de sala valido.`,
-      `Un codigo empieza por ${ROOM_ID_DIGITS} digitos: 4271-lemon-radar-tiger-orbit`,
-    );
-  }
+  if (!isRoomId(roomId)) throw fail(lang, 'badRoom', roomId);
 
   const rest = parts.slice(1);
-  if (rest.length !== SECRET_WORDS) {
-    throw new CodeError(
-      `Un codigo lleva ${SECRET_WORDS} palabras y has escrito ${rest.length}.`,
-      'Formato: 4271-lemon-radar-tiger-orbit',
-    );
-  }
+  if (rest.length !== SECRET_WORDS) throw fail(lang, 'wordCount', rest.length);
 
-  const words = rest.map(resolveWord);
+  const words = rest.map((w) => resolveWord(w, lang));
   return { roomId, words, secret: words.join('-'), code: formatCode(roomId, words), legacy: false };
 }
 

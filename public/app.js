@@ -694,7 +694,7 @@ function launchChain(chain, timedOut) {
 
   // Algun eslabon no ha llegado a abrirse. Deshacemos la cadena entera en vez de
   // adivinar donde esta rota: cada uno vuelve a comer directamente de nosotros.
-  console.warn('drop: la cadena no levanto, servimos en directo');
+  console.warn('drop: relay chain did not come up, serving everyone directly');
   for (const conn of live) {
     conn.relayed = false;
     if (conn.chain === chain) conn.dc.send(JSON.stringify({ k: 'unrelay' }));
@@ -901,7 +901,9 @@ function makeLink(peerId) {
  * emisor y no se mandan por ningun sitio.
  */
 function joinWithCode(code) {
-  const parsed = parseCode(code);     // lanza CodeError si no cuadra, antes de tocar la red
+  // Lanza CodeError si no cuadra, antes de tocar la red. En ingles: es lo que
+  // habla esta pagina, y el mensaje se ensena tal cual.
+  const parsed = parseCode(code, { lang: 'en' });
   rx.code = parsed.code;
   rx.secret = parsed.secret;
   rx.roomId = parsed.roomId;
@@ -1177,7 +1179,7 @@ function onControl(msg) {
         } else {
           sendHost({ k: 'complete' });
         }
-        if (rx.row) { rx.row.file(''); rx.row.finish('received · ✔ verificado (SHA-256)'); }
+        if (rx.row) { rx.row.file(''); rx.row.finish('received · ✔ verified (SHA-256)'); }
         setStatus('transfer complete', 'live');
         alertFinished('transfer complete · ' + fmtBytes(rx.total) + ' verified');
       });
@@ -1248,12 +1250,12 @@ function handleFileVerified(index, hash) {
     if (badge) {
       badge.hidden = false;
       badge.className = 'badge verified';
-      badge.textContent = '✔ verificado (SHA-256)';
+      badge.textContent = '✔ verified (SHA-256)';
     }
   }
   if (rx.row) {
     const name = rx.manifest && rx.manifest[index] ? rx.manifest[index].name : '';
-    rx.row.file(name ? `${name} · ✔ verificado (SHA-256)` : '✔ verificado (SHA-256)');
+    rx.row.file(name ? `${name} · ✔ verified (SHA-256)` : '✔ verified (SHA-256)');
   }
 }
 
@@ -1264,12 +1266,12 @@ function handleIntegrityFailure(index, expected, calculated) {
     if (badge) {
       badge.hidden = false;
       badge.className = 'badge failed';
-      badge.textContent = '✖ integridad fallida (SHA-256)';
+      badge.textContent = '✖ integrity failed (SHA-256)';
     }
   }
   const name = rx.manifest && rx.manifest[index] ? rx.manifest[index].name : 'file';
   if (rx.row) {
-    rx.row.fail('error de integridad SHA-256');
+    rx.row.fail('SHA-256 integrity error');
   }
   alertFinished('integrity check failed on ' + name);
   const alertEl = $('#verify-alert');
@@ -1277,11 +1279,11 @@ function handleIntegrityFailure(index, expected, calculated) {
     alertEl.hidden = false;
     const msgEl = $('#verify-error-msg');
     if (msgEl) {
-      msgEl.textContent = `Discrepancia de integridad en "${name}". Hash esperado: ${expected?.slice(0, 12)}… Calculado: ${calculated?.slice(0, 12)}…`;
+      msgEl.textContent = `Integrity mismatch in "${name}". Expected hash: ${expected?.slice(0, 12)}… got: ${calculated?.slice(0, 12)}…`;
     }
     const retryBtn = $('#retry-transfer');
     if (retryBtn) {
-      retryBtn.textContent = `reintentar ${name}`;
+      retryBtn.textContent = `retry ${name}`;
       retryBtn.onclick = () => retryFile(index);
     }
   }
