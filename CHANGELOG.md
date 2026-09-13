@@ -11,6 +11,11 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.6.0] — 2026-09-13
+
+> **Rompe compatibilidad con la v0.5.x:** el protocolo pasa a la versión 2 (relay cifrado).
+> Un `drop` viejo y uno nuevo se rechazan con un mensaje que pide `drop update`.
+
 ### Seguridad
 - **El relay va cifrado de extremo a extremo.** Cuando no hay TCP directo (o el receptor es un
   navegador) los archivos pasaban por el servidor en claro; ahora cada trozo y cada marco de
