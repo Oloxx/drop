@@ -179,6 +179,20 @@ Ninguno de los dos corta una descarga a medias: al caducar se deja de aceptar re
 nuevos y el proceso sale cuando termina la que esté en curso. El servidor libera la sala en
 ese momento, porque la sala vive lo que vive la conexión del emisor.
 
+**Texto y portapapeles.** Para mandar un fragmento sin crear un archivo antes:
+
+```bash
+drop send --text "la clave del wifi es ..."     # viaja como message.txt
+drop send --clipboard                            # el portapapeles, como clipboard.txt
+drop recv 4271-lemon-radar-tiger-orbit --stdout  # lo recibido, a stdout (también: -o -)
+drop recv 4271-lemon-radar-tiger-orbit --stdout | pbcopy
+```
+
+El portapapeles se lee con las herramientas del sistema (`Get-Clipboard`, `pbpaste`,
+`wl-paste`/`xclip`/`xsel`) y si no hay ninguna se dice cuál instalar. Con `--stdout` los
+mensajes y el progreso se van a stderr, y el contenido se vuelca solo cuando el SHA-256 ha
+cuadrado: una tubería no se puede rebobinar.
+
 #### 2. Recibir archivos (`drop recv`)
 En otro ordenador con `drop` instalado:
 ```bash

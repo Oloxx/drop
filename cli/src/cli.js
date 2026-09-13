@@ -3,11 +3,11 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import readline from 'node:readline';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete } from './ui.js';
+import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete, setProgressStream } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
 import { attachSender, receiveFiles, receiveFromRelay, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
@@ -458,7 +458,10 @@ ${c.bold}drop${c.reset} — transferencia P2P de archivos a máxima velocidad ($
 
 ${c.bold}USO:${c.reset}
   drop send <archivo1> [archivo2 ...]   Envía uno o varios archivos
+  drop send --text "..."                Envía un texto sin crear un archivo antes
+  drop send --clipboard                 Envía el contenido del portapapeles
   drop recv <código-o-enlace>           Recibe los archivos
+  drop recv <código> --stdout           Escribe lo recibido en la salida estándar
   drop speed [código-o-enlace]          Mide la velocidad de transferencia entre 2 clientes CLI
   drop update                           Busca e instala la última versión disponible
   drop install                          Instala drop en el sistema y lo añade al PATH
@@ -469,6 +472,10 @@ ${c.bold}OPCIONES:${c.reset}
   -p, --port <puerto>    Puerto TCP local para escucha (por defecto: aleatorio)
   -s, --server <url>     Servidor de señalización (por defecto: ${DEFAULT_SERVER})
   -o, --out <directorio> Directorio de destino para descargas (por defecto: actual)
+  --stdout               Vuelca lo recibido a stdout en vez de a disco (también -o -);
+                         los mensajes y el progreso se van a stderr
+  --text <texto>         Envía ese texto como message.txt
+  --clipboard            Envía el portapapeles como clipboard.txt
   --relay                Fuerza la transferencia a través del servidor de Relay
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --overwrite            Sobrescribe los archivos que ya existan en el destino
@@ -497,6 +504,8 @@ ${c.bold}EL CÓDIGO:${c.reset}
 ${c.bold}EJEMPLOS:${c.reset}
   drop send video.mp4
   drop send backup.tar --once --expire 10m
+  drop send --text "la clave del wifi es ..."
+  drop recv 4271-lemon-radar-tiger-orbit --stdout | pbcopy
   drop recv 4271-lemon-radar-tiger-orbit
   drop recv https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
   drop speed
@@ -506,10 +515,73 @@ ${c.bold}EJEMPLOS:${c.reset}
 `);
 }
 
+/**
+ * Lee el portapapeles con la herramienta del sistema: no hay API en Node y una
+ * dependencia nativa no cabe en el binario. Se prueban por orden las que suele
+ * haber; si no hay ninguna, se dice cual instalar.
+ */
+function readClipboard() {
+  const attempts = process.platform === 'win32'
+    ? [['powershell', ['-NoProfile', '-Command', '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Raw']]]
+    : process.platform === 'darwin'
+      ? [['pbpaste', []]]
+      : [['wl-paste', ['--no-newline']], ['xclip', ['-selection', 'clipboard', '-o']], ['xsel', ['--clipboard', '--output']]];
+  for (const [cmd, cmdArgs] of attempts) {
+    try {
+      return execFileSync(cmd, cmdArgs, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { /* siguiente herramienta */ }
+  }
+  const hint = process.platform === 'linux'
+    ? 'Hace falta wl-clipboard (Wayland), xclip o xsel (X11).'
+    : 'No se ha podido leer el portapapeles con las herramientas del sistema.';
+  throw new Error(`No hay forma de leer el portapapeles. ${hint}`);
+}
+
+/**
+ * `--text` y `--clipboard` envian un fragmento sin que el usuario tenga que
+ * crear un archivo: se crea aqui, en un directorio temporal que se borra al
+ * salir. El emisor lee de disco con descriptores y por trozos, asi que fabricar
+ * un archivo de verdad es lo que menos toca del camino ya probado.
+ */
+function stageInlineContent(options) {
+  const staged = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-inline-'));
+  if (options.text != null) {
+    const p = path.join(dir, 'message.txt');
+    fs.writeFileSync(p, options.text, 'utf-8');
+    staged.push(p);
+  }
+  if (options.clipboard) {
+    let text;
+    try {
+      text = readClipboard();
+    } catch (err) {
+      console.error(`\n${c.red}${err.message}${c.reset}\n`);
+      process.exit(1);
+    }
+    if (!text || !text.trim()) {
+      console.error(`\n${c.red}El portapapeles está vacío (o no contiene texto).${c.reset}\n`);
+      process.exit(1);
+    }
+    const p = path.join(dir, 'clipboard.txt');
+    fs.writeFileSync(p, text, 'utf-8');
+    staged.push(p);
+  }
+  const cleanup = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} };
+  return { staged, cleanup };
+}
+
 async function runSend(args, options) {
-  const filePaths = args;
+  const filePaths = [...args];
+  let inlineCleanup = null;
+  if (options.text != null || options.clipboard) {
+    const { staged, cleanup } = stageInlineContent(options);
+    filePaths.push(...staged);
+    inlineCleanup = cleanup;
+    process.on('exit', cleanup);
+  }
   if (!filePaths.length) {
-    console.error(`${c.red}Error: Debes especificar al menos un archivo para enviar.${c.reset}`);
+    console.error(`${c.red}Error: Debes especificar al menos un archivo para enviar (o --text / --clipboard).${c.reset}`);
     process.exit(1);
   }
 
@@ -1178,6 +1250,32 @@ function printSuccess(received, outputDir) {
 }
 
 /**
+ * Final de `drop recv`. Con `--stdout` los archivos se han recibido en un
+ * directorio temporal -- verificados igual, con su `.part` y su SHA-256 -- y
+ * aqui se vuelcan a la salida estandar, en orden, y se borra el temporal. Se
+ * vuelca al final y no en streaming a proposito: lo que sale por la tuberia ya
+ * esta comprobado, y una tuberia no se puede rebobinar si el hash no cuadra.
+ */
+async function finishRecv(received, outputDir, options) {
+  if (!options.stdout) {
+    printSuccess(received, outputDir);
+    return;
+  }
+  for (const item of received) {
+    const filePath = typeof item === 'string' ? item : item.path;
+    await new Promise((resolve, reject) => {
+      const src = fs.createReadStream(filePath);
+      src.on('error', reject);
+      src.on('end', resolve);
+      src.pipe(process.stdout, { end: false });
+    });
+  }
+  await new Promise((resolve) => (process.stdout.write('', resolve)));
+  try { fs.rmSync(outputDir, { recursive: true, force: true }); } catch {}
+  console.error(`  ${c.green}✔ ${received.length} archivo(s) verificado(s) y volcado(s) a stdout.${c.reset}`);
+}
+
+/**
  * Pide permiso al humano antes de servirle los archivos a alguien.
  *
  * Las peticiones se encolan: con dos receptores a la vez, dos prompts de readline
@@ -1278,6 +1376,16 @@ async function runRecv(args, options) {
     // ya distribuidos; se elimina en la v0.5.0.
     console.log(`\n  ${c.yellow}Aviso: código en formato antiguo (v0.3.5). Sigue funcionando, pero pídele al emisor que actualice.${c.reset}`);
   }
+  // --stdout: el contenido va por stdout, asi que TODO lo demas -- mensajes,
+  // barra de progreso, errores -- tiene que irse a stderr. Se recibe en un
+  // temporal, con todas las comprobaciones de siempre, y se vuelca al final.
+  const term = options.stdout ? process.stderr : process.stdout;
+  if (options.stdout) {
+    console.log = (...a) => console.error(...a);
+    setProgressStream(process.stderr);
+    options.out = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-stdout-'));
+    process.on('exit', () => { try { fs.rmSync(options.out, { recursive: true, force: true }); } catch {} });
+  }
   let outputDir = options.out ? path.resolve(options.out) : process.cwd();
 
   // Si se ejecuta en una carpeta del sistema protegida (ej. C:\Windows\System32 por abrir PowerShell como Admin),
@@ -1310,7 +1418,7 @@ async function runRecv(args, options) {
   // 1. Primero intentar descubrimiento LAN instantáneo (<1.2s)
   let target = null;
   if (!forceRelay) {
-    process.stdout.write(`  ${c.dim}Explorando red local (LAN)...${c.reset}`);
+    term.write(`  ${c.dim}Explorando red local (LAN)...${c.reset}`);
     target = await listenForLAN(code, 1200);
   }
 
@@ -1324,7 +1432,7 @@ async function runRecv(args, options) {
       if (received.stats) {
         renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
       }
-      printSuccess(received, outputDir);
+      await finishRecv(received, outputDir, options);
       process.exit(0);
     } catch (err) {
       if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
@@ -1407,9 +1515,9 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
   const candidateIPs = port && !forceRelay ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
 
   if (candidateIPs.length > 0) {
-    process.stdout.write(`  ${c.dim}Comprobando ruta TCP directa con el emisor...${c.reset}`);
+    term.write(`  ${c.dim}Comprobando ruta TCP directa con el emisor...${c.reset}`);
     const probe = await probeCandidateIPs(candidateIPs, port, 2500);
-    process.stdout.write('\r\x1b[K');
+    term.write('\r\x1b[K');
     if (probe) {
       try { probe.socket.destroy(); } catch {}
       const isLocal = probe.ip?.includes('127.0.0.1') || probe.ip?.includes('::1') || probe.ip?.startsWith('192.168.') || probe.ip?.startsWith('10.');
@@ -1424,7 +1532,7 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
         if (received.stats) {
           renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
         }
-        printSuccess(received, outputDir);
+        await finishRecv(received, outputDir, options);
         process.exit(0);
       } catch (err) {
         if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
@@ -1532,7 +1640,7 @@ ${c.red}${err.message}${c.reset}
     if (received.stats) {
       renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
     }
-    printSuccess(received, outputDir);
+    await finishRecv(received, outputDir, options);
     process.exit(0);
   } catch (err) {
     if (ws) ws.close();
@@ -1604,6 +1712,9 @@ async function main() {
     once: false,
     expire: null,
     noQr: false,
+    stdout: false,
+    text: null,
+    clipboard: false,
   };
 
   const cleanArgs = [];
@@ -1612,6 +1723,18 @@ async function main() {
       options.server = argv[++i];
     } else if (argv[i] === '-o' || argv[i] === '--out') {
       options.out = argv[++i];
+      // `-o -` es la forma de toda la vida de decir "a stdout".
+      if (options.out === '-') { options.out = null; options.stdout = true; }
+    } else if (argv[i] === '--stdout') {
+      options.stdout = true;
+    } else if (argv[i] === '--text') {
+      options.text = argv[++i];
+      if (options.text == null) {
+        console.error(`\n${c.red}--text necesita el texto a enviar.${c.reset}\n`);
+        process.exit(1);
+      }
+    } else if (argv[i] === '--clipboard') {
+      options.clipboard = true;
     } else if (argv[i] === '-p' || argv[i] === '--port') {
       options.port = parseInt(argv[++i], 10) || 0;
     } else if (argv[i] === '-t' || argv[i] === '--time') {
@@ -1645,6 +1768,12 @@ async function main() {
 
   const command = cleanArgs[0];
   const rest = cleanArgs.slice(1);
+
+  // `drop --text "..."` o `drop --clipboard` a secas: es un envio.
+  if (!command && (options.text != null || options.clipboard)) {
+    await runSend([], options);
+    return;
+  }
 
   if (command === 'send') {
     await runSend(rest, options);

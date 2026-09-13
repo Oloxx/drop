@@ -52,8 +52,13 @@ export function fmtMs(ms) {
   return (ms < 10 ? ms.toFixed(1) : Math.round(ms)) + ' ms';
 }
 
+// Por donde sale la barra de progreso. Con `drop recv --stdout` el contenido va
+// por stdout y todo lo demas tiene que irse a stderr, o se mezcla con los datos.
+let out = process.stdout;
+export function setProgressStream(stream) { out = stream; }
+
 function getBarWidth(preferred = 30) {
-  const cols = process.stdout.columns;
+  const cols = out.columns;
   if (!cols || cols >= 105) return preferred;
   return Math.max(10, Math.min(preferred, cols - 72));
 }
@@ -68,7 +73,7 @@ export function renderProgressBar(current, total, speed, width = 30) {
   const eta = (current < total && speed > 0) ? fmtEta((total - current) / speed) : '';
   const etaStr = eta ? `· ETA ${eta}` : '';
 
-  process.stdout.write(`\r  ${bar} ${pctStr} · ${fmtBytes(current)} / ${fmtBytes(total)} · ${fmtSpeed(speed)} ${etaStr}   \x1b[K`);
+  out.write(`\r  ${bar} ${pctStr} · ${fmtBytes(current)} / ${fmtBytes(total)} · ${fmtSpeed(speed)} ${etaStr}   \x1b[K`);
 }
 
 export function renderProgressBarComplete(total, totalTimeSec, avgSpeed, width = 30) {
@@ -77,6 +82,6 @@ export function renderProgressBarComplete(total, totalTimeSec, avgSpeed, width =
   const durationStr = fmtDuration(totalTimeSec);
   const speedStr = fmtSpeed(avgSpeed);
 
-  process.stdout.write(`\r  ${bar} 100% · ${fmtBytes(total)} / ${fmtBytes(total)} · ${durationStr} · Media: ${speedStr}   \x1b[K\n`);
+  out.write(`\r  ${bar} 100% · ${fmtBytes(total)} / ${fmtBytes(total)} · ${durationStr} · Media: ${speedStr}   \x1b[K\n`);
 }
 
