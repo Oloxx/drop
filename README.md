@@ -151,6 +151,20 @@ solo: bloquear ahí sería colgar el proceso esperando una tecla que no va a lle
 Qué es la huella y qué detecta, en
 [Modelo de seguridad del código](#-modelo-de-seguridad-del-código).
 
+**Acotar la ventana.** Un canal abierto sigue sirviendo a quien tenga el código hasta que lo
+cierras; con códigos que se dictan (y se oyen de paso) conviene poder decir "esto es para
+una descarga" o "esto caduca en diez minutos":
+
+```bash
+drop send backup.tar --once          # se cierra tras la primera descarga completa
+drop send backup.tar --expire 10m    # caduca solo: 90s, 10m, 2h (un número suelto son minutos)
+drop send backup.tar --once --expire 10m
+```
+
+Ninguno de los dos corta una descarga a medias: al caducar se deja de aceptar receptores
+nuevos y el proceso sale cuando termina la que esté en curso. El servidor libera la sala en
+ese momento, porque la sala vive lo que vive la conexión del emisor.
+
 #### 2. Recibir archivos (`drop recv`)
 En otro ordenador con `drop` instalado:
 ```bash

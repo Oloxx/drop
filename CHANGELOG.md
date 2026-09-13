@@ -21,6 +21,9 @@ Las notas de cada release, con los binarios, están en
   rechazan mutuamente con un mensaje que pide actualizar, en vez de entenderse a medias.
 
 ### Añadido
+- `drop send --once` cierra el canal tras la primera descarga completa y `--expire 10m` lo
+  hace caducar solo (`90s`, `10m`, `2h`). Ninguno corta una descarga en curso: se deja de
+  aceptar gente y se sale al terminar (#28).
 - `npm run bench:webrelay`: transferencia real `drop send --relay` → Chrome, comprobando el
   SHA-256 y que la huella coincide en los dos lados.
 - Tests en Linux, macOS y Windows antes de desplegar a producción, y la suite arranca su propio

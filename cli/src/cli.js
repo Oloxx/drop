@@ -472,6 +472,9 @@ ${c.bold}OPCIONES:${c.reset}
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --overwrite            Sobrescribe los archivos que ya existan en el destino
                          (por defecto se guarda como "archivo (2).zip")
+  --once                 Cierra el canal tras la primera descarga completa
+  --expire <duración>    El canal caduca solo pasado ese tiempo: 90s, 10m, 2h
+                         (un número suelto son minutos)
   --update               Comprueba y actualiza a la última versión
   --force                Fuerza la reinstalación en 'drop update'
   -y, --yes              No pide confirmación antes de servir a cada receptor
@@ -490,6 +493,7 @@ ${c.bold}EL CÓDIGO:${c.reset}
 
 ${c.bold}EJEMPLOS:${c.reset}
   drop send video.mp4
+  drop send backup.tar --once --expire 10m
   drop recv 4271-lemon-radar-tiger-orbit
   drop recv https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
   drop speed
@@ -537,7 +541,30 @@ async function runSend(args, options) {
   // Los manejadores de proceso van ANTES del primer `listen`. Estaban registrados
   // al final, dentro del `await` que deja el canal abierto, o sea cuando el bind ya
   // habia funcionado: un EADDRINUSE o un EACCES salia como excepcion no capturada.
-  installExitHandlers(() => ({ broadcaster, ws, activeServer, upnpResult }));
+  const onExit = installExitHandlers(() => ({ broadcaster, ws, activeServer, upnpResult }));
+
+  // --once y --expire acotan la ventana en la que el codigo sirve para algo. Un
+  // canal abierto sigue atendiendo a cualquiera que tenga el codigo hasta que
+  // alguien lo cierra a mano, y con codigos que se dictan (y se oyen de paso)
+  // eso es mas ventana de la que hace falta para "te paso este archivo".
+  //
+  // Ninguno de los dos corta una descarga a medias: al caducar se deja de aceptar
+  // gente nueva y se sale cuando termina lo que este en curso. El servidor libera
+  // la sala solo, porque la sala muere con el websocket del emisor.
+  let inFlight = 0;      // receptores a los que se esta sirviendo ahora mismo
+  let delivered = 0;     // descargas completas (por relay, ademas verificadas)
+  let expired = false;
+  const finishIfDue = () => {
+    if (inFlight > 0) return;
+    if (options.once && delivered > 0) {
+      console.log(`\n  ${c.green}✔ Entrega única completada: se cierra el canal (--once).${c.reset}`);
+      onExit(0);
+    } else if (expired) {
+      console.log(`\n  ${c.yellow}Canal caducado (--expire ${options.expire}): se cierra.${c.reset}`);
+      onExit(0);
+    }
+  };
+  const acceptingPeers = () => !expired && !(options.once && delivered > 0);
 
   activeServer = net.createServer();
   // Entre el bind y el momento en que se conoce el codigo no hay nada que servir:
@@ -630,17 +657,17 @@ async function runSend(args, options) {
     },
     ({ totalBytes, totalTimeSec, avgSpeed, socket }) => {
       renderProgressBarComplete(totalBytes, totalTimeSec, avgSpeed);
+      delivered++;
       console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${socket.remoteAddress})!${c.reset}`);
-      console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
+      if (acceptingPeers()) console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
     },
     {
       // Nada se escribe en el socket hasta que esto devuelve true: quien conecta
       // sabe el código, pero saber el código no da derecho a los archivos.
-      onPeer: ({ address, sas: peerSas }) => askPeer({
-        who: address || '(dirección desconocida)',
-        sas: peerSas,
-        path: 'TCP directo',
-      }),
+      // Con el canal caducado o ya entregado (--once) no se sirve a nadie mas.
+      onPeer: ({ address, sas: peerSas }) => (acceptingPeers()
+        ? askPeer({ who: address || '(dirección desconocida)', sas: peerSas, path: 'TCP directo' })
+        : false),
     }
   );
 
@@ -821,6 +848,9 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.t === 'guest') {
+          // Sin oferta no hay nada que hacer para quien llega tarde: el canal
+          // ya no sirve a nadie mas.
+          if (!acceptingPeers()) return;
           if (msg.ip) guestIps.set(msg.guestId, msg.ip);
           let upnp = upnpResult;
           if (!upnp && upnpPromise) {
@@ -907,17 +937,25 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
           }
           if (msg.data?.type === 'cli-accept') {
             const guest = msg.from;
+            if (!acceptingPeers()) return;
             console.log(`\n  ${c.bold}Receptor conectado (${guest}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
+            inFlight++;
             try {
               const stats = await streamToWebGuest(guest, files, ws, (sent, total, speed) => {
                 renderProgressBar(sent, total, speed);
               });
               renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
+              // `cli-complete` solo llega con todo escrito y verificado en el
+              // receptor: por relay "entregado" quiere decir eso.
+              delivered++;
               console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${guest})!${c.reset}`);
-              console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
+              if (acceptingPeers()) console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
             } catch (err) {
               console.log(`\n\n  ${c.yellow}Receptor (${guest}) interrumpido: ${err.message}${c.reset}`);
-              console.log(`  ${c.dim}Canal abierto. Esperando nuevas conexiones... (Presiona Ctrl + C para salir)${c.reset}\n`);
+              if (acceptingPeers()) console.log(`  ${c.dim}Canal abierto. Esperando nuevas conexiones... (Presiona Ctrl + C para salir)${c.reset}\n`);
+            } finally {
+              inFlight--;
+              finishIfDue();
             }
           } else if (msg.data?.type === 'cli-ack') {
             const guest = msg.from;
@@ -950,15 +988,20 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             const guest = msg.from;
             const retryIdx = msg.data?.index || 0;
             console.log(`\n  ${c.yellow}Reintentando envío para archivo #${retryIdx} a petición de (${guest})...${c.reset}\n`);
+            inFlight++;
             try {
               const filesToRetry = files.slice(retryIdx);
               const stats = await streamToWebGuest(guest, filesToRetry, ws, (sent, total, speed) => {
                 renderProgressBar(sent, total, speed);
               });
               renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
+              delivered++;
               console.log(`\n  ${c.green}✔ ¡Reintento completado con éxito para (${guest})!${c.reset}\n`);
             } catch (err) {
               console.log(`\n  ${c.yellow}Reintento interrumpido: ${err.message}${c.reset}\n`);
+            } finally {
+              inFlight--;
+              finishIfDue();
             }
           } else if (msg.data?.type === 'cli-error') {
             activeStreams.delete(msg.from);
@@ -988,13 +1031,65 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
     const isLocal = socket.remoteAddress?.includes('127.0.0.1') || socket.remoteAddress?.includes('::1') || socket.remoteAddress?.startsWith('192.168.') || socket.remoteAddress?.startsWith('10.');
     const tag = isLocal ? `${c.green}[CONEXIÓN LAN DIRECTA]${c.reset}` : `${c.cyan}[CONEXIÓN DIRECTA]${c.reset}`;
     console.log(`\n  ${c.bold}Receptor CLI conectado:${c.reset} ${socket.remoteAddress} ${tag}\n`);
+    // Por TCP la entrega se cuenta en onComplete; aqui solo se sabe cuando el
+    // socket se ha ido, que es el momento en que --once/--expire pueden cerrar.
+    inFlight++;
+    socket.once('close', () => {
+      inFlight--;
+      finishIfDue();
+    });
   });
 
-  console.log(`  ${c.dim}Canal abierto permanentemente. Presiona ${c.bold}Ctrl + C${c.reset}${c.dim} para cerrarlo cuando hayas terminado.${c.reset}\n`);
+  if (options.expire) {
+    const ms = parseDuration(options.expire);
+    const timer = setTimeout(() => {
+      expired = true;
+      // Se deja de anunciar y de aceptar. Lo que este en curso termina: cortar
+      // una descarga al 90% por un reloj no le hace ningun favor a nadie.
+      if (broadcaster) broadcaster.stop();
+      try { activeServer.close(); } catch {}
+      if (inFlight > 0) {
+        console.log(`\n  ${c.yellow}Canal caducado (--expire ${options.expire}): no se aceptan más receptores; se termina la transferencia en curso.${c.reset}`);
+      }
+      finishIfDue();
+    }, ms);
+    timer.unref?.();
+  }
+
+  const vigencia = [
+    options.once ? 'se cierra tras la primera descarga (--once)' : '',
+    options.expire ? `caduca en ${options.expire} (--expire)` : '',
+  ].filter(Boolean).join(' y ');
+  console.log(vigencia
+    ? `  ${c.dim}Canal abierto: ${vigencia}. Presiona ${c.bold}Ctrl + C${c.reset}${c.dim} para cerrarlo antes.${c.reset}\n`
+    : `  ${c.dim}Canal abierto permanentemente. Presiona ${c.bold}Ctrl + C${c.reset}${c.dim} para cerrarlo cuando hayas terminado.${c.reset}\n`);
 
   // El canal se queda abierto hasta que alguien lo cierre; el cierre ordenado lo
   // llevan los manejadores instalados arriba.
   await new Promise(() => {});
+}
+
+/**
+ * `--expire 10m` -> milisegundos. Acepta `s`, `m` y `h`; un numero suelto son
+ * minutos, que es la unidad en la que la gente piensa "esto caduca en...".
+ */
+function parseDuration(text) {
+  const m = String(text).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(s|m|h|min|seg|sec)?$/);
+  if (!m) {
+    const err = new Error(`Duración no válida: "${text}". Ejemplos: 90s, 10m, 2h.`);
+    err.code = 'BAD_DURATION';
+    throw err;
+  }
+  const n = Number(m[1]);
+  const unit = (m[2] || 'm')[0];
+  const factor = unit === 's' ? 1000 : unit === 'h' ? 3_600_000 : 60_000;
+  const ms = Math.round(n * factor);
+  if (!(ms > 0)) {
+    const err = new Error(`La duración tiene que ser mayor que cero: "${text}".`);
+    err.code = 'BAD_DURATION';
+    throw err;
+  }
+  return ms;
 }
 
 /**
@@ -1478,6 +1573,8 @@ async function main() {
     relay: false,
     overwrite: false,
     yes: false,
+    once: false,
+    expire: null,
   };
 
   const cleanArgs = [];
@@ -1496,6 +1593,18 @@ async function main() {
       options.relay = true;
     } else if (argv[i] === '--overwrite') {
       options.overwrite = true;
+    } else if (argv[i] === '--once') {
+      options.once = true;
+    } else if (argv[i] === '--expire') {
+      options.expire = argv[++i];
+      // Se valida aqui, antes de abrir nada: un canal que se abre y muere al
+      // instante por una duracion mal escrita es peor que no abrirse.
+      try {
+        parseDuration(options.expire);
+      } catch (err) {
+        console.error(`\n${c.red}${err.message}${c.reset}\n`);
+        process.exit(1);
+      }
     } else if (argv[i] === '-y' || argv[i] === '--yes') {
       options.yes = true;
     } else {
