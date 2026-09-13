@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { deriveKey, encryptChunk, decryptChunk, sasFromKey, unsealFrame } from './crypto.js';
 import { splitForKey } from '../../public/shared/codes.js';
 import { PROTOCOL_VERSION } from '../../public/shared/protocol.js';
+import { makeThrottle } from './throttle.js';
 
 const CHUNK_SIZE = 512 * 1024; // 512 KB por bloque para equilibrar streaming y memoria
 
@@ -258,6 +259,9 @@ export function attachSender(server, files, code, onProgress, onComplete, option
   // La clave se deriva una vez por servidor, no por socket: scrypt cuesta 62 ms.
   const key = deriveKey(code);
   const { onPeer } = options;
+  // `--limit`: se pide permiso al cubo por cada trozo antes de escribirlo. Sin
+  // limite es un `take` vacio y el camino caliente no cambia.
+  const throttle = options.throttle || makeThrottle(0);
   const senderSas = sasFromKey(key, splitForKey(code).roomId);
   let totalBytes = files.reduce((acc, f) => acc + f.size, 0);
 
@@ -321,6 +325,7 @@ export function attachSender(server, files, code, onProgress, onComplete, option
               const enc = encryptChunk(Buffer.concat([Buffer.from([1]), slice]), key);
               const packet = frame(enc);
 
+              await throttle.take(bytesRead);
               if (!socket.write(packet)) {
                 await new Promise((resolve, reject) => {
                   const onDrain = () => { cleanup(); resolve(); };
@@ -404,6 +409,10 @@ export function createSenderServer(files, code, onProgress, onComplete, options 
  */
 export function receiveFiles(host, port, code, outputDir, onProgress, connectTimeoutMs = 0, options = {}) {
   const { overwrite = false, onConnected } = options;
+  // Del lado receptor el limite frena la LECTURA: el socket esta en pausa
+  // mientras se procesa la cola, asi que dormir aqui llena el buffer TCP y el
+  // emisor se frena solo por la contrapresion de siempre.
+  const throttle = options.throttle || makeThrottle(0);
   return new Promise((resolve, reject) => {
     const key = deriveKey(code);
     const socket = net.connect({ host, port });
@@ -576,6 +585,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
           throw err;
         }
 
+        await throttle.take(payload.length);
         await sink.write(payload);
         totalReceived += payload.length;
 
@@ -754,6 +764,11 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
  */
 export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = {}) {
   const { overwrite = false, key } = options;
+  // Por relay no hay contrapresion TCP con el emisor: lo que le frena es que
+  // los acuses lleguen tarde, y los acuses salen de esta misma cola, detras de
+  // la espera. Con la ventana de 8 MB el emisor se para en cuanto el receptor
+  // se retrasa, y la media queda en el limite.
+  const throttle = options.throttle || makeThrottle(0);
   if (!key) throw new Error('receiveFromRelay necesita la clave de la sala: el relay va cifrado');
   return new Promise((resolve, reject) => {
     let sink = null;
@@ -829,6 +844,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
             throw err;
           }
           if (sink) {
+            await throttle.take(chunk.length);
             await sink.write(chunk);
             totalReceived += chunk.length;
 

@@ -179,6 +179,18 @@ Ninguno de los dos corta una descarga a medias: al caducar se deja de aceptar re
 nuevos y el proceso sale cuando termina la que esté en curso. El servidor libera la sala en
 ese momento, porque la sala vive lo que vive la conexión del emisor.
 
+**Límite de ancho de banda.** El motor TCP satura Gigabit a propósito, lo cual está muy bien
+salvo cuando hay alguien más usando la línea:
+
+```bash
+drop send pelicula.mkv --limit 10M      # 500K, 10M, 1.5G: bytes por segundo, en base 1024
+drop recv 4271-lemon-radar-tiger-orbit --limit 2M
+```
+
+Vale en los dos lados. En el emisor es un solo cubo para todos los receptores (lo que sale de
+este equipo); en el receptor frena la lectura, y el emisor se frena solo por contrapresión (TCP)
+o por los acuses (relay). La barra y el ETA salen del caudal real, así que siguen siendo ciertos.
+
 **Texto y portapapeles.** Para mandar un fragmento sin crear un archivo antes:
 
 ```bash

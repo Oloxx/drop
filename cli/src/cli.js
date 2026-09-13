@@ -18,6 +18,7 @@ import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 import { verifySignature } from './minisign.js';
 import { encodeQr, qrToBlocks, ECL } from '../../public/shared/qr.js';
+import { makeThrottle, parseRate } from './throttle.js';
 import pkg from '../../package.json' with { type: 'json' };
 
 // La version sale del package.json y de ningun otro sitio. Estuvo escrita a mano
@@ -480,6 +481,8 @@ ${c.bold}OPCIONES:${c.reset}
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --overwrite            Sobrescribe los archivos que ya existan en el destino
                          (por defecto se guarda como "archivo (2).zip")
+  --limit <tasa>         Límite de ancho de banda: 500K, 10M, 1.5G (bytes/s).
+                         Vale para enviar y para recibir
   --no-qr                No pinta el código QR del enlace (se omite solo si la
                          salida no es una terminal)
   --once                 Cierra el canal tras la primera descarga completa
@@ -504,6 +507,7 @@ ${c.bold}EL CÓDIGO:${c.reset}
 ${c.bold}EJEMPLOS:${c.reset}
   drop send video.mp4
   drop send backup.tar --once --expire 10m
+  drop send pelicula.mkv --limit 10M
   drop send --text "la clave del wifi es ..."
   drop recv 4271-lemon-radar-tiger-orbit --stdout | pbcopy
   drop recv 4271-lemon-radar-tiger-orbit
@@ -612,6 +616,11 @@ async function runSend(args, options) {
   let ws = null;
   let upnpResult = null;
   let activeServer = null;
+
+  // Un solo cubo para todos los receptores: `--limit 10M` es lo que se quiere
+  // dejar salir de este equipo, no por receptor.
+  const throttle = makeThrottle(options.limit);
+  if (options.limit) console.log(`  ${c.dim}Límite de subida: ${fmtBytes(options.limit)}/s (--limit)${c.reset}`);
 
   // Los manejadores de proceso van ANTES del primer `listen`. Estaban registrados
   // al final, dentro del `await` que deja el canal abierto, o sea cuando el bind ya
@@ -743,6 +752,7 @@ async function runSend(args, options) {
       onPeer: ({ address, sas: peerSas }) => (acceptingPeers()
         ? askPeer({ who: address || '(dirección desconocida)', sas: peerSas, path: 'TCP directo' })
         : false),
+      throttle,
     }
   );
 
@@ -877,6 +887,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
           header.writeUInt32BE(guestId, 0);
           const packet = Buffer.concat([header, encryptChunk(slice, key)]);
 
+          await throttle.take(bytesRead);
           ws.send(packet);
           offset += bytesRead;
           totalSent += bytesRead;
@@ -1411,6 +1422,8 @@ async function runRecv(args, options) {
   }
 
   console.log(`\n${c.bold}Buscando emisor para el código:${c.reset} ${c.cyan}${code}${c.reset}`);
+  const throttle = makeThrottle(options.limit);
+  if (options.limit) console.log(`  ${c.dim}Límite de bajada: ${fmtBytes(options.limit)}/s (--limit)${c.reset}`);
 
   // `--relay` (o DROP_FORCE_RELAY) salta los caminos directos y va derecho al
   // servidor: es la forma de probar ese modo sin montar una NAT de verdad.
@@ -1429,7 +1442,7 @@ async function runRecv(args, options) {
     try {
       const received = await receiveFiles(target.host, target.port, code, outputDir, (current, total, speed, list) => {
         renderProgressBar(current, total, speed, 30, list);
-      }, 0, { overwrite: options.overwrite, onConnected: printSasAndWait });
+      }, 0, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle });
       if (received.stats) {
         renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
       }
@@ -1528,7 +1541,7 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
       try {
         const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed, list) => {
           renderProgressBar(current, total, speed, 30, list);
-        }, 3000, { overwrite: options.overwrite, onConnected: printSasAndWait });
+        }, 3000, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle });
         if (ws) ws.close();
         if (received.stats) {
           renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1636,7 +1649,7 @@ ${c.red}${err.message}${c.reset}
   try {
     const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed, list) => {
       renderProgressBar(current, total, speed, 30, list);
-    }, { overwrite: options.overwrite, key });
+    }, { overwrite: options.overwrite, key, throttle });
     if (ws) ws.close();
     if (received.stats) {
       renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1716,6 +1729,7 @@ async function main() {
     stdout: false,
     text: null,
     clipboard: false,
+    limit: 0,
   };
 
   const cleanArgs = [];
@@ -1750,6 +1764,13 @@ async function main() {
       options.once = true;
     } else if (argv[i] === '--no-qr') {
       options.noQr = true;
+    } else if (argv[i] === '--limit') {
+      try {
+        options.limit = parseRate(argv[++i]);
+      } catch (err) {
+        console.error(`\n${c.red}${err.message}${c.reset}\n`);
+        process.exit(1);
+      }
     } else if (argv[i] === '--expire') {
       options.expire = argv[++i];
       // Se valida aqui, antes de abrir nada: un canal que se abre y muere al
