@@ -32,6 +32,9 @@ Las notas de cada release, con los binarios, están en
 - La web avisa al terminar una transferencia: una campanita sintetizada con la Web Audio API
   (sin ficheros de audio, sigue sin haber peticiones a terceros) y una notificación del
   sistema si la pestaña no está a la vista. Interruptor `alerts on/off` en la cabecera (#9).
+- Progreso por archivo además del total, en el CLI (una línea `[2/5] foto.jpg 45% · 1,2 MB /
+  5 MB` encima de la barra, solo con varios archivos) y en la web (en la fila de progreso). Sale
+  del acumulado y del manifiesto, así que vale igual para emisor y receptor (#33).
 - `drop send --text "..."` y `--clipboard` envían un fragmento sin crear un archivo antes, y
   `drop recv --stdout` (o `-o -`) vuelca lo recibido por la tubería con los mensajes en stderr
   (#34).

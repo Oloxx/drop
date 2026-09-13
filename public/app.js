@@ -314,6 +314,22 @@ function makeProgressRow(container, title) {
   let rate = 0;
   let pending = null;   // ultimo progreso sin pintar
   let frame = 0;
+  let files = null;     // manifiesto, para decir en que archivo va (solo con varios)
+
+  // En que archivo va y cuanto lleva de el, a partir del acumulado: los archivos
+  // van en orden y sin huecos, asi que el total ya lo dice. Igual que fileAt en
+  // cli/src/ui.js.
+  function fileAt(done) {
+    let offset = 0;
+    for (let i = 0; i < files.length; i++) {
+      const size = files[i].size || 0;
+      if (done < offset + size || i === files.length - 1) {
+        return { index: i, count: files.length, name: files[i].name, size, done: Math.max(0, Math.min(size, done - offset)) };
+      }
+      offset += size;
+    }
+    return null;
+  }
 
   // Los trozos llegan mucho mas rapido que los fotogramas: acumulamos el ultimo
   // valor y tocamos el DOM una vez por frame en vez de una vez por trozo.
@@ -335,6 +351,15 @@ function makeProgressRow(container, title) {
       Math.floor(pct) + '% · ' + fmtBytes(done) + ' / ' + fmtBytes(total);
     elRate.textContent =
       rate > 0 ? fmtBytes(rate) + '/s · ' + fmtEta((total - done) / rate) : '';
+    // Con varios archivos, cual va y cuanto lleva: con un lote grande la barra
+    // total parece parada y no dice ni cual es ni cuantos quedan.
+    if (files && files.length > 1 && done < total) {
+      const f = fileAt(done);
+      if (f) {
+        const fpct = f.size ? Math.min(100, Math.floor((f.done / f.size) * 100)) : 100;
+        elGrow.textContent = `[${f.index + 1}/${f.count}] ${f.name} · ${fpct}% · ${fmtBytes(f.done)} / ${fmtBytes(f.size)}`;
+      }
+    }
   }
 
   // Un paint pendiente pisaria el texto final: lo cancelamos al cerrar la fila.
@@ -352,6 +377,8 @@ function makeProgressRow(container, title) {
       if (cls) el.classList.add(cls);
     },
     file(text) { elGrow.textContent = text; },
+    // El manifiesto: a partir de aqui progress() pinta tambien el archivo en curso.
+    files(list) { files = list; },
     // Huella de la sesion: se compara de viva voz con la del otro extremo.
     sas(words) {
       elSas.textContent = 'fingerprint: ' + words;
@@ -542,6 +569,7 @@ function onGuestJoined(guestId, name) {
   if (name === 'cli') return onCliGuest(guestId);
   const label = 'peer ' + out.nextLabel++;
   const row = makeProgressRow($('#peers'), label);
+  row.files(out.files);
   row.state('handshake…');
 
   const conn = {
@@ -878,6 +906,7 @@ function hostKey() {
 function onCliGuest(guestId) {
   const label = 'peer ' + out.nextLabel++;
   const row = makeProgressRow($('#peers'), label);
+  row.files(out.files);
   row.state('deriving key…');
   row.path('cli · relayed · e2e');
 
@@ -1617,6 +1646,7 @@ async function acceptTransfer() {
   if (hint) hint.hidden = true;
   rx.accepted = true;
   rx.row = makeProgressRow($('#recv-progress'), 'inbound');
+  rx.row.files(rx.manifest);
   rx.row.state('arming…');
   if (rx.isCli) {
     rx.row.path('CLI stream');

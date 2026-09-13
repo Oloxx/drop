@@ -347,7 +347,7 @@ export function attachSender(server, files, code, onProgress, onComplete, option
                 speed = speed ? speed * 0.7 + inst * 0.3 : inst;
                 lastBytes = sentTotal;
                 lastReport = now;
-                if (onProgress) onProgress(sentTotal, totalBytes, speed);
+                if (onProgress) onProgress(sentTotal, totalBytes, speed, manifest.files);
               }
             }
           } finally {
@@ -380,7 +380,7 @@ export function attachSender(server, files, code, onProgress, onComplete, option
         if (onComplete) {
           onComplete({ totalBytes, totalTimeSec, avgSpeed, socket });
         } else if (onProgress) {
-          onProgress(totalBytes, totalBytes, avgSpeed);
+          onProgress(totalBytes, totalBytes, avgSpeed, manifest.files);
         }
         socket.end();
       } catch (err) {
@@ -586,7 +586,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
           speed = speed ? speed * 0.7 + inst * 0.3 : inst;
           lastBytes = totalReceived;
           lastReport = now;
-          if (onProgress) onProgress(totalReceived, totalBytes, speed);
+          if (onProgress) onProgress(totalReceived, totalBytes, speed, manifest.files);
         }
       }
     }
@@ -839,7 +839,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
               speed = speed ? speed * 0.7 + inst * 0.3 : inst;
               lastBytes = totalReceived;
               lastReport = now;
-              if (onProgress) onProgress(totalReceived, totalBytes, speed);
+              if (onProgress) onProgress(totalReceived, totalBytes, speed, manifest);
             }
 
             // Acuse de recibo: sin esto el emisor se para a los 8 MB y los dos

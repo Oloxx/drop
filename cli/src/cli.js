@@ -727,8 +727,8 @@ async function runSend(args, options) {
     activeServer,
     files,
     code,
-    (current, total, speed) => {
-      renderProgressBar(current, total, speed);
+    (current, total, speed, list) => {
+      renderProgressBar(current, total, speed, 30, list);
     },
     ({ totalBytes, totalTimeSec, avgSpeed, socket }) => {
       renderProgressBarComplete(totalBytes, totalTimeSec, avgSpeed);
@@ -803,6 +803,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
   const MAX_IN_FLIGHT = 8 * 1024 * 1024; // Ventana deslizante de 8 MB máximo sin confirmar
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
+  const manifest = files.map((f) => ({ name: path.basename(f.path), size: f.size }));
   let totalSent = 0;
   const startTime = performance.now();
   let lastReport = startTime;
@@ -889,7 +890,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             speed = speed ? speed * 0.7 + inst * 0.3 : inst;
             lastBytes = progressBytes;
             lastReport = now;
-            if (onProgress) onProgress(progressBytes, totalBytes, speed);
+            if (onProgress) onProgress(progressBytes, totalBytes, speed, manifest);
           }
         }
       } finally {
@@ -916,7 +917,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
         setTimeout(resolve, 50);
       });
       if (onProgress) {
-        onProgress(Math.min(totalBytes, ackInfo.acked), totalBytes, speed);
+        onProgress(Math.min(totalBytes, ackInfo.acked), totalBytes, speed, manifest);
       }
     }
 
@@ -1029,8 +1030,8 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             console.log(`\n  ${c.bold}Receptor conectado (${guest}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
             inFlight++;
             try {
-              const stats = await streamToWebGuest(guest, files, ws, (sent, total, speed) => {
-                renderProgressBar(sent, total, speed);
+              const stats = await streamToWebGuest(guest, files, ws, (sent, total, speed, list) => {
+                renderProgressBar(sent, total, speed, 30, list);
               });
               renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
               // `cli-complete` solo llega con todo escrito y verificado en el
@@ -1079,8 +1080,8 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             inFlight++;
             try {
               const filesToRetry = files.slice(retryIdx);
-              const stats = await streamToWebGuest(guest, filesToRetry, ws, (sent, total, speed) => {
-                renderProgressBar(sent, total, speed);
+              const stats = await streamToWebGuest(guest, filesToRetry, ws, (sent, total, speed, list) => {
+                renderProgressBar(sent, total, speed, 30, list);
               });
               renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
               delivered++;
@@ -1426,8 +1427,8 @@ async function runRecv(args, options) {
     console.log(`\r  ${c.green}✔ Emisor encontrado en red local:${c.reset} ${target.host}:${target.port}`);
     console.log(`\n  ${c.bold}Conectando a:${c.reset} ${target.host}:${target.port} (Sockets TCP nativos - LAN)\n`);
     try {
-      const received = await receiveFiles(target.host, target.port, code, outputDir, (current, total, speed) => {
-        renderProgressBar(current, total, speed);
+      const received = await receiveFiles(target.host, target.port, code, outputDir, (current, total, speed, list) => {
+        renderProgressBar(current, total, speed, 30, list);
       }, 0, { overwrite: options.overwrite, onConnected: printSasAndWait });
       if (received.stats) {
         renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1525,8 +1526,8 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
       console.log(`  ${c.green}✔ Emisor alcanzable por TCP directo:${c.reset} ${probe.ip}:${port}`);
       console.log(`\n  ${c.bold}Conectando a:${c.reset} ${probe.ip}:${port} (${tag})\n`);
       try {
-        const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed) => {
-          renderProgressBar(current, total, speed);
+        const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed, list) => {
+          renderProgressBar(current, total, speed, 30, list);
         }, 3000, { overwrite: options.overwrite, onConnected: printSasAndWait });
         if (ws) ws.close();
         if (received.stats) {
@@ -1633,8 +1634,8 @@ ${c.red}${err.message}${c.reset}
   }
 
   try {
-    const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed) => {
-      renderProgressBar(current, total, speed);
+    const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed, list) => {
+      renderProgressBar(current, total, speed, 30, list);
     }, { overwrite: options.overwrite, key });
     if (ws) ws.close();
     if (received.stats) {
