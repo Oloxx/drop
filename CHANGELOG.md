@@ -21,6 +21,10 @@ Las notas de cada release, con los binarios, están en
   rechazan mutuamente con un mensaje que pide actualizar, en vez de entenderse a medias.
 
 ### Añadido
+- Código QR del enlace, generado sin dependencias en `public/shared/qr.js` (ISO 18004, modo
+  bytes, versiones 1-40, mascara por penalización): botón **qr** junto al enlace en la web (#4)
+  y pintado con caracteres de bloque bajo el código en `drop send`, solo en una terminal y
+  con `--no-qr` para quitarlo (#35).
 - La web avisa al terminar una transferencia: una campanita sintetizada con la Web Audio API
   (sin ficheros de audio, sigue sin haber peticiones a terceros) y una notificación del
   sistema si la pestaña no está a la vista. Interruptor `alerts on/off` en la cabecera (#9).

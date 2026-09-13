@@ -100,6 +100,9 @@ tar -xzf drop-v0.5.2-linux-x64.tar.gz
    * Abre la web, arrastra tus archivos y pulsa **Crear enlace**.
    * Comparte el **código** (ej. `4271-lemon-radar-tiger-orbit`), que se puede dictar por teléfono,
      o el enlace equivalente (`https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit`).
+   * Para un móvil, pulsa **qr**: enfoca la pantalla con la cámara y se abre el enlace, sin
+     teclear nada ni pasárselo por otra aplicación. El QR se genera en la propia página
+     ([`public/shared/qr.js`](public/shared/qr.js)): sigue sin haber peticiones a terceros.
    * Mantén la pestaña abierta mientras se transfieren los archivos.
 2. **Recibir:**
    * El receptor abre el enlace en su navegador, **o** entra en la web y teclea el código
@@ -134,8 +137,19 @@ Preparando envío: 1 archivo(s) · 5.8 GB
   Díctaselo tal cual, o pásale el enlace. En el otro equipo:
     drop recv 4271-lemon-radar-tiger-orbit
 
+  █▀▀▀▀▀█ ▄▀ ▀▄█ █▀▀▀▀▀█
+  █ ███ █ ▀▄▀▄ ▄  █ ███ █     (el QR del enlace, para abrirlo
+  █ ▀▀▀ █ █ ▀ ▄▀█ █ ▀▀▀ █      desde el móvil con la cámara)
+  ▀▀▀▀▀▀▀ ▀ █ ▀ ▀ ▀▀▀▀▀▀▀
+  Escanéalo con el móvil para abrir el enlace. (--no-qr lo quita)
+
   Esperando a que el receptor se conecte...
 ```
+
+El QR solo se pinta cuando la salida es una terminal (en un log o una tubería no lo lee
+nadie) y va con los colores forzados, fondo blanco y tinta negra, para que la cámara vea la
+polaridad normal tanto en un tema oscuro como en uno claro. `--no-qr` o `DROP_NO_QR=1` lo
+quitan.
 
 Cuando alguien se conecta, `drop` pregunta antes de servir nada:
 

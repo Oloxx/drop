@@ -50,7 +50,9 @@
       <div class="link-box">
         <input id="link-out" readonly spellcheck="false" aria-label="Link to share">
         <button class="ghost" id="copy-link">copy</button>
+        <button class="ghost" id="show-qr" aria-expanded="false" aria-controls="qr-box">qr</button>
       </div>
+      <div class="qr" id="qr-box" hidden></div>
       <p class="hint">The four words never reach the server: only the leading number does.
         Keep this tab open until the transfers finish. Any number of peers can ride
         the same code, each on its own channel.</p>

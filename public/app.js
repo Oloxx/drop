@@ -48,6 +48,7 @@ import { parseCode, randomSecretWords, formatCode, CodeError } from './shared/co
 import { sasInput, sasWords, formatSas, dtlsFingerprints } from './shared/sas.js';
 import { Sha256, sha256Hex } from './shared/sha256.js';
 import { PROTOCOL_VERSION } from './shared/protocol.js';
+import { encodeQr, qrToSvg, ECL } from './shared/qr.js';
 import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame } from './shared/e2ee.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -522,6 +523,9 @@ function onHosted(roomId) {
   $('#ticket').hidden = false;
   $('#code-out').value = out.code;
   $('#link-out').value = shareUrl();
+  $('#qr-box').hidden = true;
+  $('#qr-box').innerHTML = '';
+  $('#show-qr').setAttribute('aria-expanded', 'false');
   renderFileList();
   setStatus('channel open · waiting for peer', 'live');
 }
@@ -1547,6 +1551,29 @@ async function copy(text, button, label) {
   }
 }
 $('#copy-link').onclick = (e) => copy(shareUrl(), e.currentTarget, 'Copy the link:');
+
+// El QR lleva el enlace entero, palabras incluidas: es el atajo para el movil,
+// que enfoca la pantalla en vez de teclear. Se genera aqui, sin pedir nada a
+// nadie (shared/qr.js), y solo cuando se pide: es lo unico de la pagina que
+// no cabe en una pantalla estrecha sin hacerse notar.
+$('#show-qr').onclick = (e) => {
+  const box = $('#qr-box');
+  const open = box.hidden;
+  if (open && !box.innerHTML) {
+    try {
+      box.innerHTML = qrToSvg(encodeQr(shareUrl(), { ecl: ECL.M }));
+      const hint = document.createElement('small');
+      hint.textContent = 'scan to open the link on a phone';
+      box.appendChild(hint);
+    } catch (err) {
+      console.error('qr', err);
+      return;
+    }
+  }
+  box.hidden = !open;
+  e.currentTarget.setAttribute('aria-expanded', String(open));
+  e.currentTarget.textContent = open ? 'hide qr' : 'qr';
+};
 $('#link-out').onclick = (e) => e.currentTarget.select();
 $('#restart').onclick = () => location.reload();
 $('#accept').onclick = acceptTransfer;

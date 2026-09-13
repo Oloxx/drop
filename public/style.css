@@ -359,6 +359,16 @@ button {
 }
 .link-box input.code::placeholder { color: var(--muted); letter-spacing: 0; }
 
+/* El QR del enlace, para el movil. Fondo claro y modulos oscuros dentro del
+   marco: la camara ve la polaridad de siempre y la estetica se queda fuera. */
+.qr { display: flex; flex-direction: column; align-items: center; gap: .5rem; width: 100%; }
+.qr svg {
+  width: min(240px, 70vw);
+  height: auto;
+  border-radius: 6px;
+}
+.qr small { color: var(--muted); font-size: .75rem; }
+
 /* ------------------------------------------------------------ progreso */
 
 .peers { display: flex; flex-direction: column; gap: .5rem; }

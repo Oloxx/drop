@@ -17,6 +17,7 @@ import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 import { verifySignature } from './minisign.js';
+import { encodeQr, qrToBlocks, ECL } from '../../public/shared/qr.js';
 import pkg from '../../package.json' with { type: 'json' };
 
 // La version sale del package.json y de ningun otro sitio. Estuvo escrita a mano
@@ -472,6 +473,8 @@ ${c.bold}OPCIONES:${c.reset}
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --overwrite            Sobrescribe los archivos que ya existan en el destino
                          (por defecto se guarda como "archivo (2).zip")
+  --no-qr                No pinta el código QR del enlace (se omite solo si la
+                         salida no es una terminal)
   --once                 Cierra el canal tras la primera descarga completa
   --expire <duración>    El canal caduca solo pasado ese tiempo: 90s, 10m, 2h
                          (un número suelto son minutos)
@@ -684,9 +687,22 @@ async function runSend(args, options) {
 
   ${c.dim}Díctaselo tal cual, o pásale el enlace. En el otro equipo:${c.reset}
     ${c.yellow}drop recv ${code}${c.reset}
-
-  ${c.dim}Esperando a que el receptor se conecte...${c.reset}
 `);
+
+  // El QR del enlace, para el movil: enfocar la pantalla y listo, sin teclear
+  // 16 caracteres ni pasarse el enlace por otra aplicacion. Solo en una terminal
+  // de verdad -- en un log o una tuberia son treinta lineas de bloques que no
+  // lee nadie -- y con los colores forzados (fondo blanco, tinta negra) para que
+  // la camara vea la polaridad normal tanto en un tema oscuro como en uno claro.
+  if (!options.noQr && process.stdout.isTTY && !process.env.DROP_NO_QR) {
+    try {
+      const qr = encodeQr(shareLink, { ecl: ECL.M });
+      console.log(qrToBlocks(qr).split('\n').map((l) => '  ' + l).join('\n'));
+      console.log(`  ${c.dim}Escanéalo con el móvil para abrir el enlace. (--no-qr lo quita)${c.reset}\n`);
+    } catch { /* un enlace que no cabe en un QR no es motivo para no enviar */ }
+  }
+
+  console.log(`  ${c.dim}Esperando a que el receptor se conecte...${c.reset}\n`);
 
 const activeStreams = new Set();
 const guestAcks = new Map();
@@ -1575,6 +1591,7 @@ async function main() {
     yes: false,
     once: false,
     expire: null,
+    noQr: false,
   };
 
   const cleanArgs = [];
@@ -1595,6 +1612,8 @@ async function main() {
       options.overwrite = true;
     } else if (argv[i] === '--once') {
       options.once = true;
+    } else if (argv[i] === '--no-qr') {
+      options.noQr = true;
     } else if (argv[i] === '--expire') {
       options.expire = argv[++i];
       // Se valida aqui, antes de abrir nada: un canal que se abre y muere al
