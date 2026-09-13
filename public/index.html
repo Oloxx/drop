@@ -28,9 +28,10 @@
 
     <label class="drop" id="drop">
       <input type="file" id="file-input" multiple hidden>
+      <input type="file" id="folder-input" webkitdirectory hidden>
       <span class="drop-glyph">[ + ]</span>
       <strong>drop payload here</strong>
-      <small>or click to select</small>
+      <small>files or folders · or click to select · <button type="button" class="link" id="pick-folder">pick a folder</button></small>
     </label>
 
     <ul class="files" id="file-list"></ul>

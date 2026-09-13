@@ -57,7 +57,31 @@ function frame(buf) {
  * garantiza nada, porque es el lado equivocado: la comprobacion que vale es esta,
  * la del lado que escribe.
  */
-export function safeOutputPath(outputDir, rawName) {
+export function safeOutputPath(outputDir, rawName, rawPath = null) {
+  const unsafe = (why, what) => {
+    const err = new Error(`${why}: ${JSON.stringify(what)}`);
+    err.code = 'UNSAFE_NAME';
+    return err;
+  };
+  const root = path.resolve(outputDir);
+
+  // Con carpetas el emisor manda ademas `path`, una ruta RELATIVA con `/`
+  // (`fotos/verano/playa.jpg`). Se acepta tramo a tramo y solo hacia abajo: ni
+  // `..`, ni tramos vacios, ni letra de unidad, ni nada que al resolverse salga
+  // del destino. Un `path` que no pasa no degrada al nombre suelto: se corta,
+  // porque un emisor que manda `../` no es uno honesto con un despiste.
+  if (rawPath != null) {
+    const parts = typeof rawPath === 'string' ? rawPath.replace(/\\/g, '/').split('/').map((p) => p.trim()) : [];
+    if (!parts.length || parts.some((p) => !p || p === '.' || p === '..' || p.includes('\0') || /^[a-zA-Z]:$/.test(p))) {
+      throw unsafe('El emisor manda una ruta de archivo no válida', rawPath);
+    }
+    const dest = path.resolve(root, ...parts);
+    if (!dest.startsWith(root + path.sep) || path.relative(root, dest).startsWith('..')) {
+      throw unsafe('El emisor intenta escribir fuera del directorio de destino', rawPath);
+    }
+    return dest;
+  }
+
   // `path.basename` no separa por `\` fuera de Windows y el emisor puede mandar
   // cualquiera de las dos barras: se normaliza antes de quedarse con el ultimo tramo.
   const name = typeof rawName === 'string'
@@ -65,20 +89,15 @@ export function safeOutputPath(outputDir, rawName) {
     : '';
 
   if (!name || name === '.' || name === '..' || name.includes('\0')) {
-    const err = new Error(`El emisor manda un nombre de archivo no válido: ${JSON.stringify(rawName)}`);
-    err.code = 'UNSAFE_NAME';
-    throw err;
+    throw unsafe('El emisor manda un nombre de archivo no válido', rawName);
   }
 
-  const root = path.resolve(outputDir);
   const dest = path.resolve(root, name);
 
   // Cinturon y tirantes: quedandonos con el ultimo tramo esto ya no deberia saltar
   // nunca, pero es la comprobacion que sigue valiendo si alguien toca lo de arriba.
   if (path.dirname(dest) !== root) {
-    const err = new Error(`El emisor intenta escribir fuera del directorio de destino: ${JSON.stringify(rawName)}`);
-    err.code = 'UNSAFE_NAME';
-    throw err;
+    throw unsafe('El emisor intenta escribir fuera del directorio de destino', rawName);
   }
 
   return dest;
@@ -110,8 +129,8 @@ function occupied(p) {
  * manifiesto con dos `a.zip` se pisaria a si mismo, porque al reservar el segundo
  * el primero todavia no existe en disco (esta en su `.part`).
  */
-export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { overwrite = false } = {}) {
-  const dest = safeOutputPath(outputDir, rawName);
+export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { overwrite = false, subpath = null } = {}) {
+  const dest = safeOutputPath(outputDir, rawName, subpath);
   const mine = (p) => reserved.has(sameFileKey(p));
 
   // Con --overwrite el destino se acepta tal cual, salvo que ya lo haya pedido
@@ -153,6 +172,9 @@ export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { ov
  * malos instalados con el nombre bueno, que es la peor combinacion posible.
  */
 export async function openFileSink({ finalPath, partPath, name, index = null, overwrite = false }) {
+  // Con carpetas el destino puede estar en un subdirectorio que aun no existe.
+  // La ruta ya paso por safeOutputPath, asi que crearla es crear dentro del destino.
+  await fs.promises.mkdir(path.dirname(partPath), { recursive: true });
   // 'wx' falla si el `.part` ya existe; con --overwrite el `.part` es nuestro.
   const fd = await fs.promises.open(partPath, overwrite ? 'w' : 'wx');
   const hash = crypto.createHash('sha256');
@@ -293,7 +315,10 @@ export function attachSender(server, files, code, onProgress, onComplete, option
         // en decidir no es ancho de banda y no tiene que salir en la media.
         const startTime = performance.now();
         // 1. Enviar manifiesto de archivos cifrado (tipo 0 = control JSON)
-        const manifest = { v: PROTOCOL_VERSION, files: files.map((f) => ({ name: path.basename(f.path), size: f.size })) };
+        const manifest = {
+          v: PROTOCOL_VERSION,
+          files: files.map((f) => ({ name: path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) })),
+        };
         const encManifest = encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(manifest))]), key);
         socket.write(frame(encManifest));
 
@@ -532,7 +557,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
             // primer descriptor: si el manifiesto trae una ruta que se sale del
             // destino, la transferencia se corta sin haber escrito ni un byte, y
             // dos archivos con el mismo nombre reciben ya destinos distintos.
-            destPaths = manifest.files.map((f) => reserveOutputPath(outputDir, f.name, reserved, { overwrite }));
+            destPaths = manifest.files.map((f) => reserveOutputPath(outputDir, f.name, reserved, { overwrite, subpath: f.path ?? null }));
             startTime = performance.now();
             if (manifest.files.length > 0) {
               sink = await openFileSink({ ...destPaths[0], name: manifest.files[0].name, index: 0, overwrite });
@@ -903,7 +928,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
             const idx = data.index || 0;
             // Aquí los nombres llegan de uno en uno, así que el conjunto de
             // reservas se arrastra entre mensajes en vez de calcularse de golpe.
-            const paths = reserveOutputPath(outputDir, data.name || 'archivo', reserved, { overwrite });
+            const paths = reserveOutputPath(outputDir, data.name || 'archivo', reserved, { overwrite, subpath: data.path ?? null });
             sink = await openFileSink({ ...paths, name: data.name, index: idx, overwrite });
             receivedFiles.push({ path: sink.finalPath, name: path.basename(sink.finalPath), verified: false });
           }).catch(failWithError);

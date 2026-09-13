@@ -459,6 +459,7 @@ ${c.bold}drop${c.reset} — transferencia P2P de archivos a máxima velocidad ($
 
 ${c.bold}USO:${c.reset}
   drop send <archivo1> [archivo2 ...]   Envía uno o varios archivos
+  drop send <carpeta>                   Envía una carpeta entera, con su árbol
   drop send --text "..."                Envía un texto sin crear un archivo antes
   drop send --clipboard                 Envía el contenido del portapapeles
   drop recv <código-o-enlace>           Recibe los archivos
@@ -517,6 +518,38 @@ ${c.bold}EJEMPLOS:${c.reset}
   drop speed 4271-lemon-radar-tiger-orbit -t 10
   drop update
 `);
+}
+
+/**
+ * Recorre una carpeta y devuelve sus archivos con la ruta relativa que viajara
+ * en el manifiesto (`carpeta/sub/archivo`, siempre con `/`). Los enlaces
+ * simbolicos se saltan: seguirlos es la forma clasica de meterse en un bucle o
+ * de mandar medio disco sin querer. Las carpetas vacias no viajan: el protocolo
+ * mueve archivos, y una carpeta sin nada dentro no tiene bytes que verificar.
+ */
+function walkFolder(root) {
+  const base = path.basename(root);
+  const out = [];
+  const stack = [[root, base]];
+  while (stack.length) {
+    const [dir, rel] = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      console.error(`${c.yellow}Aviso: no se puede leer ${dir} (${err.code || err.message}); se salta.${c.reset}`);
+      continue;
+    }
+    for (const ent of entries) {
+      if (ent.isSymbolicLink()) continue;
+      const full = path.join(dir, ent.name);
+      const r = `${rel}/${ent.name}`;
+      if (ent.isDirectory()) stack.push([full, r]);
+      else if (ent.isFile()) out.push({ path: full, size: fs.statSync(full).size, rel: r });
+    }
+  }
+  // Orden estable y legible: el manifiesto (y el progreso) sale en este orden.
+  return out.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 }
 
 /**
@@ -590,6 +623,7 @@ async function runSend(args, options) {
   }
 
   const files = [];
+  let folders = 0;
   for (const fp of filePaths) {
     const full = path.resolve(fp);
     if (!fs.existsSync(full)) {
@@ -598,14 +632,20 @@ async function runSend(args, options) {
     }
     const stat = fs.statSync(full);
     if (stat.isDirectory()) {
-      console.error(`${c.yellow}Nota: Las carpetas completas se añadirán en la próxima versión. Envía archivos o un .zip.${c.reset}`);
-      process.exit(1);
+      const inside = walkFolder(full);
+      if (!inside.length) {
+        console.error(`${c.red}Error: La carpeta está vacía: ${full}${c.reset}`);
+        process.exit(1);
+      }
+      folders++;
+      files.push(...inside);
+      continue;
     }
     files.push({ path: full, size: stat.size });
   }
 
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
-  console.log(`\n${c.bold}Preparando envío:${c.reset} ${files.length} archivo(s) · ${c.cyan}${fmtBytes(totalBytes)}${c.reset}`);
+  console.log(`\n${c.bold}Preparando envío:${c.reset} ${files.length} archivo(s)${folders ? ` en ${folders} carpeta(s)` : ''} · ${c.cyan}${fmtBytes(totalBytes)}${c.reset}`);
 
   // 1. Reservar el puerto TCP antes de nada, para poder lanzar el mapeo UPnP en
   // paralelo con la señalización. Aquí solo hace falta el número de puerto, no la
@@ -813,7 +853,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
   const MAX_IN_FLIGHT = 8 * 1024 * 1024; // Ventana deslizante de 8 MB máximo sin confirmar
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
-  const manifest = files.map((f) => ({ name: path.basename(f.path), size: f.size }));
+  const manifest = files.map((f) => ({ name: path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) }));
   let totalSent = 0;
   const startTime = performance.now();
   let lastReport = startTime;
@@ -846,6 +886,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
         name: path.basename(file.path),
         size: file.size,
         mime: 'application/octet-stream',
+        ...(file.rel ? { path: file.rel } : {}),
       });
 
       const fd = await fs.promises.open(file.path, 'r');
@@ -1030,7 +1071,8 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
               manifest: files.map((f) => ({
                 name: path.basename(f.path),
                 size: f.size,
-                type: 'application/octet-stream'
+                type: 'application/octet-stream',
+                ...(f.rel ? { path: f.rel } : {}),
               }))
             });
             return;
@@ -1256,7 +1298,8 @@ function printSuccess(received, outputDir) {
     const filePath = typeof item === 'string' ? item : (item.path || item);
     const verified = typeof item === 'object' && item.verified;
     const badge = verified ? ` ${c.green}✔ verificado (SHA-256)${c.reset}` : '';
-    console.log(`    · ${path.basename(filePath)}${badge}`);
+    // Con carpetas se ensena la ruta dentro del destino, no solo el nombre.
+    console.log(`    · ${path.relative(outputDir, filePath).split(path.sep).join('/')}${badge}`);
   }
   console.log('');
 }

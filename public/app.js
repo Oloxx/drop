@@ -503,7 +503,7 @@ function renderFileList() {
     li.innerHTML =
       '<span class="name"></span><span class="size"></span><span class="badge" hidden></span>' +
       (out.code ? '' : '<button class="drop-one" title="Remove">×</button>');
-    li.querySelector('.name').textContent = file.name;
+    li.querySelector('.name').textContent = relPathOf(file) || file.name;
     li.querySelector('.size').textContent = fmtBytes(file.size);
     if (file.sha256) {
       const badge = li.querySelector('.badge');
@@ -520,12 +520,55 @@ function renderFileList() {
   $('#join-box').hidden = !!out.code;
 }
 
+/** Ruta relativa de un archivo dentro de la carpeta que se solto o eligio, o ''. */
+function relPathOf(file) {
+  return file.relPath || file.webkitRelativePath || '';
+}
+
 function addFiles(fileList) {
   for (const file of fileList) {
-    const dup = out.files.some((f) => f.name === file.name && f.size === file.size);
+    const dup = out.files.some((f) => f.name === file.name && f.size === file.size && relPathOf(f) === relPathOf(file));
     if (!dup) out.files.push(file);
   }
   renderFileList();
+}
+
+/**
+ * Una carpeta arrastrada llega como `FileSystemDirectoryEntry`: hay que bajar
+ * por ella y pedir cada archivo. `readEntries` devuelve por tandas y hay que
+ * seguir llamando hasta que venga una vacia, o Chrome deja la mitad fuera. A
+ * cada File se le cuelga `relPath` (`carpeta/sub/archivo`), que es lo que
+ * viaja en el manifiesto y lo que el receptor recrea.
+ */
+async function filesFromEntry(entry, prefix) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    file.relPath = prefix ? prefix + '/' + entry.name : '';
+    return [file];
+  }
+  if (!entry.isDirectory) return [];
+  const reader = entry.createReader();
+  const all = [];
+  for (;;) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) break;
+    all.push(...batch);
+  }
+  const files = [];
+  for (const child of all) files.push(...await filesFromEntry(child, prefix ? prefix + '/' + entry.name : entry.name));
+  return files;
+}
+
+async function addDropped(dataTransfer) {
+  const items = [...(dataTransfer.items || [])];
+  const entries = items.map((it) => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null));
+  if (!entries.some((e) => e && e.isDirectory)) {
+    if (dataTransfer.files.length) addFiles(dataTransfer.files);
+    return;
+  }
+  const files = [];
+  for (const entry of entries) if (entry) files.push(...await filesFromEntry(entry, ''));
+  addFiles(files);
 }
 
 async function createLink() {
@@ -636,7 +679,7 @@ function onGuestJoined(guestId, name) {
       row.state('awaiting ack…');
       conn.dc.send(JSON.stringify({
         k: 'manifest',
-        files: out.files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
+        files: out.files.map((f) => ({ name: f.name, size: f.size, type: f.type, path: relPathOf(f) || undefined })),
       }));
       return;
     }
@@ -791,7 +834,7 @@ async function sendAllFiles(conn, fromIndex = 0, fromOffset = 0) {
       row.file(file.name);
       const from = index === fromIndex ? Math.min(fromOffset, file.size) : 0;
       dc.send(JSON.stringify({
-        k: 'start', index, name: file.name, size: file.size, type: file.type, from,
+        k: 'start', index, name: file.name, size: file.size, type: file.type, from, path: relPathOf(file) || undefined,
       }));
 
       const hasher = new Sha256();
@@ -979,7 +1022,9 @@ function onCliSignal(from, data) {
       sealedTo(conn, {
         type: 'cli-manifest',
         v: PROTOCOL_VERSION,
-        manifest: out.files.map((f) => ({ name: f.name, size: f.size, type: f.type || 'application/octet-stream' })),
+        manifest: out.files.map((f) => ({
+          name: f.name, size: f.size, type: f.type || 'application/octet-stream', path: relPathOf(f) || undefined,
+        })),
       });
       return;
     }
@@ -1050,6 +1095,7 @@ async function streamToCli(conn) {
       row.file(file.name);
       await sealedTo(conn, {
         type: 'cli-start', index, name: file.name, size: file.size, mime: file.type || 'application/octet-stream',
+        path: relPathOf(file) || undefined,
       });
 
       const hasher = new Sha256();
@@ -1482,7 +1528,7 @@ function showOffer(files) {
   for (const file of files) {
     const li = document.createElement('li');
     li.innerHTML = '<span class="name"></span><span class="size"></span><span class="badge" hidden></span>';
-    li.querySelector('.name').textContent = file.name;
+    li.querySelector('.name').textContent = file.path || file.name;
     li.querySelector('.size').textContent = fmtBytes(file.size);
     list.appendChild(li);
   }
@@ -1565,7 +1611,10 @@ function retryFile(index) {
 // Firefox y Safari, que no tienen la File System Access API).
 function supportsDirectPicker(files) {
   const total = files.reduce((sum, f) => sum + f.size, 0);
-  return !!window.showDirectoryPicker && (files.length > 1 || total > 128 * 1024 * 1024);
+  // Una carpeta solo se puede recrear escribiendo a disco: sin la API, cada
+  // archivo baja suelto con su nombre (el navegador no crea carpetas en Descargas).
+  const hasFolders = files.some((f) => f.path && f.path.includes('/'));
+  return !!window.showDirectoryPicker && (files.length > 1 || hasFolders || total > 128 * 1024 * 1024);
 }
 
 function memorySink(meta) {
@@ -1589,7 +1638,13 @@ function memorySink(meta) {
 }
 
 async function diskSink(dirHandle, meta) {
-  const handle = await dirHandle.getFileHandle(safeName(meta.name), { create: true });
+  // Con carpetas se baja tramo a tramo creando lo que falte. Cada tramo pasa
+  // por safeName, que ademas convierte `..` en `_`: no hay forma de subir.
+  let dir = dirHandle;
+  const parts = String(meta.path || '').split('/').filter(Boolean);
+  for (const seg of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(safeName(seg), { create: true });
+  const leaf = parts.length ? parts[parts.length - 1] : meta.name;
+  const handle = await dir.getFileHandle(safeName(leaf), { create: true });
   const writable = await handle.createWritable();
   const BATCH_SIZE = 2 * 1024 * 1024;
   let pending = [];
@@ -1748,7 +1803,7 @@ function routeSignal(from, data) {
     return;
   }
   if (data.type === 'cli-start') {
-    onControl({ k: 'start', index: data.index, name: data.name, size: data.size, type: data.mime || '', from: 0 });
+    onControl({ k: 'start', index: data.index, name: data.name, size: data.size, type: data.mime || '', from: 0, path: data.path });
     return;
   }
   if (data.type === 'cli-end') {
@@ -1791,8 +1846,11 @@ for (const evt of ['dragleave', 'drop']) {
 }
 drop.addEventListener('drop', (e) => {
   e.preventDefault();
-  if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  addDropped(e.dataTransfer).catch((err) => console.error('drop', err));
 });
+$('#folder-input').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
+// El selector de carpeta es otro <input>: un solo input no puede ser las dos cosas.
+$('#pick-folder').onclick = (e) => { e.preventDefault(); e.stopPropagation(); $('#folder-input').click(); };
 
 $('#clear-files').onclick = () => { out.files = []; renderFileList(); };
 $('#create-link').onclick = createLink;

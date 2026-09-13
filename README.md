@@ -97,7 +97,10 @@ tar -xzf drop-v0.5.2-linux-x64.tar.gz
 > Web en producción: **[https://drop.oloxx.dev](https://drop.oloxx.dev)**
 
 1. **Enviar:**
-   * Abre la web, arrastra tus archivos y pulsa **Crear enlace**.
+   * Abre la web, arrastra tus archivos **o carpetas** (o *pick a folder*) y pulsa **open channel**.
+     Una carpeta viaja con su árbol; en el receptor, con la *File System Access API*
+     (Chrome/Edge), se recrea tal cual en la carpeta elegida; en otros navegadores cada archivo
+     baja suelto con su nombre.
    * Comparte el **código** (ej. `4271-lemon-radar-tiger-orbit`), que se puede dictar por teléfono,
      o el enlace equivalente (`https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit`).
    * Para un móvil, pulsa **qr**: enfoca la pantalla con la cámara y se abre el enlace, sin
@@ -123,7 +126,15 @@ drop send pelicula.mkv
 
 # Enviar múltiples archivos a la vez
 drop send foto1.jpg foto2.jpg documento.pdf "C:\Descargas\backup.iso"
+
+# Enviar una carpeta entera: llega con su árbol (fotos/verano/playa.jpg)
+drop send fotos/
 ```
+
+Al enviar una carpeta viaja la ruta relativa de cada archivo y el receptor la recrea dentro de
+su directorio de destino. Los enlaces simbólicos se saltan y las carpetas vacías no viajan (no
+tienen bytes que verificar). El receptor acepta esas rutas **solo hacia abajo**: un manifiesto
+con `../` no degrada al nombre suelto, corta la transferencia.
 
 Salida en terminal:
 ```text

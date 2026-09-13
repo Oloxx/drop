@@ -21,6 +21,10 @@ Las notas de cada release, con los binarios, están en
   rechazan mutuamente con un mensaje que pide actualizar, en vez de entenderse a medias.
 
 ### Añadido
+- **Carpetas enteras**, en el CLI (`drop send fotos/`) y en la web (arrastrar una carpeta o
+  *pick a folder*): cada archivo viaja con su ruta relativa (`path` en el manifiesto) y el
+  receptor recrea el árbol; el CLI acepta esas rutas solo hacia abajo (`safeOutputPath`) y
+  la web las crea con `getDirectoryHandle` tramo a tramo (#5).
 - **Web → CLI:** `drop recv` ya recibe de un canal abierto desde el navegador. El CLI se
   presenta como tal al entrar en la sala (`name: 'cli'` en el join) y la página le sirve por el
   relay del servidor con el mismo protocolo y cifrado que usa `drop send` hacia un navegador:
