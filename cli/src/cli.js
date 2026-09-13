@@ -1342,7 +1342,9 @@ async function runRecv(args, options) {
   try {
     ws = await connectSignaling(options.server);
     ws.binaryType = 'arraybuffer';
-    await joinRoom(ws, roomId);
+    // Nos presentamos como `cli`: un emisor web nos servira por el relay en vez
+    // de mandarnos una oferta WebRTC que no sabriamos contestar.
+    await joinRoom(ws, roomId, { name: 'cli' });
 
     offer = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Tiempo de espera agotado esperando datos del emisor')), 10000);
@@ -1354,6 +1356,16 @@ async function runRecv(args, options) {
             clearTimeout(timeout);
             ws.removeEventListener('message', onMsg);
             resolve(msg.data);
+          } else if (msg.t === 'signal' && msg.data?.sdp) {
+            // Una oferta WebRTC: el emisor es una pagina anterior a que la web
+            // supiera servir a un CLI. Decirlo vale mas que agotar el tiempo.
+            clearTimeout(timeout);
+            ws.removeEventListener('message', onMsg);
+            reject(new Error('El emisor es una versión antigua de la web que no sabe servir a un receptor CLI: pídele que recargue la página.'));
+          } else if (msg.t === 'host-gone') {
+            clearTimeout(timeout);
+            ws.removeEventListener('message', onMsg);
+            reject(new Error('El emisor ha cerrado el canal.'));
           }
         } catch {}
       };
@@ -1439,7 +1451,7 @@ ${c.red}${err.message}${c.reset}
   // que tenemos la misma clave. Es un HMAC con la clave scrypt y no un hash de
   // las palabras porque pasa por el servidor (ver crypto.js y shared/e2ee.js).
   // Por TCP directo no se manda nunca: allí la prueba es que AES-GCM autentique.
-  console.log(`  ${c.cyan}[MODO RELAY POR INTERNET]${c.reset} ${c.dim}Descargando archivos en streaming, cifrados de extremo a extremo...${c.reset}`);
+  console.log(`  ${c.cyan}[MODO RELAY POR INTERNET]${c.reset} ${c.dim}${offer.web ? 'El emisor es un navegador: ' : ''}descargando archivos en streaming, cifrados de extremo a extremo...${c.reset}`);
   // La huella sale de la clave, y ahora por relay se cifra con esa misma clave:
   // significa lo mismo que por TCP directo (ver public/shared/sas.js).
   console.log(`  ${c.bold}Huella de la sesión:${c.reset} ${c.cyan}${sasFromKey(key, roomId)}${c.reset} ${c.dim}(compárala con la del emisor)${c.reset}`);

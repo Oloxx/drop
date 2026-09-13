@@ -223,11 +223,23 @@ drop speed <código>
 ```
 
 #### 4. Interoperabilidad total (CLI ↔ Web Browser)
-Si envías un archivo con `drop send` y el destinatario **no tiene instalada la terminal**, ¡no pasa nada!
-* Puede abrir el enlace generado (`https://drop.oloxx.dev/#...`) directamente en **Chrome, Edge, Firefox o Safari**,
-  o entrar en la web y teclear el código.
-* El receptor verá los archivos y el botón **Descargar**.
-* El CLI detecta automáticamente la conexión web y transmite los archivos en streaming continuo por WebSocket.
+Cualquiera recibe de cualquiera, en las cuatro combinaciones:
+
+| Emisor → Receptor | Camino | Cifrado |
+|---|---|---|
+| Web → Web | WebRTC DataChannel, directo o por TURN | DTLS |
+| CLI → CLI | TCP directo (LAN, UPnP) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código |
+| CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código |
+| Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código |
+
+* Si envías con `drop send` y el destinatario **no tiene la terminal**, abre el enlace en **Chrome,
+  Edge, Firefox o Safari**, o entra en la web y teclea el código: verá los archivos y el botón
+  **receive**.
+* Si el canal se abre **desde la web** y el receptor prefiere la terminal, `drop recv <código>`
+  funciona igual: el CLI se presenta como tal al entrar en la sala y la página le sirve por el
+  relay, cifrado, en vez de mandarle una oferta WebRTC.
+* Por el relay los bytes pasan por el servidor, pero cifrados con la clave que sale de las cuatro
+  palabras: el servidor reenvía ruido. Ver [¿Cómo funciona por dentro?](#️-cómo-funciona-por-dentro).
 
 #### 5. Comandos de gestión del CLI
 ```bash

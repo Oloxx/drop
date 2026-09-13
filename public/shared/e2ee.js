@@ -79,8 +79,8 @@ export function sasFromKeyBytes(key, roomId) {
   return formatSas(sasWords(toHex(hmacSha256(key, enc.encode(sasInput('tcp', [roomId]))))));
 }
 
-async function aesKey(raw, usage) {
-  return subtle().importKey('raw', raw, { name: 'AES-GCM' }, false, [usage]);
+async function aesKey(raw, ...usages) {
+  return subtle().importKey('raw', raw, { name: 'AES-GCM' }, false, usages);
 }
 
 /** Cifra `plain` con la clave de la sala. Devuelve [IV][tag][ciphertext]. */
@@ -111,11 +111,13 @@ export async function openBox(key, packet) {
 }
 
 /**
- * Importa la clave una sola vez para descifrar muchos trozos: `importKey` por
- * cada 64 KiB seria un coste tonto en la ruta caliente del receptor.
+ * Importa la clave una sola vez para cifrar o descifrar muchos trozos:
+ * `importKey` por cada 64 KiB seria un coste tonto en la ruta caliente. Vale
+ * en los dos sentidos: el navegador descifra cuando recibe de un CLI y cifra
+ * cuando es el quien envia a un CLI.
  */
 export async function openerFor(key) {
-  return { aes: await aesKey(key, 'decrypt'), raw: key };
+  return { aes: await aesKey(key, 'encrypt', 'decrypt'), raw: key };
 }
 
 /** Descifra un marco `cli-sealed` y devuelve el objeto de control que llevaba. */
@@ -123,4 +125,12 @@ export async function unsealFrame(opener, frame) {
   const box = Uint8Array.from(atob(frame.box), (c) => c.charCodeAt(0));
   const plain = await openBox(opener, box);
   return JSON.parse(new TextDecoder().decode(plain));
+}
+
+/** El contrario: un marco de control sellado, como `sealFrame` del CLI. */
+export async function sealFrame(key, obj) {
+  const box = await sealBox(key, enc.encode(JSON.stringify(obj)));
+  let bin = '';
+  for (const b of box) bin += String.fromCharCode(b);
+  return { type: 'cli-sealed', box: btoa(bin) };
 }

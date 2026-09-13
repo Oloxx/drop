@@ -21,6 +21,10 @@ Las notas de cada release, con los binarios, están en
   rechazan mutuamente con un mensaje que pide actualizar, en vez de entenderse a medias.
 
 ### Añadido
+- **Web → CLI:** `drop recv` ya recibe de un canal abierto desde el navegador. El CLI se
+  presenta como tal al entrar en la sala (`name: 'cli'` en el join) y la página le sirve por el
+  relay del servidor con el mismo protocolo y cifrado que usa `drop send` hacia un navegador:
+  la matriz de interoperabilidad queda completa (#27).
 - Código QR del enlace, generado sin dependencias en `public/shared/qr.js` (ISO 18004, modo
   bytes, versiones 1-40, mascara por penalización): botón **qr** junto al enlace en la web (#4)
   y pintado con caracteres de bloque bajo el código en `drop send`, solo en una terminal y

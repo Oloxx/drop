@@ -65,8 +65,16 @@ export function reportBadGuest(ws, guestId) {
   try { ws.send(JSON.stringify({ t: 'bad-guest', guestId })); } catch {}
 }
 
-/** Se une a una sala. `roomId` es el identificador publico, nunca el codigo entero. */
-export function joinRoom(ws, roomId) {
+/**
+ * Se une a una sala. `roomId` es el identificador publico, nunca el codigo entero.
+ *
+ * `name` es lo unico que el emisor sabe de nosotros antes de hablarnos, y el
+ * emisor web lo usa para decidir COMO hablarnos: a un navegador le manda una
+ * oferta WebRTC, a un `cli` le sirve por el relay del servidor, cifrado, porque
+ * el CLI no habla WebRTC. Sin ese nombre, un receptor CLI en una sala abierta
+ * desde la web se quedaba esperando una oferta que no llegaba nunca.
+ */
+export function joinRoom(ws, roomId, { name = '' } = {}) {
   return new Promise((resolve, reject) => {
     function onMsg(ev) {
       try {
@@ -84,6 +92,6 @@ export function joinRoom(ws, roomId) {
       }
     }
     ws.addEventListener('message', onMsg);
-    ws.send(JSON.stringify({ t: 'join', token: roomId }));
+    ws.send(JSON.stringify({ t: 'join', token: roomId, ...(name ? { name } : {}) }));
   });
 }

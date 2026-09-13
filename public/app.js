@@ -49,7 +49,7 @@ import { sasInput, sasWords, formatSas, dtlsFingerprints } from './shared/sas.js
 import { Sha256, sha256Hex } from './shared/sha256.js';
 import { PROTOCOL_VERSION } from './shared/protocol.js';
 import { encodeQr, qrToSvg, ECL } from './shared/qr.js';
-import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame } from './shared/e2ee.js';
+import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame, sealBox, sealFrame } from './shared/e2ee.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -228,7 +228,7 @@ function wsSend(obj) {
 function handleSignal(msg) {
   switch (msg.t) {
     case 'hosted':   onHosted(msg.token); break;
-    case 'guest':    onGuestJoined(msg.guestId); break;
+    case 'guest':    onGuestJoined(msg.guestId, msg.name); break;
     case 'guest-gone': dropPeer(msg.guestId, 'gone'); break;
     case 'joined':   onJoined(msg.guestId); break;
     case 'host-gone': onHostGone(); break;
@@ -424,6 +424,7 @@ function probePaths() {
     for (const conn of out.peers.values()) {
       if (conn.row.closed) continue;
       active++;
+      if (conn.cli) continue;     // su camino es fijo: el relay del servidor
       // A un receptor encadenado no le mandamos los bytes nosotros, asi que
       // nuestra latencia con el no dice nada de por donde le llegan: su camino
       // real es el que tiene con su eslabon, y ese solo lo ve el.
@@ -456,6 +457,11 @@ const out = {
   nextLabel: 1,
   ready: [],          // han aceptado y esperan a que se forme la cadena
   batchTimer: 0,
+  // Solo si entra un receptor CLI: la clave scrypt de la sala, con la que se le
+  // cifra todo por el relay del servidor. Se deriva una vez, al primero.
+  key: null,
+  opener: null,
+  keyPromise: null,
 };
 
 function totalBytes() {
@@ -530,7 +536,10 @@ function onHosted(roomId) {
   setStatus('channel open · waiting for peer', 'live');
 }
 
-function onGuestJoined(guestId) {
+function onGuestJoined(guestId, name) {
+  // Un `drop recv` no habla WebRTC: se presenta como `cli` y se le sirve por
+  // el relay del servidor, cifrado. Todo lo de abajo es para navegadores.
+  if (name === 'cli') return onCliGuest(guestId);
   const label = 'peer ' + out.nextLabel++;
   const row = makeProgressRow($('#peers'), label);
   row.state('handshake…');
@@ -643,7 +652,7 @@ function queueForStart(conn) {
 
 function maybeStartBatch() {
   if (!out.ready.length) return;
-  const idle = [...out.peers.values()].filter((c) => !c.started && !c.cancelled);
+  const idle = [...out.peers.values()].filter((c) => !c.started && !c.cancelled && !c.cli);
   if (out.ready.length >= idle.length) return startBatch();
   if (!out.batchTimer) out.batchTimer = setTimeout(startBatch, RELAY_WINDOW);
 }
@@ -811,7 +820,7 @@ function dropPeer(guestId, why) {
   // A quien echamos por no saber el codigo ya le hemos puesto su motivo: si lo
   // pisamos con 'gone' el emisor no llega a ver por que se fue.
   else if (!conn.rejected) conn.row.fail(why);
-  conn.pc.close();
+  if (conn.pc) conn.pc.close();
   out.peers.delete(guestId);
   repairChain(conn);
   // Si el que se va era el ultimo que faltaba por aceptar, ya no hay que esperarle.
@@ -834,6 +843,217 @@ function repairChain(dead) {
   if (down && down.dc && down.dc.readyState === 'open') {
     down.relayFrom = null;
     down.dc.send(JSON.stringify({ k: 'orphaned' }));
+  }
+}
+
+// ===================================================== EMISOR -> receptor CLI
+//
+// Un `drop recv` no habla WebRTC. Cuando entra en la sala se presenta como
+// `cli` (el `name` del join) y se le sirve por el relay del servidor con el
+// mismo protocolo que usa `drop send` hacia un navegador -- descrito entero en
+// cli/src/transfer.js, encima de receiveFromRelay -- y el mismo cifrado
+// (shared/e2ee.js): reto y prueba HMAC con la clave scrypt, manifiesto y marcos
+// de control sellados, trozos en AES-256-GCM y la ventana de acuses que mueve el
+// envio. Es lo que completa la matriz: cualquiera recibe de cualquiera.
+//
+// El servidor reenvia los frames binarios al receptor que diga la cabecera de
+// 4 bytes (guestId) y se la quita; para el son ruido con destino.
+
+const CLI_CHUNK = 64 * 1024;                 // como el CLI: cabe de sobra en maxPayload
+const CLI_MAX_IN_FLIGHT = 8 * 1024 * 1024;   // sin confirmar por acuse
+const CLI_WS_HIGH = 4 * 1024 * 1024;         // bufferedAmount del websocket
+const CLI_IDLE_TIMEOUT = 60_000;             // sin acuses ni drenado: se da por perdido
+
+function hostKey() {
+  if (!out.keyPromise) {
+    out.keyPromise = deriveRoomKey(out.roomId, out.secret).then(async (key) => {
+      out.key = key;
+      out.opener = await openerFor(key);
+      return out.opener;
+    });
+  }
+  return out.keyPromise;
+}
+
+function onCliGuest(guestId) {
+  const label = 'peer ' + out.nextLabel++;
+  const row = makeProgressRow($('#peers'), label);
+  row.state('deriving key…');
+  row.path('cli · relayed · e2e');
+
+  const conn = {
+    guestId,
+    label,
+    cli: true,
+    row,
+    acked: 0,
+    sent: 0,
+    total: 0,
+    cancelled: false,
+    started: false,
+    nonce: null,
+    notify: null,
+    lastProgress: 0,
+    lastBuffered: 0,
+  };
+  out.peers.set(guestId, conn);
+
+  hostKey().then(() => {
+    if (conn.cancelled) return;
+    // Mismo reto que a un navegador, pero la prueba que esperamos es el HMAC
+    // con la clave: esta cruza el servidor y un hash del secreto seria un
+    // verificador offline barato (shared/e2ee.js).
+    conn.nonce = [...crypto.getRandomValues(new Uint8Array(16))]
+      .map((b) => b.toString(16).padStart(2, '0')).join('');
+    row.state('verifying code…');
+    wsSend({
+      t: 'signal', to: guestId,
+      data: { type: 'cli-offer', v: PROTOCOL_VERSION, ips: [], port: 0, upnp: false, nonce: conn.nonce, web: true },
+    });
+  }).catch((err) => { console.error('key', err); row.fail('key error'); });
+}
+
+async function sealedTo(conn, obj) {
+  wsSend({ t: 'signal', to: conn.guestId, data: await sealFrame(out.opener, obj) });
+}
+
+function wakeCli(conn) {
+  const notify = conn.notify;
+  conn.notify = null;
+  if (notify) notify();
+}
+
+function onCliSignal(from, data) {
+  const conn = out.peers.get(from);
+  if (!conn || !conn.cli) return;
+  const { row } = conn;
+  switch (data.type) {
+    case 'cli-proof': {
+      if (!conn.nonce) return;
+      const nonce = conn.nonce;
+      conn.nonce = null;
+      // Otra version es otra prueba y otro cifrado: no es alguien probando
+      // codigos, asi que no se denuncia; se le dice que actualice.
+      if (data.v !== PROTOCOL_VERSION) {
+        row.fail('old drop · ask them to update');
+        wsSend({ t: 'signal', to: from, data: { type: 'cli-denied', reason: 'VERSION', v: PROTOCOL_VERSION } });
+        return;
+      }
+      if (data.proof !== proofFromKey(out.key, nonce)) {
+        conn.cancelled = true;
+        conn.rejected = true;
+        row.fail('wrong code');
+        wsSend({ t: 'bad-guest', guestId: from });
+        return;
+      }
+      row.state('awaiting ack…');
+      sealedTo(conn, {
+        type: 'cli-manifest',
+        v: PROTOCOL_VERSION,
+        manifest: out.files.map((f) => ({ name: f.name, size: f.size, type: f.type || 'application/octet-stream' })),
+      });
+      return;
+    }
+    case 'cli-accept':
+      streamToCli(conn);
+      return;
+    case 'cli-ack':
+      conn.acked = Math.max(conn.acked, data.bytes | 0);
+      conn.lastProgress = Date.now();
+      wakeCli(conn);
+      row.progress(Math.min(conn.acked, conn.total), conn.total);
+      return;
+    case 'cli-complete':
+      // Solo llega con todo escrito y verificado al otro lado.
+      conn.acked = conn.total;
+      wakeCli(conn);
+      row.file('');
+      row.finish('delivered');
+      alertFinished(conn.label + ' (cli) received the payload');
+      return;
+    case 'cli-error':
+      conn.cancelled = true;
+      wakeCli(conn);
+      row.fail('aborted by peer');
+      return;
+    default:
+      // `cli-retry` lo manda solo el receptor web hacia un emisor CLI; un
+      // receptor CLI no reintenta. Cualquier otra cosa se ignora.
+  }
+}
+
+/** Espera a que haya hueco en la ventana de acuses y en el buffer del websocket. */
+function cliWindow(conn) {
+  return new Promise((resolve) => {
+    const check = () => {
+      if (conn.cancelled) return resolve();
+      // El buffer vaciandose tambien es senal de vida: en un enlace lento los
+      // acuses tardan, pero mientras salgan bytes no hay nada roto.
+      if (ws.bufferedAmount < conn.lastBuffered) conn.lastProgress = Date.now();
+      conn.lastBuffered = ws.bufferedAmount;
+      if (Date.now() - conn.lastProgress > CLI_IDLE_TIMEOUT) {
+        conn.cancelled = true;
+        conn.row.fail('peer stalled');
+        return resolve();
+      }
+      if (conn.sent - conn.acked <= CLI_MAX_IN_FLIGHT && ws.bufferedAmount <= CLI_WS_HIGH) return resolve();
+      conn.notify = check;
+      setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
+async function streamToCli(conn) {
+  if (conn.started || conn.cancelled) return;
+  conn.started = true;
+  const { row } = conn;
+  conn.total = totalBytes();
+  conn.lastProgress = Date.now();
+  row.state('transmitting…');
+
+  const header = new Uint8Array(4);
+  new DataView(header.buffer).setUint32(0, conn.guestId);
+
+  try {
+    for (const [index, file] of out.files.entries()) {
+      if (conn.cancelled) return;
+      row.file(file.name);
+      await sealedTo(conn, {
+        type: 'cli-start', index, name: file.name, size: file.size, mime: file.type || 'application/octet-stream',
+      });
+
+      const hasher = new Sha256();
+      const READ_BLOCK = 2 * 1024 * 1024;
+      for (let offset = 0; offset < file.size;) {
+        const blockBuf = await file.slice(offset, Math.min(offset + READ_BLOCK, file.size)).arrayBuffer();
+        if (conn.cancelled) return;
+        if (!file.sha256) hasher.update(blockBuf);
+        for (let off = 0; off < blockBuf.byteLength; off += CLI_CHUNK) {
+          await cliWindow(conn);
+          if (conn.cancelled || !ws || ws.readyState !== WebSocket.OPEN) return;
+          const slice = new Uint8Array(blockBuf, off, Math.min(CLI_CHUNK, blockBuf.byteLength - off));
+          const box = await sealBox(out.opener, slice);
+          const packet = new Uint8Array(4 + box.length);
+          packet.set(header, 0);
+          packet.set(box, 4);
+          ws.send(packet);
+          conn.sent += slice.byteLength;
+        }
+        offset += blockBuf.byteLength;
+      }
+      const sha256 = file.sha256 || hasher.digest();
+      file.sha256 = sha256;
+      renderFileList();
+      await sealedTo(conn, { type: 'cli-end', index, sha256 });
+    }
+    await sealedTo(conn, { type: 'cli-done' });
+    row.file('');
+    row.progress(Math.min(conn.acked, conn.total), conn.total);
+    row.state('flushing…');
+  } catch (err) {
+    console.error(err);
+    row.fail('read error');
   }
 }
 
@@ -1439,6 +1659,11 @@ function cliInbound(packet) {
 
 // Lo demas que pasa por aqui es la senializacion normal de WebRTC entre pares.
 function routeSignal(from, data) {
+  // Como EMISOR, todo `cli-*` viene de un receptor CLI al que servimos nosotros.
+  if (document.body.dataset.view === 'send' && typeof data.type === 'string' && data.type.startsWith('cli-')) {
+    onCliSignal(from, data);
+    return;
+  }
   if (data.type === 'cli-offer') {
     rx.isCli = true;
     // La oferta es lo unico que llega en claro y trae la version. Otra version
