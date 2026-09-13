@@ -9,7 +9,7 @@ import net from 'node:net';
 import path from 'node:path';
 
 import { safeOutputPath, receiveFiles, createSenderServer, PROTOCOL_VERSION } from '../cli/src/transfer.js';
-import { deriveKey, encryptChunk } from '../cli/src/crypto.js';
+import { deriveKey, encryptChunk, sealFrame } from '../cli/src/crypto.js';
 import { newCode, randomRoomId } from '../public/shared/codes.js';
 import { createHash, randomBytes } from 'node:crypto';
 
@@ -354,11 +354,13 @@ test('el receptor por relay tampoco pisa un archivo que ya existe', async (t) =>
   const ws = new MockWs();
   // Por relay los nombres llegan de uno en uno con `cli-start`, no de golpe en
   // el manifiesto: la reserva tiene que hacerse ahi.
-  const recibiendo = receiveFromRelay(ws, [{ name: 'archivo.bin', size: body.length }], out, () => {});
+  const key = deriveKey('4271-lemon-radar-tiger-orbit');
+  const recibiendo = receiveFromRelay(ws, [{ name: 'archivo.bin', size: body.length }], out, () => {}, { key });
 
-  const signal = (data) => ws.emit('message', { data: JSON.stringify({ t: 'signal', data }) });
+  // Y todo llega cifrado con la clave de la sala, como lo manda el emisor.
+  const signal = (data) => ws.emit('message', { data: JSON.stringify({ t: 'signal', data: sealFrame(data, key) }) });
   signal({ type: 'cli-start', index: 0, name: 'archivo.bin', size: body.length });
-  ws.emit('message', { data: body });
+  ws.emit('message', { data: encryptChunk(body, key) });
   signal({ type: 'cli-end', index: 0, sha256: sha256(body) });
   signal({ type: 'cli-done' });
 

@@ -12,7 +12,7 @@ import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from 
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
 import { attachSender, receiveFiles, receiveFromRelay, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
 import { listenOrExplain, watchServerErrors } from './listen.js';
-import { secretProof, sasFromKey, deriveKey } from './crypto.js';
+import { proofFromKey, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
@@ -600,12 +600,16 @@ async function runSend(args, options) {
   }
 
   const code = newCode(roomId, crypto.randomBytes);
-  const { secret } = parseCode(code);
+
+  // La clave de la sala se deriva una vez (scrypt, 62 ms) y sirve para todo: el
+  // TCP directo la usa dentro de attachSender, y el relay cifra con ella cada
+  // trozo y cada marco de control que salga hacia el servidor.
+  const key = deriveKey(code);
 
   // Huella de la sesión: sale de la clave AES ya derivada, no de las palabras del
   // código. Es la misma que ve el receptor por TCP directo, y sirve para comprobar
   // de viva voz que los dos están en la misma transferencia (public/shared/sas.js).
-  const sas = sasFromKey(deriveKey(code), roomId);
+  const sas = sasFromKey(key, roomId);
 
   // Sin terminal interactiva no hay a quién preguntar: se aprueba solo, igual que
   // con --yes, y se dice en el aviso de cada receptor.
@@ -670,6 +674,16 @@ const guestIps = new Map();
 // vuelta -- esta descrito en cli/src/transfer.js, encima de receiveFromRelay.
 // Cambiar algo aqui sin mirar alli es como se llego a que el receptor no
 // acusara recibo y el envio se parase a los 8 MB.
+//
+// Todo lo que sale de aqui va cifrado con la clave de la sala: los marcos de
+// control sellados (`sealFrame`) y cada trozo con `encryptChunk`. El servidor
+// reenvia lo mismo que antes, solo que ya no puede leerlo. La contabilidad
+// (totalSent, acuses, progreso) es de bytes EN CLARO, que es lo que el receptor
+// cuenta al otro lado tras descifrar.
+function sendSealed(ws, guestId, obj) {
+  ws.send(JSON.stringify({ t: 'signal', to: guestId, data: sealFrame(obj, key) }));
+}
+
 async function streamToWebGuest(guestId, files, ws, onProgress) {
   const CHUNK = 64 * 1024;
   const MAX_IN_FLIGHT = 8 * 1024 * 1024; // Ventana deslizante de 8 MB máximo sin confirmar
@@ -700,17 +714,13 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
 
       const fileHash = crypto.createHash('sha256');
 
-      ws.send(JSON.stringify({
-        t: 'signal',
-        to: guestId,
-        data: {
-          type: 'cli-start',
-          index,
-          name: path.basename(file.path),
-          size: file.size,
-          mime: 'application/octet-stream',
-        }
-      }));
+      sendSealed(ws, guestId, {
+        type: 'cli-start',
+        index,
+        name: path.basename(file.path),
+        size: file.size,
+        mime: 'application/octet-stream',
+      });
 
       const fd = await fs.promises.open(file.path, 'r');
       const buf = Buffer.allocUnsafe(CHUNK);
@@ -745,9 +755,11 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
           const slice = buf.subarray(0, bytesRead);
           fileHash.update(slice);
 
+          // Cabecera de destino en claro (el servidor la quita) y el trozo
+          // cifrado detras: 28 bytes mas por trozo de 64 KiB.
           const header = Buffer.allocUnsafe(4);
           header.writeUInt32BE(guestId, 0);
-          const packet = Buffer.concat([header, slice]);
+          const packet = Buffer.concat([header, encryptChunk(slice, key)]);
 
           ws.send(packet);
           offset += bytesRead;
@@ -773,18 +785,10 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
 
       const sha256 = fileHash.digest('hex');
 
-      ws.send(JSON.stringify({
-        t: 'signal',
-        to: guestId,
-        data: { type: 'cli-end', index, sha256 }
-      }));
+      sendSealed(ws, guestId, { type: 'cli-end', index, sha256 });
     }
 
-    ws.send(JSON.stringify({
-      t: 'signal',
-      to: guestId,
-      data: { type: 'cli-done' }
-    }));
+    sendSealed(ws, guestId, { type: 'cli-done' });
 
     // Esperar a que el receptor confirme la recepción completa de todos los datos.
     // El reloj se pone a cero aquí: enviar el último archivo puede haber llevado más
@@ -861,37 +865,44 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             const nonce = pendingProofs.get(msg.from);
             if (!nonce) return;
             pendingProofs.delete(msg.from);
-            if (msg.data.proof !== secretProof(nonce, secret)) {
+            // Un receptor de otra version manda otra prueba (o ninguna `v`): no
+            // es alguien probando codigos, asi que no cuenta para quemar la
+            // sala. Se le dice que no y por que, aunque un binario viejo solo
+            // vaya a entender el "no".
+            if (msg.data.v !== PROTOCOL_VERSION) {
+              console.log(`\n  ${c.yellow}Receptor (${msg.from}) rechazado: usa la versión ${msg.data.v ?? '0 (drop anterior a la 0.5.0)'} del protocolo y este emisor la ${PROTOCOL_VERSION}. Pídele que ejecute drop update.${c.reset}\n`);
+              ws.send(JSON.stringify({ t: 'signal', to: msg.from, data: { type: 'cli-denied', reason: 'VERSION', v: PROTOCOL_VERSION } }));
+              return;
+            }
+            if (msg.data.proof !== proofFromKey(key, nonce)) {
               console.log(`\n  ${c.yellow}Receptor (${msg.from}) rechazado: el código no coincide.${c.reset}\n`);
               reportBadGuest(ws, msg.from);
               return;
             }
             // Sabe las palabras, pero eso no le da derecho a los archivos: la
-            // última palabra la tiene quien envía. Por relay no hay huella que
-            // enseñar (los datos pasan por el servidor de todas formas).
+            // última palabra la tiene quien envía. La huella es la misma que por
+            // TCP directo: sale de la clave, y por relay se cifra con esa clave.
             const permitido = await askPeer({
               who: guestIps.get(msg.from) || `receptor ${msg.from}`,
-              sas: null,
-              path: 'relay por servidor',
+              sas,
+              path: 'relay por servidor, cifrado extremo a extremo',
             });
             if (!permitido) {
               ws.send(JSON.stringify({ t: 'signal', to: msg.from, data: { type: 'cli-denied' } }));
               return;
             }
 
-            ws.send(JSON.stringify({
-              t: 'signal',
-              to: msg.from,
-              data: {
-                type: 'cli-manifest',
-                v: PROTOCOL_VERSION,
-                manifest: files.map((f) => ({
-                  name: path.basename(f.path),
-                  size: f.size,
-                  type: 'application/octet-stream'
-                }))
-              }
-            }));
+            // Los nombres de los archivos ya son informacion: el manifiesto va
+            // sellado, como todo lo que sigue.
+            sendSealed(ws, msg.from, {
+              type: 'cli-manifest',
+              v: PROTOCOL_VERSION,
+              manifest: files.map((f) => ({
+                name: path.basename(f.path),
+                size: f.size,
+                type: 'application/octet-stream'
+              }))
+            });
             return;
           }
           if (msg.data?.type === 'cli-accept') {
@@ -1243,7 +1254,21 @@ async function runRecv(args, options) {
     process.exit(1);
   }
 
+  // La oferta es lo unico que va en claro, y trae la version: si no es la
+  // nuestra, nada de lo que venga detras (cifrado con otra prueba, otro
+  // formato) se va a entender. Cortar aqui evita sondear TCP para nada.
+  if (offer.v !== PROTOCOL_VERSION) {
+    ws.close();
+    console.error(`
+${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} del protocolo y este receptor la ${PROTOCOL_VERSION}: actualiza drop en los dos equipos.${c.reset}
+`);
+    process.exit(1);
+  }
+
   const { ips = [], port } = offer;
+  // La misma clave que usa el TCP directo: por relay cifra cada trozo y cada
+  // marco de control, y de ella sale la prueba de conocimiento y la huella.
+  const key = deriveKey(code);
 
   // 3. Probar si alguna IP es accesible directamente por TCP (misma red local, VPN o UPnP en Internet)
   const localIPs = getLocalIPs();
@@ -1297,22 +1322,20 @@ ${c.red}${err.message}${c.reset}
     }
   }
 
-  // 4. Modo Relay por Internet (Streaming seguro a través del servidor).
+  // 4. Modo Relay por Internet (Streaming cifrado a través del servidor).
   //
   // El emisor no manda el manifiesto con la oferta: primero pide una prueba de
-  // que conocemos las palabras. Aquí sí la damos, y solo aquí: por este camino
-  // los datos pasan por el servidor de todas formas, así que no hay cifrado
-  // nuestro que proteger. Por TCP directo no se manda nunca (ver crypto.js).
-  console.log(`  ${c.cyan}[MODO RELAY POR INTERNET]${c.reset} ${c.dim}Descargando archivos en streaming...${c.reset}`);
-  // Sin huella a propósito: por esta ruta los bytes pasan por el servidor, así que
-  // una huella daría una garantía que no existe (ver public/shared/sas.js).
-  console.log(`  ${c.dim}Ruta por el servidor: sin huella de sesión y sin cifrado extremo a extremo propio.${c.reset}`);
+  // que tenemos la misma clave. Es un HMAC con la clave scrypt y no un hash de
+  // las palabras porque pasa por el servidor (ver crypto.js y shared/e2ee.js).
+  // Por TCP directo no se manda nunca: allí la prueba es que AES-GCM autentique.
+  console.log(`  ${c.cyan}[MODO RELAY POR INTERNET]${c.reset} ${c.dim}Descargando archivos en streaming, cifrados de extremo a extremo...${c.reset}`);
+  // La huella sale de la clave, y ahora por relay se cifra con esa misma clave:
+  // significa lo mismo que por TCP directo (ver public/shared/sas.js).
+  console.log(`  ${c.bold}Huella de la sesión:${c.reset} ${c.cyan}${sasFromKey(key, roomId)}${c.reset} ${c.dim}(compárala con la del emisor)${c.reset}`);
   console.log(`  ${c.dim}Esperando a que el emisor autorice la descarga...${c.reset}\n`);
-  // @deprecated Un emisor v0.3.5 manda el manifiesto dentro de la propia oferta y
-  // no entiende de retos: si viene, se usa tal cual. Se elimina en la v0.5.0.
-  let manifest = offer.manifest || null;
+  let manifest = null;
   try {
-    if (!manifest) manifest = await new Promise((resolve, reject) => {
+    manifest = await new Promise((resolve, reject) => {
       // Generoso a proposito: al otro lado puede haber alguien decidiendo si
       // autoriza la descarga, y eso no cabe en diez segundos.
       const timeout = setTimeout(
@@ -1323,22 +1346,41 @@ ${c.red}${err.message}${c.reset}
         try {
           if (typeof ev.data !== 'string') return;
           const msg = JSON.parse(ev.data);
-          if (msg.t === 'signal' && msg.data?.type === 'cli-manifest') {
+          if (msg.t === 'signal' && msg.data?.type === 'cli-sealed') {
+            // El manifiesto llega sellado. Si no autentica, la clave no es la
+            // misma, y eso ya no puede pasar aqui: la prueba la acabamos de dar.
+            let inner;
+            try {
+              inner = unsealFrame(msg.data, key);
+            } catch {
+              clearTimeout(timeout);
+              ws.removeEventListener('message', onMsg);
+              reject(Object.assign(new Error('El manifiesto del emisor no autentica con esta clave.'), { code: 'PROTOCOL_ERROR' }));
+              return;
+            }
+            if (inner.type !== 'cli-manifest') return;
             clearTimeout(timeout);
             ws.removeEventListener('message', onMsg);
-            if (msg.data.v !== PROTOCOL_VERSION) {
+            if (inner.v !== PROTOCOL_VERSION) {
               const err = new Error(
-                `El emisor usa la versión ${msg.data.v ?? '0 (drop anterior a la 0.5.0)'} del protocolo y este receptor la ${PROTOCOL_VERSION}: actualiza drop en los dos equipos.`
+                `El emisor usa la versión ${inner.v ?? '0 (drop anterior a la 0.5.0)'} del protocolo y este receptor la ${PROTOCOL_VERSION}: actualiza drop en los dos equipos.`
               );
               err.code = 'PROTOCOL_VERSION';
               reject(err);
               return;
             }
-            resolve(msg.data.manifest || []);
+            resolve(inner.manifest || []);
           } else if (msg.t === 'signal' && msg.data?.type === 'cli-denied') {
             // El código era correcto: quien envía ha dicho que no.
             clearTimeout(timeout);
             ws.removeEventListener('message', onMsg);
+            if (msg.data.reason === 'VERSION') {
+              reject(Object.assign(
+                new Error(`El emisor usa la versión ${msg.data.v ?? '?'} del protocolo y este receptor la ${PROTOCOL_VERSION}: actualiza drop en los dos equipos.`),
+                { code: 'PROTOCOL_VERSION' },
+              ));
+              return;
+            }
             reject(new Error('El emisor no ha autorizado esta descarga.'));
           } else if (msg.t === 'error') {
             clearTimeout(timeout);
@@ -1350,7 +1392,7 @@ ${c.red}${err.message}${c.reset}
       ws.addEventListener('message', onMsg);
       ws.send(JSON.stringify({
         t: 'signal',
-        data: { type: 'cli-proof', proof: secretProof(offer.nonce || '', parsed.secret) },
+        data: { type: 'cli-proof', v: PROTOCOL_VERSION, proof: proofFromKey(key, offer.nonce || '') },
       }));
     });
   } catch (err) {
@@ -1362,7 +1404,7 @@ ${c.red}${err.message}${c.reset}
   try {
     const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed) => {
       renderProgressBar(current, total, speed);
-    }, { overwrite: options.overwrite });
+    }, { overwrite: options.overwrite, key });
     if (ws) ws.close();
     if (received.stats) {
       renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);

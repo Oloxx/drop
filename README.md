@@ -219,6 +219,12 @@ drop --help       # Muestra la ayuda de comandos
 * **Sockets TCP Directos:** Utiliza `socket.setNoDelay(true)` con búferes de lectura/escritura de 2–4 MB en streaming continuo.
 * **Cifrado E2EE nativo:** Cifrado simétrico AES-256-GCM con aceleración hardware `AES-NI`. La clave
   sale de las cuatro palabras del código pasadas por `scrypt` (ver abajo), nunca del identificador de sala.
+* **El relay también va cifrado:** cuando no hay ruta TCP directa (NAT estricta, o el receptor es un
+  navegador) los bytes pasan por el servidor, pero cifrados con la misma clave: cada trozo y cada
+  marco de control van en AES-256-GCM y el servidor reenvía ruido. El navegador deriva la misma clave
+  con una implementación propia de `scrypt` ([`public/shared/scrypt.js`](public/shared/scrypt.js)),
+  y la prueba de conocimiento del código que le manda al emisor es un HMAC con esa clave, no un hash
+  de las palabras: un servidor que la vea pasar no tiene nada barato que atacar offline.
 
 ### 2. Transferencia Web (WebRTC DataChannel)
 * **Protocolo mínimo:** Control en JSON (`manifest`, `accept`, `start`, `ack`, `end`, `done`) y datos en trozos binarios continuos.
@@ -267,7 +273,7 @@ un mensaje, estar en la misma habitación.
 |---|---|---|
 | **Web ↔ Web** (WebRTC) | Los *fingerprints* DTLS de los dos extremos | **Un servidor que sustituya el SDP** para hablar DTLS con cada lado por separado. Es el ataque real que cubre |
 | **CLI ↔ CLI** (TCP directo) | La clave AES ya derivada con scrypt | Que los dos estén en la misma transferencia. Aquí un MITM ya era imposible: sin las palabras, AES-GCM rechaza el primer paquete |
-| **Cualquier ruta por relay** | No hay huella | Nada: por ahí los bytes pasan por el servidor y una huella prometería algo que esa ruta no da. Se avisa en pantalla |
+| **Cualquier ruta por relay** (CLI → CLI o CLI → navegador) | La clave AES derivada con scrypt, igual que por TCP directo | Que los dos hayan derivado la misma clave: por esta ruta los bytes pasan por el servidor, pero cifrados con ella. El servidor no puede leerlos ni fabricar una huella que cuadre |
 
 La huella **no viaja por el cable** (si viajase, el de en medio la cambiaría al vuelo) y **no
 lleva dentro las palabras del código**: entra material de clave, no el secreto, para que leerla

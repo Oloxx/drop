@@ -24,7 +24,8 @@
     "bench": "node test/throughput.bench.mjs",
     "bench:fanout": "node test/fanout.bench.mjs",
     "bench:cli": "node test/cli.bench.mjs",
-    "bench:speed": "node test/speed.bench.mjs"
+    "bench:speed": "node test/speed.bench.mjs",
+    "bench:webrelay": "node test/webrelay.bench.mjs"
   },
   "dependencies": {
     "express": "^4.21.2",

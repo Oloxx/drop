@@ -31,14 +31,24 @@
 // de probar, el emisor no ensenia el manifiesto de archivos a nadie que no
 // demuestre antes que conoce las palabras: manda un nonce (`challenge`) y espera
 // un sha256 de nonce+secreto (`proof`). Ese hash es rapido de calcular, asi que
-// es un verificador offline del secreto -- aqui es aceptable porque los datos ya
-// van cifrados por DTLS con claves efimeras y el codigo es de un solo uso. El
+// es un verificador offline del secreto -- aqui es aceptable porque viaja por el
+// DataChannel, que ya va cifrado por DTLS, y el codigo es de un solo uso. El
 // CLI no manda nunca esta prueba por el camino TCP directo, donde si hay AES
 // nuestro que proteger. Diseno completo en shared/codes.js.
+//
+// EMISOR CLI (relay por el servidor)
+// Cuando quien envia es `drop send` los bytes no van por WebRTC: pasan por el
+// WebSocket del servidor. Ahi la prueba de conocimiento y el cifrado son otros:
+// esta pestania deriva la MISMA clave scrypt que el CLI (shared/scrypt.js), la
+// prueba es un HMAC con esa clave (no un hash del secreto, que el servidor
+// podria atacar offline) y cada trozo y cada marco de control llegan cifrados
+// con AES-256-GCM. El servidor reenvia ruido. Detalle en shared/e2ee.js.
 
 import { parseCode, randomSecretWords, formatCode, CodeError } from './shared/codes.js';
 import { sasInput, sasWords, formatSas, dtlsFingerprints } from './shared/sas.js';
 import { Sha256, sha256Hex } from './shared/sha256.js';
+import { PROTOCOL_VERSION } from './shared/protocol.js';
+import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame } from './shared/e2ee.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -131,8 +141,10 @@ function connectSignaling() {
       }
     };
     ws.onmessage = (ev) => {
+      // Binario por el websocket solo lo manda un emisor CLI: es un trozo
+      // cifrado del relay. Los trozos WebRTC llegan por el DataChannel.
       if (typeof ev.data !== 'string') {
-        onChunk(ev.data);
+        cliInbound(ev.data);
         return;
       }
       let msg;
@@ -756,7 +768,15 @@ function repairChain(dead) {
 const rx = {
   guestId: 0,
   secret: null,       // las palabras del codigo: solo viven aqui
+  roomId: null,
   code: null,
+  // Solo con emisor CLI: la clave de la sala, el descifrador ya importado y la
+  // cola que mantiene en orden marcos y trozos mientras se descifran.
+  key: null,
+  opener: null,
+  sas: null,
+  cliQueue: Promise.resolve(),
+  cliBroken: false,
   links: new Map(),   // peerId -> conn  (0 es el emisor)
   host: null,         // dc de control con el emisor: nunca se sustituye
   up: null,           // conn por la que nos entran los bytes (emisor u otro receptor)
@@ -810,6 +830,7 @@ function joinWithCode(code) {
   const parsed = parseCode(code);     // lanza CodeError si no cuadra, antes de tocar la red
   rx.code = parsed.code;
   rx.secret = parsed.secret;
+  rx.roomId = parsed.roomId;
   showView('recv');
   return connectAndJoin(parsed);
 }
@@ -1314,21 +1335,61 @@ async function acceptTransfer() {
 // cli/src/transfer.js, encima de receiveFromRelay; aqui hay que mantener sobre
 // todo el `cli-ack` cada ACK_EVERY, que es lo que mueve la ventana del emisor.
 //
+// Descifrar es asincrono y el orden entre marcos y trozos ES el protocolo (un
+// `cli-start` va delante de sus bytes, un `cli-end` detras del ultimo): por eso
+// todo lo que llega del emisor CLI pasa por una sola cola, en fila. Un fallo de
+// autenticacion la para: o lo ha tocado alguien por el camino o la clave no es
+// la misma, y en los dos casos lo que toca es cortar, no adivinar.
+function cliEnqueue(job) {
+  rx.cliQueue = rx.cliQueue.then(() => (rx.cliBroken ? null : job())).catch((err) => {
+    console.error('cli relay', err);
+    rx.cliBroken = true;
+    if (rx.row && !rx.finished) rx.row.fail('decrypt error');
+    setStatus('relay frame failed to authenticate', 'bad');
+    wsSend({ t: 'signal', data: { type: 'cli-error', message: String((err && err.message) || err) } });
+  });
+}
+
+/** Trozo binario del relay: se descifra y sigue el camino de siempre. */
+function cliInbound(packet) {
+  cliEnqueue(async () => {
+    if (!rx.opener) throw new Error('chunk before key');
+    onChunk(await openBox(rx.opener, packet));
+  });
+}
+
 // Lo demas que pasa por aqui es la senializacion normal de WebRTC entre pares.
 function routeSignal(from, data) {
   if (data.type === 'cli-offer') {
     rx.isCli = true;
-    // @deprecated Un emisor v0.3.5 manda el manifiesto de una vez, sin reto.
-    if (data.manifest) {
-      rx.manifest = data.manifest;
-      rx.total = data.manifest.reduce((sum, f) => sum + f.size, 0);
-      showOffer(data.manifest);
-      setStatus('channel ready · CLI host', 'live');
+    // La oferta es lo unico que llega en claro y trae la version. Otra version
+    // es otro cifrado y otra prueba: no se intenta entender a medias.
+    if (data.v !== PROTOCOL_VERSION) {
+      const theirs = data.v == null ? '0 (drop before 0.5.0)' : data.v;
+      $('#recv-title').textContent = 'version mismatch';
+      $('#join-error').hidden = false;
+      $('#join-error').textContent =
+        `The sender runs protocol v${theirs} and this page speaks v${PROTOCOL_VERSION}. Ask them to run \`drop update\`.`;
+      setStatus('incompatible sender', 'bad');
       return;
     }
-    // Emisor v0.4.0: la oferta viene sin nombres de archivo y con un nonce.
-    setStatus('verifying code…', 'live');
-    wsSend({ t: 'signal', data: { type: 'cli-proof', proof: secretProof(data.nonce || '', rx.secret || '') } });
+    // La clave se deriva con scrypt aqui mismo (~0,3 s, cede el hilo): con ella
+    // se responde al reto y se abrira todo lo que el emisor mande despues.
+    setStatus('deriving key…', 'live');
+    cliEnqueue(async () => {
+      const key = await deriveRoomKey(rx.roomId, rx.secret || '');
+      rx.key = key;
+      rx.opener = await openerFor(key);
+      rx.sas = sasFromKeyBytes(key, rx.roomId);
+      setStatus('verifying code…', 'live');
+      wsSend({ t: 'signal', data: { type: 'cli-proof', v: PROTOCOL_VERSION, proof: proofFromKey(key, data.nonce || '') } });
+    });
+    return;
+  }
+  // Todo lo demas que manda un emisor CLI viene sellado con la clave de la sala.
+  // Se abre en la cola, detras de lo que ya hubiera, y se despacha con su tipo.
+  if (data.type === 'cli-sealed') {
+    cliEnqueue(async () => routeSignal(from, await unsealFrame(rx.opener, data)));
     return;
   }
   // El emisor ha dicho que no. El codigo era correcto: esto no es un fallo de
@@ -1336,16 +1397,18 @@ function routeSignal(from, data) {
   if (data.type === 'cli-denied') {
     setStatus('sender declined', 'error');
     $('#join-error').hidden = false;
-    $('#join-error').textContent = 'The sender did not authorize this download.';
+    $('#join-error').textContent = data.reason === 'VERSION'
+      ? `The sender runs protocol v${data.v} and this page speaks v${PROTOCOL_VERSION}. Ask them to run \`drop update\`.`
+      : 'The sender did not authorize this download.';
     return;
   }
   if (data.type === 'cli-manifest') {
     rx.manifest = data.manifest || [];
     rx.total = rx.manifest.reduce((sum, f) => sum + f.size, 0);
     showOffer(rx.manifest);
-    // Sin huella a proposito: por el relay los bytes pasan por el servidor, asi que
-    // una huella prometeria algo que esta ruta no da (ver shared/sas.js).
-    $('#offer-sas').textContent = 'relayed through the server: no end-to-end fingerprint on this route';
+    // La huella sale de la clave, y ahora por relay se cifra con esa misma
+    // clave: significa lo mismo que por TCP directo entre dos CLI.
+    $('#offer-sas').textContent = 'session fingerprint: ' + rx.sas + ' — must match the sender';
     $('#offer-sas').hidden = false;
     setStatus('channel ready · CLI host', 'live');
     return;

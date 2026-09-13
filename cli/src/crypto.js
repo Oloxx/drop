@@ -124,3 +124,29 @@ export function decryptChunk(packet, key) {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]);
 }
+
+/**
+ * Prueba de conocimiento del codigo para el camino por RELAY, en las dos
+ * direcciones del CLI (emisor que comprueba, receptor que responde). Es un HMAC
+ * con la clave scrypt, no un hash del secreto: pasa por el servidor, y un hash
+ * del secreto seria un verificador offline barato de 44 bits (ver la nota de
+ * `secretProof`). Misma formula que `proofFromKey` en public/shared/e2ee.js.
+ */
+export function proofFromKey(key, nonce) {
+  return crypto.createHmac('sha256', key).update(`drop-proof-v3|${nonce}`).digest('hex');
+}
+
+/**
+ * Marco de control del relay cifrado: `{ type: 'cli-sealed', box }`, con el JSON
+ * del marco original dentro del AEAD. El servidor reenvia `data` sin mirarlo, asi
+ * que para el es un objeto opaco mas; el receptor lo abre con `unsealFrame` y
+ * despacha el `type` de dentro como siempre. Formato en public/shared/e2ee.js.
+ */
+export function sealFrame(obj, key) {
+  return { type: 'cli-sealed', box: encryptChunk(Buffer.from(JSON.stringify(obj)), key).toString('base64') };
+}
+
+/** Abre un `cli-sealed`. Lanza si el tag no autentica (otra clave, o manipulado). */
+export function unsealFrame(frame, key) {
+  return JSON.parse(decryptChunk(Buffer.from(String(frame.box || ''), 'base64'), key).toString('utf-8'));
+}

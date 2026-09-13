@@ -343,8 +343,9 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({
   server,
   // El frame legitimo mas grande es un paquete de relay del CLI: 4 bytes de
-  // guestId mas un chunk de 64 KiB. Con 256 KiB hay margen de sobra y un cliente
-  // no puede reservar 100 MiB de golpe, que es lo que permite `ws` por defecto.
+  // guestId, 28 de IV y tag AES-GCM y un chunk de 64 KiB. Con 256 KiB hay margen
+  // de sobra y un cliente no puede reservar 100 MiB de golpe, que es lo que
+  // permite `ws` por defecto.
   maxPayload: 256 * 1024,
   // Se rechaza en el upgrade, no en `connection`: asi el navegador recibe un 403
   // y el socket no llega a existir.

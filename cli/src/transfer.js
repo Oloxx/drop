@@ -2,8 +2,9 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { deriveKey, encryptChunk, decryptChunk, sasFromKey } from './crypto.js';
+import { deriveKey, encryptChunk, decryptChunk, sasFromKey, unsealFrame } from './crypto.js';
 import { splitForKey } from '../../public/shared/codes.js';
+import { PROTOCOL_VERSION } from '../../public/shared/protocol.js';
 
 const CHUNK_SIZE = 512 * 1024; // 512 KB por bloque para equilibrar streaming y memoria
 
@@ -19,7 +20,10 @@ const CHUNK_SIZE = 512 * 1024; // 512 KB por bloque para equilibrar streaming y 
 // o datos por su primer byte, con dos ramas de "compatibilidad" que no daban
 // compatibilidad: con un emisor sin prefijo, ese byte es CONTENIDO del archivo, y
 // cuando valia 0x00 o 0x01 el trozo se tiraba en silencio.
-export const PROTOCOL_VERSION = 1;
+//
+// El numero vive en public/shared/protocol.js porque el receptor web tambien lo
+// comprueba en la oferta del relay; aqui solo se reexporta.
+export { PROTOCOL_VERSION };
 
 // El receptor confirma cada 2 MB, igual que el cliente web (`ACK_EVERY` en
 // public/app.js). No es cosmetico: el emisor no manda mas de 8 MB sin confirmar
@@ -682,13 +686,25 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 //                  (PROTOCOL_VERSION), las IPs y el puerto para intentar TCP
 //                  directo, y un `nonce` nuevo por receptor. NO lleva el
 //                  manifiesto: acertar una sala son 4 digitos y los nombres de
-//                  los archivos ya son informacion.
-//   cli-proof      receptor -> emisor. `secretProof(nonce, secreto)`: demuestra
-//                  que sabe las palabras del codigo. Solo lo manda quien va a
-//                  comer por el relay; por TCP directo la prueba es que AES-GCM
-//                  autentique.
+//                  los archivos ya son informacion. El receptor corta aqui si
+//                  `v` no es la suya: es lo unico que va en claro y lo unico
+//                  que hace falta mirar para saber si se va a entender el resto.
+//   cli-proof      receptor -> emisor. `proofFromKey(clave, nonce)` y `v`:
+//                  demuestra que ha derivado la misma clave scrypt que el
+//                  emisor. Solo lo manda quien va a comer por el relay; por TCP
+//                  directo la prueba es que AES-GCM autentique. Es un HMAC con
+//                  la CLAVE y no un hash del secreto porque pasa por el servidor
+//                  (public/shared/e2ee.js explica por que importa).
 //   cli-denied     emisor -> receptor. El codigo era bueno pero quien envia ha
 //                  dicho que no. Es un rechazo, no un fallo de emparejamiento.
+//                  Con `reason: 'VERSION'` es que el receptor habla otra version.
+//
+//   A PARTIR DE AQUI TODO LO QUE MANDA EL EMISOR VA CIFRADO con la clave de la
+//   sala (AES-256-GCM, cli/src/crypto.js). Los marcos de control viajan como
+//   `{ type: 'cli-sealed', box }` con el marco de siempre dentro (sealFrame /
+//   unsealFrame); los trozos binarios son el paquete [IV][tag][ciphertext] tal
+//   cual. El servidor reenvia igual que antes: para el es ruido con destino.
+//
 //   cli-manifest   emisor -> receptor. La lista de archivos, ya autorizada.
 //   cli-accept     receptor -> emisor. "Listo para recibir": abre el envio.
 //
@@ -697,7 +713,9 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 //                  significa que el emisor se salto su `cli-end`: lo que hubiera
 //                  a medias no esta verificado y su `.part` se tira.
 //   (binario)      emisor -> receptor. Trozos de 64 KiB del archivo en curso, en
-//                  orden. No llevan cabecera: el receptor solo cuenta bytes.
+//                  orden, cada uno cifrado por separado. El receptor descifra y
+//                  cuenta BYTES EN CLARO: los acuses y el progreso hablan del
+//                  archivo, no del cable.
 //   cli-ack        receptor -> emisor. Bytes totales recibidos, cada
 //                  RELAY_ACK_EVERY (2 MB). Ver el control de flujo abajo.
 //   cli-end        emisor -> receptor. Cierra el archivo `index` con su
@@ -735,7 +753,8 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
  * senializacion. La descripcion del protocolo esta justo arriba.
  */
 export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = {}) {
-  const { overwrite = false } = options;
+  const { overwrite = false, key } = options;
+  if (!key) throw new Error('receiveFromRelay necesita la clave de la sala: el relay va cifrado');
   return new Promise((resolve, reject) => {
     let sink = null;
     const reserved = new Set();
@@ -795,9 +814,20 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
         const data = ev.data;
         if (!startTime) startTime = performance.now();
         writeQueue = writeQueue.then(async () => {
-          const chunk = Buffer.isBuffer(data)
+          const packet = Buffer.isBuffer(data)
             ? data
             : Buffer.from(data instanceof ArrayBuffer ? data : await data.arrayBuffer());
+          // Un trozo que no autentica no se escribe ni se cuenta: o lo ha tocado
+          // alguien por el camino o el emisor cifra con otra clave, y en los dos
+          // casos lo que hay que hacer es cortar, no adivinar.
+          let chunk;
+          try {
+            chunk = decryptChunk(packet, key);
+          } catch {
+            const err = new Error('Un trozo del relay no autentica: se corta la descarga.');
+            err.code = 'PROTOCOL_ERROR';
+            throw err;
+          }
           if (sink) {
             await sink.write(chunk);
             totalReceived += chunk.length;
@@ -831,7 +861,19 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
       }
 
       if (msg.t === 'signal') {
-        const { data } = msg;
+        let { data } = msg;
+        // Del emisor solo se acepta lo que viene sellado: un marco en claro con
+        // `type: 'cli-start'` lo podria fabricar cualquiera que este en la sala.
+        if (data?.type !== 'cli-sealed') return;
+        try {
+          data = unsealFrame(data, key);
+        } catch {
+          failWithError(Object.assign(
+            new Error('Un marco de control del relay no autentica: se corta la descarga.'),
+            { code: 'PROTOCOL_ERROR' },
+          ));
+          return;
+        }
         if (data?.type === 'cli-start') {
           if (!startTime) startTime = performance.now();
           writeQueue = writeQueue.then(async () => {

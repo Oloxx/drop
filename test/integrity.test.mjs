@@ -4,6 +4,11 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createSenderServer, receiveFiles, PROTOCOL_VERSION } from '../cli/src/transfer.js';
+import { deriveKey, encryptChunk, sealFrame } from '../cli/src/crypto.js';
+
+// Por el relay todo va cifrado con la clave de la sala, como hace el emisor.
+const RELAY_KEY = deriveKey('4271-lemon-radar-tiger-orbit');
+const sealed = (obj) => JSON.stringify({ t: 'signal', data: sealFrame(obj, RELAY_KEY) });
 
 // El MISMO modulo que usa el navegador, no una copia: el test tiene que caer si
 // alguien rompe la implementacion de verdad.
@@ -165,20 +170,20 @@ test('Relay transfer calculates SHA-256 and verifies file integrity', async () =
   }
 
   const mockWs = new MockWs();
-  const recvPromise = receiveFromRelay(mockWs, manifest, outDir);
+  const recvPromise = receiveFromRelay(mockWs, manifest, outDir, () => {}, { key: RELAY_KEY });
 
   // Send cli-start
-  mockWs.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-start', index: 0, name: 'relay_test.bin', size: content.length } }) });
+  mockWs.emit('message', { data: sealed({ type: 'cli-start', index: 0, name: 'relay_test.bin', size: content.length }) });
 
   // Send chunks
-  mockWs.emit('message', { data: content.subarray(0, 32 * 1024) });
-  mockWs.emit('message', { data: content.subarray(32 * 1024) });
+  mockWs.emit('message', { data: encryptChunk(content.subarray(0, 32 * 1024), RELAY_KEY) });
+  mockWs.emit('message', { data: encryptChunk(content.subarray(32 * 1024), RELAY_KEY) });
 
   // Send cli-end with correct hash
-  mockWs.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-end', index: 0, sha256: hash } }) });
+  mockWs.emit('message', { data: sealed({ type: 'cli-end', index: 0, sha256: hash }) });
 
   // Send cli-done
-  mockWs.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-done' } }) });
+  mockWs.emit('message', { data: sealed({ type: 'cli-done' }) });
 
   const received = await recvPromise;
   assert.equal(received.length, 1);
@@ -206,11 +211,11 @@ test('Relay transfer detects corrupted SHA-256 and throws error', async () => {
   }
 
   const mockWs = new MockWs();
-  const recvPromise = receiveFromRelay(mockWs, manifest, outDir);
+  const recvPromise = receiveFromRelay(mockWs, manifest, outDir, () => {}, { key: RELAY_KEY });
 
-  mockWs.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-start', index: 0, name: 'relay_bad.bin', size: content.length } }) });
-  mockWs.emit('message', { data: content });
-  mockWs.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-end', index: 0, sha256: fakeHash } }) });
+  mockWs.emit('message', { data: sealed({ type: 'cli-start', index: 0, name: 'relay_bad.bin', size: content.length }) });
+  mockWs.emit('message', { data: encryptChunk(content, RELAY_KEY) });
+  mockWs.emit('message', { data: sealed({ type: 'cli-end', index: 0, sha256: fakeHash }) });
 
   await assert.rejects(
     async () => await recvPromise,

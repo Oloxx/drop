@@ -140,6 +140,14 @@ export class Sha256 {
     const hash = [this.h0, this.h1, this.h2, this.h3, this.h4, this.h5, this.h6, this.h7];
     return hash.map((v) => (v >>> 0).toString(16).padStart(8, '0')).join('');
   }
+
+  /** El mismo digest, en bytes: lo que necesita un HMAC para encadenar hashes. */
+  digestBytes() {
+    const hex = this.digest();
+    const out = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  }
 }
 
 /** sha256 hexadecimal de una cadena, con el mismo Sha256 que verifica los archivos. */

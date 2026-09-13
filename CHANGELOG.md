@@ -11,7 +11,18 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+### Seguridad
+- **El relay va cifrado de extremo a extremo.** Cuando no hay TCP directo (o el receptor es un
+  navegador) los archivos pasaban por el servidor en claro; ahora cada trozo y cada marco de
+  control viajan en AES-256-GCM con la clave scrypt del código. El navegador deriva esa clave con
+  una implementación propia de scrypt (`public/shared/scrypt.js`) y la prueba de conocimiento del
+  código pasa a ser un HMAC con la clave, no un hash de las palabras (#3).
+- **Rompe compatibilidad:** `PROTOCOL_VERSION` sube a 2. Un `drop` anterior y uno nuevo se
+  rechazan mutuamente con un mensaje que pide actualizar, en vez de entenderse a medias.
+
 ### Añadido
+- `npm run bench:webrelay`: transferencia real `drop send --relay` → Chrome, comprobando el
+  SHA-256 y que la huella coincide en los dos lados.
 - Tests en Linux, macOS y Windows antes de desplegar a producción, y la suite arranca su propio
   servidor de señalización: `npm test` ya no necesita nada levantado a mano (#22, #23).
 - `LICENSE` (Apache 2.0), `CONTRIBUTING.md` y este `CHANGELOG.md` (#31).

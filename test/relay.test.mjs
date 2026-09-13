@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { receiveFromRelay, RELAY_ACK_EVERY } from '../cli/src/transfer.js';
+import { deriveKey, encryptChunk, sealFrame } from '../cli/src/crypto.js';
 import { startServer } from './helpers.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -53,15 +54,20 @@ test('el receptor por relay acusa recibo cada 2 MB y confirma el final', async (
   const total = CHUNK * CHUNKS;
   const body = crypto.randomBytes(total);
 
-  const ws = fakeWs();
-  const done = receiveFromRelay(ws, [{ name: 'grande.bin', size: total }], out, () => {});
+  // Por el relay todo va cifrado con la clave de la sala: los marcos de control
+  // sellados y cada trozo por separado, como hace el emisor en cli.js.
+  const key = deriveKey('4271-lemon-radar-tiger-orbit');
+  const sealed = (obj) => ({ data: JSON.stringify({ t: 'signal', data: sealFrame(obj, key) }) });
 
-  ws.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-start', index: 0, name: 'grande.bin', size: total } }) });
+  const ws = fakeWs();
+  const done = receiveFromRelay(ws, [{ name: 'grande.bin', size: total }], out, () => {}, { key });
+
+  ws.emit('message', sealed({ type: 'cli-start', index: 0, name: 'grande.bin', size: total }));
   for (let i = 0; i < CHUNKS; i++) {
-    ws.emit('message', { data: body.subarray(i * CHUNK, (i + 1) * CHUNK) });
+    ws.emit('message', { data: encryptChunk(body.subarray(i * CHUNK, (i + 1) * CHUNK), key) });
   }
-  ws.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-end', index: 0, sha256: sha256(body) } }) });
-  ws.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-done' } }) });
+  ws.emit('message', sealed({ type: 'cli-end', index: 0, sha256: sha256(body) }));
+  ws.emit('message', sealed({ type: 'cli-done' }));
 
   const received = await done;
 
@@ -74,6 +80,35 @@ test('el receptor por relay acusa recibo cada 2 MB y confirma el final', async (
 
   assert.equal(received[0].verified, true);
   assert.equal(sha256(fs.readFileSync(path.join(out, 'grande.bin'))), sha256(body));
+
+  fs.rmSync(out, { recursive: true, force: true });
+});
+
+test('el receptor por relay corta si un trozo o un marco no autentican', async () => {
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-relay-'));
+  const key = deriveKey('4271-lemon-radar-tiger-orbit');
+  const otra = deriveKey('4271-apple-bacon-cabin-dance');
+  const sealed = (obj, k = key) => ({ data: JSON.stringify({ t: 'signal', data: sealFrame(obj, k) }) });
+
+  // Trozo cifrado con otra clave: no se escribe, se corta.
+  let ws = fakeWs();
+  let done = receiveFromRelay(ws, [{ name: 'a.bin', size: 10 }], out, () => {}, { key });
+  ws.emit('message', sealed({ type: 'cli-start', index: 0, name: 'a.bin', size: 10 }));
+  ws.emit('message', { data: encryptChunk(Buffer.alloc(10, 1), otra) });
+  await assert.rejects(done, (err) => err.code === 'PROTOCOL_ERROR');
+  assert.ok(ws.sent.some((m) => m.data?.type === 'cli-error'), 'tiene que avisar al emisor');
+  await new Promise((r) => setTimeout(r, 100));   // el borrado del .part no se espera al rechazar
+  assert.ok(!fs.existsSync(path.join(out, 'a.bin')) && !fs.existsSync(path.join(out, 'a.bin.part')));
+
+  // Un marco de control en claro no se acepta: lo podria fabricar cualquiera.
+  ws = fakeWs();
+  done = receiveFromRelay(ws, [{ name: 'b.bin', size: 3 }], out, () => {}, { key });
+  ws.emit('message', { data: JSON.stringify({ t: 'signal', data: { type: 'cli-start', index: 0, name: 'b.bin', size: 3 } }) });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(!fs.existsSync(path.join(out, 'b.bin.part')), 'un cli-start en claro no abre ningun archivo');
+  // Y uno sellado con otra clave corta.
+  ws.emit('message', sealed({ type: 'cli-start', index: 0, name: 'b.bin', size: 3 }, otra));
+  await assert.rejects(done, (err) => err.code === 'PROTOCOL_ERROR');
 
   fs.rmSync(out, { recursive: true, force: true });
 });
