@@ -107,6 +107,72 @@ function showView(name) {
   document.body.dataset.view = name;
 }
 
+// ------------------------------------------------------------------ avisos
+//
+// Una transferencia grande dura minutos y la gente se va a otra pestania. Al
+// terminar suena una campanita corta sintetizada con la Web Audio API (ningun
+// .mp3: la pagina sigue sin pedir nada a nadie) y, si la pestania no esta a la
+// vista, se lanza una notificacion del sistema.
+//
+// El AudioContext se crea y el permiso se pide DENTRO de un click (aceptar la
+// descarga, abrir el canal): fuera de un gesto del usuario el navegador deja el
+// contexto suspendido y la peticion de permiso ni aparece.
+const alerts = {
+  enabled: true,
+  ctx: null,
+};
+try { alerts.enabled = localStorage.getItem('drop.alerts') !== 'off'; } catch { /* sin storage: activado */ }
+
+function paintAlertsToggle() {
+  const el = $('#alerts-toggle');
+  if (!el) return;
+  el.textContent = alerts.enabled ? 'alerts on' : 'alerts off';
+  el.classList.toggle('off', !alerts.enabled);
+}
+
+function armAlerts() {
+  if (!alerts.enabled) return;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx && !alerts.ctx) alerts.ctx = new Ctx();
+    if (alerts.ctx && alerts.ctx.state === 'suspended') alerts.ctx.resume().catch(() => {});
+  } catch { /* sin audio: solo notificacion */ }
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
+/** Dos notas ascendentes (D5 -> A5), medio segundo, bajito. */
+function chime() {
+  const ctx = alerts.ctx;
+  if (!ctx) return;
+  try {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const t = ctx.currentTime;
+    osc.frequency.setValueAtTime(587.33, t);
+    osc.frequency.exponentialRampToValueAtTime(880, t + 0.15);
+    gain.gain.setValueAtTime(0.12, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+    osc.start(t);
+    osc.stop(t + 0.6);
+  } catch { /* un aviso que falla no puede romper nada */ }
+}
+
+/** Fin de una transferencia (bien o mal): campanita, y notificacion si no nos ven. */
+function alertFinished(text) {
+  if (!alerts.enabled) return;
+  chime();
+  if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification('drop', { body: text, tag: 'drop-transfer' });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch { /* idem */ }
+  }
+}
+
 // -------------------------------------------------------------- señalizacion
 
 let ws = null;
@@ -431,6 +497,7 @@ function addFiles(fileList) {
 async function createLink() {
   if (!out.files.length) return;
   $('#create-link').disabled = true;
+  armAlerts();
   try {
     await connectSignaling();
     // `v:2` pide un identificador de sala corto en vez del token largo de la
@@ -535,7 +602,10 @@ function onGuestJoined(guestId) {
     if (conn.nonce) return;      // nada de protocolo antes de la prueba
     if (msg.k === 'accept') queueForStart(conn);
     else if (msg.k === 'ack') { conn.acked = msg.bytes; row.progress(msg.bytes, totalBytes()); }
-    else if (msg.k === 'complete') { conn.acked = totalBytes(); row.file(''); row.finish('delivered'); }
+    else if (msg.k === 'complete') {
+      conn.acked = totalBytes(); row.file(''); row.finish('delivered');
+      alertFinished(label + ' received the payload');
+    }
     else if (msg.k === 'bye') { conn.cancelled = true; resumePeer(conn); row.fail('aborted by peer'); }
     else if (msg.k === 'hold') conn.paused = true;
     else if (msg.k === 'go') resumePeer(conn);
@@ -1105,6 +1175,7 @@ function onControl(msg) {
         }
         if (rx.row) { rx.row.file(''); rx.row.finish('received · ✔ verificado (SHA-256)'); }
         setStatus('transfer complete', 'live');
+        alertFinished('transfer complete · ' + fmtBytes(rx.total) + ' verified');
       });
       break;
   }
@@ -1196,6 +1267,7 @@ function handleIntegrityFailure(index, expected, calculated) {
   if (rx.row) {
     rx.row.fail('error de integridad SHA-256');
   }
+  alertFinished('integrity check failed on ' + name);
   const alertEl = $('#verify-alert');
   if (alertEl) {
     alertEl.hidden = false;
@@ -1298,6 +1370,7 @@ async function diskSink(dirHandle, meta) {
 
 async function acceptTransfer() {
   $('#accept').disabled = true;
+  armAlerts();
 
   rx.makeSink = (meta) => memorySink(meta);
   if (supportsDirectPicker(rx.manifest)) {
@@ -1511,6 +1584,15 @@ $('#retry-form').onsubmit = (e) => {
 
 $('#copy-code').onclick = (e) => copy(out.code, e.currentTarget, 'Copy the code:');
 $('#code-out').onclick = (e) => e.currentTarget.select();
+
+paintAlertsToggle();
+$('#alerts-toggle').onclick = () => {
+  alerts.enabled = !alerts.enabled;
+  try { localStorage.setItem('drop.alerts', alerts.enabled ? 'on' : 'off'); } catch { /* se recuerda solo en esta pestania */ }
+  paintAlertsToggle();
+  // Encenderlo ya es un click: se aprovecha para pedir permiso y desbloquear el audio.
+  if (alerts.enabled) { armAlerts(); chime(); }
+};
 
 // El codigo viaja en el fragmento (#...), que el navegador nunca manda al
 // servidor: no queda en sus logs ni en el Referer. Y ahi va ENTERO, palabras

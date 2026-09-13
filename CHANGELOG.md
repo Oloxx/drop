@@ -21,6 +21,9 @@ Las notas de cada release, con los binarios, están en
   rechazan mutuamente con un mensaje que pide actualizar, en vez de entenderse a medias.
 
 ### Añadido
+- La web avisa al terminar una transferencia: una campanita sintetizada con la Web Audio API
+  (sin ficheros de audio, sigue sin haber peticiones a terceros) y una notificación del
+  sistema si la pestaña no está a la vista. Interruptor `alerts on/off` en la cabecera (#9).
 - `drop send --once` cierra el canal tras la primera descarga completa y `--expire 10m` lo
   hace caducar solo (`90s`, `10m`, `2h`). Ninguno corta una descarga en curso: se deja de
   aceptar gente y se sale al terminar (#28).

@@ -119,6 +119,18 @@ body {
 }
 .nav:hover { color: var(--blue); }
 
+/* El interruptor de avisos va vestido de enlace de navegacion: es un boton
+   porque no lleva a ningun sitio, pero en la cabecera todo tiene el mismo peso. */
+button.nav {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: .78rem;
+  cursor: pointer;
+}
+button.nav.off { text-decoration: line-through; }
+
 .metrics {
   display: grid;
   grid-template-columns: auto 1fr;
