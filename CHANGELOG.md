@@ -11,6 +11,13 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.7.1] — 2026-09-14
+
+### Corregido
+- `drop --help` fallaba en los binarios de la 0.7.0 por un acento grave suelto en el texto de
+  ayuda; el workflow de release lo detectó y la 0.7.0 no llegó a publicarse. Esta es la misma
+  versión con ese arreglo y un test que arranca la ayuda.
+
 ## [0.7.0] — 2026-09-14
 
 > **Rompe compatibilidad con la v0.6.x:** el protocolo pasa a la versión 3 (reanudación).
@@ -223,7 +230,8 @@ Primera release con binarios autónomos.
   navegador.
 - Descubrimiento en la red local por broadcast UDP.
 
-[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.7.0...HEAD
+[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/Oloxx/drop/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/Oloxx/drop/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Oloxx/drop/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/Oloxx/drop/compare/v0.5.1...v0.5.2
