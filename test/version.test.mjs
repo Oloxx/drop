@@ -25,6 +25,17 @@ test('`drop --version` dice lo que dice el package.json', () => {
   assert.equal(out.trim(), `drop v${pkg.version}`);
 });
 
+// La ayuda es un template literal enorme: un acento grave suelto dentro (un
+// `.part` con formato de Markdown) lo parte en dos y `node --check` no lo ve,
+// porque sigue siendo sintaxis valida. La v0.7.0 salio con los cinco binarios
+// reventando en `--help` por eso; el workflow de release lo caza, pero mas
+// vale cazarlo aqui.
+test('`drop --help` arranca y menciona las opciones', () => {
+  const out = execFileSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' });
+  assert.match(out, /--no-resume/);
+  assert.match(out, /--overwrite/);
+});
+
 test('cli.js no tiene una version escrita a mano', () => {
   const source = fs.readFileSync(CLI, 'utf8');
   const hardcoded = source.match(/const VERSION\s*=\s*['"`]/);

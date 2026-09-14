@@ -482,7 +482,7 @@ ${c.bold}OPCIONES:${c.reset}
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --overwrite            Sobrescribe los archivos que ya existan en el destino
                          (por defecto se guarda como "archivo (2).zip")
-  --no-resume            No reanuda un `.part` que hubiera de una descarga
+  --no-resume            No reanuda un .part que hubiera de una descarga
                          cortada: empieza de cero (por defecto se sigue donde
                          se quedó si el emisor confirma que es el mismo archivo)
   --limit <tasa>         Límite de ancho de banda: 500K, 10M, 1.5G (bytes/s).
