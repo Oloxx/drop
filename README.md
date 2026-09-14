@@ -235,19 +235,30 @@ drop recv 4271-lemon-radar-tiger-orbit -o D:\Descargas
 
 # Opcional: sobrescribir los archivos que ya existan en el destino
 drop recv 4271-lemon-radar-tiger-orbit --overwrite
+
+# Opcional: no reanudar una descarga cortada, empezar de cero
+drop recv 4271-lemon-radar-tiger-orbit --no-resume
 ```
 
 **Qué pasa si el archivo ya existe:** por defecto no se pisa nada. Cada archivo se
 escribe primero como `nombre.ext.part` y solo pasa a llamarse `nombre.ext` cuando su
 SHA-256 cuadra; si ese nombre ya está ocupado, el archivo nuevo se guarda como
 `nombre (2).ext`. Con `--overwrite` se reemplaza el archivo existente. Una transferencia
-que se corta a medias no deja nada con el nombre definitivo: el `.part` se borra.
+que se corta a medias no deja nada con el nombre definitivo.
+
+**Si se corta a medias, se reanuda.** El `.part` se queda en disco con lo que llegó, y el
+siguiente `drop recv` con el mismo código sigue desde ahí en vez de empezar de cero, tanto
+por TCP directo como por relay. Antes de aceptarlo, el emisor comprueba que ese prefijo es
+de verdad el principio de su archivo (compara el SHA-256 de los primeros bytes): si el
+`.part` era de otra cosa, el archivo se descarga entero a `nombre (2).ext` y el `.part` no
+se toca. Con `--no-resume` un `.part` cuenta como nombre ocupado y se empieza de cero. Un
+emisor web no sabe reanudar: manda desde el principio.
 
 > **Compatibilidad:** desde la versión 0.5.0 el manifiesto lleva un número de versión de
 > protocolo, así que un receptor 0.5.0+ **rechaza** con un mensaje explícito a un emisor
-> 0.4.2 o anterior en lugar de escribir archivos corruptos. En sentido contrario (emisor
-> nuevo, receptor viejo) todo sigue funcionando. Si ves un error de versión, actualiza
-> `drop` en los dos equipos con `drop update`.
+> 0.4.2 o anterior en lugar de escribir archivos corruptos. La reanudación de descargas
+> sube el protocolo a la versión 3: un `drop` 0.6.x y uno posterior se rechazan mutuamente. Si ves
+> un error de versión, actualiza `drop` en los dos equipos con `drop update`.
 
 #### 3. Test de velocidad entre terminales (`drop speed`)
 Mide la latencia (RTT), velocidad simétrica de subida/bajada y ruta de red (TCP directa o Relay) entre dos clientes CLI:

@@ -8,4 +8,9 @@
 //   1  v0.5.0: manifiesto con version dentro del AEAD; relay en claro.
 //   2  relay cifrado de extremo a extremo (AES-256-GCM con la clave scrypt del
 //      codigo) y prueba de conocimiento derivada de esa clave, no del secreto.
-export const PROTOCOL_VERSION = 2;
+//   3  reanudacion: por TCP el receptor contesta al manifiesto con `ready` (los
+//      `.part` que tiene y el hash de cada uno) y el emisor abre cada archivo
+//      con `start` y el offset desde el que manda; por relay lo mismo dentro de
+//      `cli-accept` y `cli-start`. Un emisor v2 manda datos sin `start` y un
+//      receptor v2 nunca contesta al manifiesto: no se entienden a medias.
+export const PROTOCOL_VERSION = 3;

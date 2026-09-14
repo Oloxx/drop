@@ -11,6 +11,22 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+> **Rompe compatibilidad con la v0.6.x:** el protocolo pasa a la versión 3 (reanudación).
+> Un `drop` viejo y uno nuevo se rechazan con un mensaje que pide `drop update`.
+
+### Añadido
+- **Reanudar transferencias cortadas** en el CLI (#21). Si se cae la conexión (o se mata el
+  receptor) el `.part` se queda con lo que llegó, y el siguiente `drop recv` con el mismo código
+  sigue desde ahí, por TCP directo y por relay. El emisor comprueba antes que el prefijo es de
+  su archivo (SHA-256 de los primeros bytes) para no coser dos descargas distintas: si no
+  cuadra, se manda entero a `nombre (2).ext` y el `.part` ajeno no se toca. `--no-resume`
+  fuerza empezar de cero. La barra de progreso arranca donde se quedó y la velocidad media no
+  cuenta lo que ya estaba en disco.
+- **Rompe compatibilidad:** `PROTOCOL_VERSION` sube a 3. Por TCP directo el receptor contesta
+  al manifiesto con `ready` (los `.part` que tiene) y el emisor abre cada archivo con `start` y
+  su offset; por relay va lo mismo en `cli-accept` y `cli-start`. Un emisor web ignora la
+  petición y manda desde cero, como hasta ahora.
+
 ## [0.6.0] — 2026-09-13
 
 > **Rompe compatibilidad con la v0.5.x:** el protocolo pasa a la versión 2 (relay cifrado).

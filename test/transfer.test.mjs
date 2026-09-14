@@ -83,9 +83,13 @@ function fakeSender(code, files, bodies, opts = {}) {
 
   const server = net.createServer((socket) => {
     socket.on('error', () => {});
+    // El receptor contesta al manifiesto con `ready`; a este emisor le da
+    // igual lo que diga, pero lo lee para no dejarlo colgado en el socket.
+    socket.on('data', () => {});
     socket.write(control(manifest));
 
     for (let i = 0; i < bodies.length; i++) {
+      socket.write(control({ k: 'start', index: i, offset: 0 }));
       if (truncateAfter !== null && i >= truncateAfter) {
         socket.write(packet(dataType, bodies[i]));
         socket.end();
@@ -330,9 +334,18 @@ test('un emisor que corta a media transferencia no deja el archivo con el nombre
 
   await assert.rejects(
     receiveFiles('127.0.0.1', port, code, out, () => {}),
-    (err) => err.code === 'TRUNCATED'
+    (err) => err.code === 'TRUNCATED' && err.resumable === true && err.partBytes === body.length
   );
-  assert.deepEqual(fs.readdirSync(out), []);
+  // El `.part` se queda, con lo que llego, para reanudar; el nombre bueno no.
+  assert.deepEqual(fs.readdirSync(out), ['archivo.bin.part']);
+  assert.equal(fs.readFileSync(path.join(out, 'archivo.bin.part'), 'utf-8'), 'a medias');
+
+  // Con --no-resume (resume: false) el .part que hay es un nombre ocupado y
+  // el siguiente intento va a "archivo (2).bin", como siempre.
+  const port2 = await withSender(t, code, [{ name: 'archivo.bin', size: body.length }], [body]);
+  const received = await receiveFiles('127.0.0.1', port2, code, out, () => {}, 0, { resume: false });
+  assert.equal(received[0].path, path.join(out, 'archivo (2).bin'));
+  assert.ok(fs.existsSync(path.join(out, 'archivo.bin.part')), 'el .part ajeno no se toca');
 });
 
 // -------------------------------------------- colisiones por el camino relay
