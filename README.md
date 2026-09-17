@@ -442,7 +442,7 @@ un `HEALTHCHECK` contra `/healthz`.
 
 Las convenciones del proyecto (idiomas, estilo de comentarios, formato de commits) y cómo montar
 el entorno están en **[CONTRIBUTING.md](CONTRIBUTING.md)**. El historial de versiones, en
-**[CHANGELOG.md](CHANGELOG.md)**.
+**[CHANGELOG.md](CHANGELOG.md)**. Lo que falta para la 1.0, en **[ROADMAP.md](ROADMAP.md)**.
 
 ## 📄 Licencia
 
