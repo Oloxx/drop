@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete, setProgressStream } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
-import { attachSender, receiveFiles, receiveFromRelay, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
+import { attachSender, receiveFiles, receiveFromRelay, verifyPrefix, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
 import { listenOrExplain, watchServerErrors } from './listen.js';
 import { proofFromKey, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
@@ -482,6 +482,9 @@ ${c.bold}OPCIONES:${c.reset}
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --overwrite            Sobrescribe los archivos que ya existan en el destino
                          (por defecto se guarda como "archivo (2).zip")
+  --no-resume            No reanuda un .part que hubiera de una descarga
+                         cortada: empieza de cero (por defecto se sigue donde
+                         se quedó si el emisor confirma que es el mismo archivo)
   --limit <tasa>         Límite de ancho de banda: 500K, 10M, 1.5G (bytes/s).
                          Vale para enviar y para recibir
   --no-qr                No pinta el código QR del enlace (se omite solo si la
@@ -779,10 +782,11 @@ async function runSend(args, options) {
     (current, total, speed, list) => {
       renderProgressBar(current, total, speed, 30, list);
     },
-    ({ totalBytes, totalTimeSec, avgSpeed, socket }) => {
+    ({ totalBytes, totalTimeSec, avgSpeed, socket, resumedBytes }) => {
       renderProgressBarComplete(totalBytes, totalTimeSec, avgSpeed);
       delivered++;
       console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${socket.remoteAddress})!${c.reset}`);
+      if (resumedBytes > 0) console.log(`  ${c.dim}${fmtBytes(resumedBytes)} ya estaban en el receptor: no se han vuelto a mandar.${c.reset}`);
       if (acceptingPeers()) console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
     },
     {
@@ -792,6 +796,7 @@ async function runSend(args, options) {
       onPeer: ({ address, sas: peerSas }) => (acceptingPeers()
         ? askPeer({ who: address || '(dirección desconocida)', sas: peerSas, path: 'TCP directo' })
         : false),
+      onResume: printSenderResume,
       throttle,
     }
   );
@@ -849,12 +854,19 @@ function sendSealed(ws, guestId, obj) {
   ws.send(JSON.stringify({ t: 'signal', to: guestId, data: sealFrame(obj, key) }));
 }
 
-async function streamToWebGuest(guestId, files, ws, onProgress) {
+async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests = []) {
   const CHUNK = 64 * 1024;
   const MAX_IN_FLIGHT = 8 * 1024 * 1024; // Ventana deslizante de 8 MB máximo sin confirmar
   const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
   const manifest = files.map((f) => ({ name: path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) }));
+  // Lo que el receptor dice tener ya (`resume` del cli-accept), por indice.
+  const requests = new Map();
+  for (const r of Array.isArray(resumeRequests) ? resumeRequests : []) {
+    if (r && Number.isInteger(r.index)) requests.set(r.index, r);
+  }
   let totalSent = 0;
+  // Bytes que no ha hecho falta mandar: fuera de la velocidad media.
+  let resumedTotal = 0;
   const startTime = performance.now();
   let lastReport = startTime;
   let lastBytes = 0;
@@ -878,7 +890,16 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
     for (const [index, file] of files.entries()) {
       if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
 
-      const fileHash = crypto.createHash('sha256');
+      // El prefijo que dice tener el receptor se comprueba contra el archivo
+      // antes de aceptarlo (hash de los primeros `offset` bytes): es lo unico
+      // que garantiza que su `.part` es el principio de ESTE archivo.
+      const request = requests.get(index);
+      const accepted = request ? await verifyPrefix(file.path, file.size, request) : null;
+      const startAt = accepted ? accepted.offset : 0;
+      if (request) {
+        printSenderResume({ index, name: manifest[index].name, size: file.size, requested: request.offset, offset: startAt, address: guestId });
+      }
+      const fileHash = accepted ? accepted.hash : crypto.createHash('sha256');
 
       sendSealed(ws, guestId, {
         type: 'cli-start',
@@ -886,12 +907,17 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
         name: path.basename(file.path),
         size: file.size,
         mime: 'application/octet-stream',
+        offset: startAt,
         ...(file.rel ? { path: file.rel } : {}),
       });
+      // El receptor acusa recibo del offset nada mas abrir el archivo: sin ese
+      // acuse esta cuenta dejaria la ventana llena antes del primer trozo.
+      totalSent += startAt;
+      resumedTotal += startAt;
 
       const fd = await fs.promises.open(file.path, 'r');
       const buf = Buffer.allocUnsafe(CHUNK);
-      let offset = 0;
+      let offset = startAt;
 
       try {
         while (offset < file.size) {
@@ -974,11 +1000,25 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
     }
 
     const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
-    const avgSpeed = totalBytes / totalTimeSec;
-    return { totalBytes, totalTimeSec, avgSpeed };
+    const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
+    return { totalBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
   } finally {
     activeStreams.delete(guestId);
     guestAcks.delete(guestId);
+  }
+}
+
+/**
+ * Lado emisor: el receptor ha pedido seguir desde un `.part` y ya se sabe si
+ * el prefijo era de este archivo (`offset` es lo pedido) o no (`offset` 0).
+ */
+function printSenderResume({ name, size, requested, offset, address }) {
+  const quien = address != null ? ` (${address})` : '';
+  if (offset > 0) {
+    const pct = size ? Math.floor((offset / size) * 100) : 0;
+    console.log(`  ${c.cyan}↻ El receptor${quien} ya tiene ${fmtBytes(offset)} (${pct}%) de ${name}: se reanuda desde ahí.${c.reset}`);
+  } else {
+    console.log(`  ${c.yellow}El receptor${quien} tenía ${fmtBytes(requested)} de un ${name} distinto: se manda entero.${c.reset}`);
   }
 }
 
@@ -1085,12 +1125,13 @@ async function streamToWebGuest(guestId, files, ws, onProgress) {
             try {
               const stats = await streamToWebGuest(guest, files, ws, (sent, total, speed, list) => {
                 renderProgressBar(sent, total, speed, 30, list);
-              });
+              }, msg.data.resume);
               renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
               // `cli-complete` solo llega con todo escrito y verificado en el
               // receptor: por relay "entregado" quiere decir eso.
               delivered++;
               console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${guest})!${c.reset}`);
+              if (stats.resumedBytes > 0) console.log(`  ${c.dim}${fmtBytes(stats.resumedBytes)} ya estaban en el receptor: no se han vuelto a mandar.${c.reset}`);
               if (acceptingPeers()) console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
             } catch (err) {
               console.log(`\n\n  ${c.yellow}Receptor (${guest}) interrumpido: ${err.message}${c.reset}`);
@@ -1391,6 +1432,33 @@ async function askRetry(err, retryFn) {
 }
 
 /**
+ * Lado receptor: que pasa con un `.part` que habia en el destino. `check` es
+ * antes de hashearlo (con varios GB tarda, y conviene decir que se esta
+ * haciendo), `resume` cuando el emisor lo ha dado por bueno y `restart` cuando
+ * no era de este archivo y se va a un nombre nuevo.
+ */
+function printReceiverResume({ phase, name, size, offset, requested, path: dest }) {
+  const pct = size ? Math.floor(((phase === 'restart' ? requested : offset) / size) * 100) : 0;
+  if (phase === 'check') {
+    console.log(`  ${c.dim}Hay ${fmtBytes(offset)} (${pct}%) de ${name} en un .part: comprobando con el emisor...${c.reset}`);
+  } else if (phase === 'resume') {
+    console.log(`  ${c.cyan}↻ Reanudando ${name} desde ${fmtBytes(offset)} (${pct}%).${c.reset}`);
+  } else {
+    console.log(`  ${c.yellow}El .part de ${name} era de otro archivo: se descarga entero como ${path.basename(dest)}.${c.reset}`);
+  }
+}
+
+/**
+ * Tras un corte: si se ha conservado un `.part`, decir como seguir. El mismo
+ * comando vale porque el codigo es el mismo mientras el emisor siga abierto.
+ */
+function printResumeHint(err, input) {
+  if (!err?.resumable) return;
+  console.error(`  ${c.dim}Se conservan ${fmtBytes(err.partBytes)} en ${path.basename(err.partPath)}. Para seguir desde ahí, vuelve a ejecutar:${c.reset}`);
+  console.error(`    ${c.yellow}drop recv ${input}${c.reset}\n`);
+}
+
+/**
  * Se llama al conectar por TCP directo, antes de que llegue el manifiesto.
  *
  * Enseña la huella para poder compararla con la del emisor por otro canal, y avisa
@@ -1467,6 +1535,10 @@ async function runRecv(args, options) {
   console.log(`\n${c.bold}Buscando emisor para el código:${c.reset} ${c.cyan}${code}${c.reset}`);
   const throttle = makeThrottle(options.limit);
   if (options.limit) console.log(`  ${c.dim}Límite de bajada: ${fmtBytes(options.limit)}/s (--limit)${c.reset}`);
+  // Reanudacion: un `.part` de una descarga cortada se retoma si el emisor
+  // confirma que es el mismo archivo. Con --stdout no hay nada que retomar (se
+  // recibe en un temporal nuevo) y con --no-resume se empieza de cero.
+  const resumeOpts = { resume: !options.noResume && !options.stdout, onResume: printReceiverResume };
 
   // `--relay` (o DROP_FORCE_RELAY) salta los caminos directos y va derecho al
   // servidor: es la forma de probar ese modo sin montar una NAT de verdad.
@@ -1485,7 +1557,7 @@ async function runRecv(args, options) {
     try {
       const received = await receiveFiles(target.host, target.port, code, outputDir, (current, total, speed, list) => {
         renderProgressBar(current, total, speed, 30, list);
-      }, 0, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle });
+      }, 0, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle, ...resumeOpts });
       if (received.stats) {
         renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
       }
@@ -1496,6 +1568,7 @@ async function runRecv(args, options) {
         return askRetry(err, () => runRecv(args, options));
       }
       console.error(`\n${c.red}Error durante la transferencia LAN: ${err.message}${c.reset}`);
+      printResumeHint(err, input);
       process.exit(1);
     }
   }
@@ -1584,7 +1657,7 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
       try {
         const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed, list) => {
           renderProgressBar(current, total, speed, 30, list);
-        }, 3000, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle });
+        }, 3000, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle, ...resumeOpts });
         if (ws) ws.close();
         if (received.stats) {
           renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1605,6 +1678,13 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
 ${c.red}${err.message}${c.reset}
 `);
           process.exit(1);
+        }
+        // Un corte a media descarga deja su `.part`: el camino por relay que
+        // viene ahora lo encuentra y sigue desde ahi, sin volver a empezar.
+        if (err.resumable) {
+          console.log(`
+  ${c.yellow}La conexión directa se ha cortado: ${err.message}${c.reset}`);
+          console.log(`  ${c.dim}Se conservan ${fmtBytes(err.partBytes)} en ${path.basename(err.partPath)}; se sigue por el servidor de señalización.${c.reset}`);
         }
       }
     }
@@ -1692,7 +1772,7 @@ ${c.red}${err.message}${c.reset}
   try {
     const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed, list) => {
       renderProgressBar(current, total, speed, 30, list);
-    }, { overwrite: options.overwrite, key, throttle });
+    }, { overwrite: options.overwrite, key, throttle, ...resumeOpts });
     if (ws) ws.close();
     if (received.stats) {
       renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1705,6 +1785,7 @@ ${c.red}${err.message}${c.reset}
       return askRetry(err, () => runRecv(args, options));
     }
     console.error(`\n${c.red}Error durante la transferencia Relay: ${err.message}${c.reset}`);
+    printResumeHint(err, input);
     process.exit(1);
   }
 }
@@ -1765,6 +1846,7 @@ async function main() {
     directOnly: false,
     relay: false,
     overwrite: false,
+    noResume: false,
     yes: false,
     once: false,
     expire: null,
@@ -1803,6 +1885,8 @@ async function main() {
       options.relay = true;
     } else if (argv[i] === '--overwrite') {
       options.overwrite = true;
+    } else if (argv[i] === '--no-resume') {
+      options.noResume = true;
     } else if (argv[i] === '--once') {
       options.once = true;
     } else if (argv[i] === '--no-qr') {

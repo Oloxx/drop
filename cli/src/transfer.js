@@ -129,16 +129,31 @@ function occupied(p) {
  * manifiesto con dos `a.zip` se pisaria a si mismo, porque al reservar el segundo
  * el primero todavia no existe en disco (esta en su `.part`).
  */
-export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { overwrite = false, subpath = null } = {}) {
+export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { overwrite = false, subpath = null, resume = false, size = null } = {}) {
   const dest = safeOutputPath(outputDir, rawName, subpath);
   const mine = (p) => reserved.has(sameFileKey(p));
+
+  // Un `.part` que se puede reanudar: un archivo normal (no un enlace ni un
+  // directorio con ese nombre) que no es mas largo que el archivo que viene, y
+  // cuyo nombre bueno no existe todavia. Que sea nuestro de verdad -- y no un
+  // `.part` de otro programa, o de otro archivo que se llamaba igual -- lo
+  // decide el emisor comparando el hash del prefijo; aqui solo se mira si tiene
+  // la pinta. Con `resume` apagado (--no-resume) un `.part` es un nombre ocupado
+  // y se numera, como siempre.
+  const resumable = (p) => {
+    if (!resume || occupied(p)) return null;
+    const st = fs.lstatSync(`${p}.part`, { throwIfNoEntry: false });
+    if (!st || !st.isFile()) return null;
+    if (size != null && st.size > size) return null;
+    return st.size;
+  };
 
   // Con --overwrite el destino se acepta tal cual, salvo que ya lo haya pedido
   // otro archivo de este mismo manifiesto: dos nombres iguales del emisor nunca
   // se pisan entre ellos, con flag o sin flag.
   const libre = overwrite
     ? (p) => !mine(p)
-    : (p) => !mine(p) && !occupied(p) && !occupied(`${p}.part`);
+    : (p) => !mine(p) && !occupied(p) && (!occupied(`${p}.part`) || resumable(p) != null);
 
   let finalPath = dest;
   if (!libre(dest)) {
@@ -147,7 +162,7 @@ export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { ov
     // El tope es para no girar para siempre en un directorio patologico.
     for (; n <= 9999; n++) {
       const candidato = path.join(dir, `${name} (${n})${ext}`);
-      if (!mine(candidato) && !occupied(candidato) && !occupied(`${candidato}.part`)) {
+      if (!mine(candidato) && !occupied(candidato) && (!occupied(`${candidato}.part`) || resumable(candidato) != null)) {
         finalPath = candidato;
         break;
       }
@@ -160,7 +175,53 @@ export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { ov
   }
 
   reserved.add(sameFileKey(finalPath));
-  return { finalPath, partPath: `${finalPath}.part` };
+  return { finalPath, partPath: `${finalPath}.part`, resumeFrom: resumable(finalPath) };
+}
+
+/**
+ * Lee los primeros `offset` bytes de un `.part` y devuelve su SHA-256 junto con
+ * el hash a medio calcular, para seguir sumandole lo que llegue.
+ *
+ * Es el trabajo que hay que hacer si o si para reanudar: el hash final que
+ * verifica el archivo tiene que cubrir tambien lo que ya estaba en disco. El
+ * `sha256` del prefijo se le manda al emisor, que lo compara con el de sus
+ * propios primeros `offset` bytes: si no cuadra, lo que hay en el `.part` es de
+ * otro archivo y se empieza de cero en vez de coser dos descargas distintas.
+ */
+export async function hashPartial(partPath, offset) {
+  const hash = crypto.createHash('sha256');
+  if (offset > 0) {
+    const fd = await fs.promises.open(partPath, 'r');
+    try {
+      const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
+      let pos = 0;
+      while (pos < offset) {
+        const { bytesRead } = await fd.read(buffer, 0, Math.min(CHUNK_SIZE, offset - pos), pos);
+        if (bytesRead === 0) break;
+        hash.update(buffer.subarray(0, bytesRead));
+        pos += bytesRead;
+      }
+      // El archivo ha encogido desde que se miro: se reanuda desde lo que hay.
+      offset = pos;
+    } finally {
+      await fd.close().catch(() => {});
+    }
+  }
+  return { offset, sha256: hash.copy().digest('hex'), hash };
+}
+
+/**
+ * Del lado que TIENE el archivo entero: comprueba que el prefijo que el
+ * receptor dice tener es de verdad el principio de este archivo, y devuelve el
+ * hash ya alimentado con esos bytes para seguir desde ahi. `null` si no cuadra
+ * (o si la peticion no tiene sentido): se manda desde cero.
+ */
+export async function verifyPrefix(filePath, size, request) {
+  const offset = request?.offset;
+  if (!Number.isInteger(offset) || offset <= 0 || offset > size || typeof request.sha256 !== 'string') return null;
+  const { sha256, hash } = await hashPartial(filePath, offset);
+  if (sha256 !== request.sha256) return null;
+  return { offset, hash };
 }
 
 /**
@@ -171,14 +232,28 @@ export function reserveOutputPath(outputDir, rawName, reserved = new Set(), { ov
  * se truncaba lo que ya hubiera ahi, y un fallo de integridad dejaba los bytes
  * malos instalados con el nombre bueno, que es la peor combinacion posible.
  */
-export async function openFileSink({ finalPath, partPath, name, index = null, overwrite = false }) {
+export async function openFileSink({ finalPath, partPath, name, index = null, overwrite = false, resume = null }) {
   // Con carpetas el destino puede estar en un subdirectorio que aun no existe.
   // La ruta ya paso por safeOutputPath, asi que crearla es crear dentro del destino.
   await fs.promises.mkdir(path.dirname(partPath), { recursive: true });
-  // 'wx' falla si el `.part` ya existe; con --overwrite el `.part` es nuestro.
-  const fd = await fs.promises.open(partPath, overwrite ? 'w' : 'wx');
-  const hash = crypto.createHash('sha256');
-  let bytes = 0;
+  let fd;
+  let hash;
+  let bytes;
+  if (resume) {
+    // Reanudacion: el `.part` ya existe y sus primeros `offset` bytes son buenos
+    // (el emisor lo ha confirmado con el hash de `hashPartial`). Se recorta a
+    // ese punto por si tenia algo mas y se sigue escribiendo desde ahi, con el
+    // hash que ya lleva esos bytes sumados.
+    fd = await fs.promises.open(partPath, 'r+');
+    await fd.truncate(resume.offset);
+    hash = resume.hash;
+    bytes = resume.offset;
+  } else {
+    // 'wx' falla si el `.part` ya existe; con --overwrite el `.part` es nuestro.
+    fd = await fs.promises.open(partPath, overwrite ? 'w' : 'wx');
+    hash = crypto.createHash('sha256');
+    bytes = 0;
+  }
   let closed = false;
 
   const close = async () => {
@@ -193,9 +268,11 @@ export async function openFileSink({ finalPath, partPath, name, index = null, ov
     index,
     name: name || path.basename(finalPath),
     get bytes() { return bytes; },
+    resumedFrom: resume ? resume.offset : 0,
 
     async write(buf) {
-      await fd.write(buf);
+      // La posicion va explicita: con 'r+' el descriptor arranca en el byte 0.
+      await fd.write(buf, 0, buf.length, bytes);
       hash.update(buf);
       bytes += buf.length;
     },
@@ -234,15 +311,26 @@ export async function openFileSink({ finalPath, partPath, name, index = null, ov
     },
 
     /**
-     * Interrupcion. Se borra el `.part`: dejarlo haria que el siguiente intento
-     * lo viera ocupado y acabase escribiendo `archivo (2).zip`, que es justo lo
-     * que hace `askRetry` al reintentar. Reanudar transferencias (issue #21)
-     * tendra que conservarlo cuando el corte sea de conexion y negociar un
-     * offset; el cambio queda aqui, en una linea.
+     * Los bytes no valen (el emisor se ha saltado el cierre del archivo, o
+     * `askRetry` va a empezar de cero): se borra el `.part`. Dejarlo haria que
+     * el siguiente intento lo viera ocupado y acabase en `archivo (2).zip`.
      */
     async abort() {
       await close();
       await fs.promises.unlink(partPath).catch(() => {});
+    },
+
+    /**
+     * Se ha caido la conexion: los bytes que hay son buenos hasta donde llegan
+     * y el `.part` se queda para que el siguiente `drop recv` con el mismo
+     * codigo siga desde ahi (`hashPartial` + `ready`/`cli-accept`). Devuelve
+     * cuantos bytes se conservan, para poder decirselo a quien mira.
+     */
+    async detach() {
+      await close();
+      // Un `.part` vacio no tiene nada que reanudar y solo estorba.
+      if (bytes === 0) await fs.promises.unlink(partPath).catch(() => {});
+      return bytes;
     },
   };
 }
@@ -277,10 +365,68 @@ function stillConnected(socket, ms) {
   });
 }
 
+/**
+ * Espera el primer marco de control que mande el receptor por el socket y lo
+ * devuelve ya descifrado y parseado. Es la mitad "de vuelta" del protocolo TCP:
+ * hasta la reanudacion el receptor no escribia nunca en el socket.
+ *
+ * Se rechaza si el socket se cierra antes (un receptor que no entiende el
+ * manifiesto lo corta ahi mismo), si el marco no autentica o no es JSON. No hay
+ * temporizador: un receptor con la version buena contesta en cuanto ha mirado
+ * sus `.part`, y lo que tarde en eso (hashear varios GB) no es un fallo.
+ */
+function readControlFrame(socket, key) {
+  return new Promise((resolve, reject) => {
+    let buffer = Buffer.alloc(0);
+    const cleanup = () => {
+      socket.off('data', onData);
+      socket.off('close', onClose);
+      socket.off('error', onError);
+    };
+    const onClose = () => { cleanup(); reject(new Error('El receptor ha cerrado la conexión antes de contestar al manifiesto.')); };
+    const onError = (err) => { cleanup(); reject(err); };
+    const onData = (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length < 4) return;
+      const len = buffer.readUInt32BE(0);
+      if (buffer.length < 4 + len) return;
+      cleanup();
+      try {
+        const decrypted = decryptChunk(buffer.subarray(4, 4 + len), key);
+        if (decrypted[0] !== 0) throw new Error('no es un marco de control');
+        resolve(JSON.parse(decrypted.subarray(1).toString()));
+      } catch {
+        const err = new Error('El receptor ha contestado con un marco ilegible.');
+        err.code = 'PROTOCOL_ERROR';
+        reject(err);
+      }
+    };
+    socket.on('data', onData);
+    socket.once('close', onClose);
+    socket.once('error', onError);
+  });
+}
+
+// PROTOCOLO TCP DIRECTO, en el orden en que ocurre. Todo va en marcos
+// [longitud UInt32BE][AES-256-GCM(tipo + carga)]: tipo 0x00 es control (JSON),
+// 0x01 son datos del archivo en curso.
+//
+//   manifiesto   emisor -> receptor. `{ v, files: [{ name, size, path? }] }`.
+//   ready        receptor -> emisor. `{ k:'ready', resume: [{ index, offset,
+//                sha256 }] }`: los `.part` que tiene y el hash de cada prefijo.
+//                Va aunque no haya nada que reanudar (`resume: []`): el emisor
+//                no manda un byte hasta recibirlo.
+//   start        emisor -> receptor. `{ k:'start', index, offset }`. Abre el
+//                archivo `index`; `offset` es desde donde vienen los datos: el
+//                pedido si el hash del prefijo cuadraba, 0 si no.
+//   (datos)      trozos del archivo en curso, en orden.
+//   end          emisor -> receptor. `{ k:'end', index, sha256 }` del archivo
+//                ENTERO, prefijo reanudado incluido.
+//   done         emisor -> receptor. No quedan archivos.
 export function attachSender(server, files, code, onProgress, onComplete, options = {}) {
   // La clave se deriva una vez por servidor, no por socket: scrypt cuesta 62 ms.
   const key = deriveKey(code);
-  const { onPeer } = options;
+  const { onPeer, onResume } = options;
   // `--limit`: se pide permiso al cubo por cada trozo antes de escribirlo. Sin
   // limite es un `take` vacio y el camino caliente no cambia.
   const throttle = options.throttle || makeThrottle(0);
@@ -319,10 +465,28 @@ export function attachSender(server, files, code, onProgress, onComplete, option
           v: PROTOCOL_VERSION,
           files: files.map((f) => ({ name: path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) })),
         };
-        const encManifest = encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(manifest))]), key);
-        socket.write(frame(encManifest));
+        const control = (obj) => frame(encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(obj))]), key));
+        // El `ready` se espera desde ANTES de escribir el manifiesto: un receptor
+        // rapido contesta antes de que este bucle vuelva a mirar el socket.
+        const ready = readControlFrame(socket, key);
+        socket.write(control(manifest));
+
+        // 1b. Esperar a que el receptor diga que tiene y desde donde quiere.
+        const answer = await ready;
+        if (answer?.k !== 'ready') {
+          const err = new Error('El receptor no ha contestado al manifiesto con `ready`.');
+          err.code = 'PROTOCOL_ERROR';
+          throw err;
+        }
+        const requests = new Map();
+        for (const r of Array.isArray(answer.resume) ? answer.resume : []) {
+          if (r && Number.isInteger(r.index)) requests.set(r.index, r);
+        }
 
         let sentTotal = 0;
+        // Lo que no ha hecho falta mandar porque el receptor ya lo tenia. La
+        // velocidad media se calcula sin ello: saltarse 3 GB no es ir rapido.
+        let resumedTotal = 0;
         let lastReport = performance.now();
         let lastBytes = 0;
         let speed = 0;
@@ -331,12 +495,28 @@ export function attachSender(server, files, code, onProgress, onComplete, option
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
           if (socket.destroyed) break;
+
+          // Si el receptor tiene un prefijo, se comprueba contra el archivo de
+          // verdad antes de aceptarlo: cuesta leer esos bytes, que es mucho menos
+          // que volver a mandarlos, y es lo unico que garantiza que el `.part`
+          // que hay al otro lado es el principio de ESTE archivo.
+          const request = requests.get(i);
+          const accepted = request ? await verifyPrefix(file.path, file.size, request) : null;
+          const startAt = accepted ? accepted.offset : 0;
+          if (request && onResume) {
+            onResume({ index: i, name: manifest.files[i].name, size: file.size, requested: request.offset, offset: startAt, address: socket.remoteAddress });
+          }
+          if (socket.destroyed) break;
+          socket.write(control({ k: 'start', index: i, offset: startAt }));
+          sentTotal += startAt;
+          resumedTotal += startAt;
+
           const fd = await fs.promises.open(file.path, 'r');
-          const fileHash = crypto.createHash('sha256');
+          const fileHash = accepted ? accepted.hash : crypto.createHash('sha256');
 
           try {
             const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
-            let fileOffset = 0;
+            let fileOffset = startAt;
 
             while (fileOffset < file.size) {
               if (socket.destroyed) throw new Error('Socket cerrado por el receptor');
@@ -352,6 +532,10 @@ export function attachSender(server, files, code, onProgress, onComplete, option
 
               await throttle.take(bytesRead);
               if (!socket.write(packet)) {
+                // Si el receptor se ha ido mientras se leia el trozo, el `write`
+                // devuelve false y no va a haber ni `drain` ni otro `close`:
+                // esperar aqui era quedarse colgado con el archivo abierto.
+                if (socket.destroyed) throw new Error('Socket cerrado por el receptor');
                 await new Promise((resolve, reject) => {
                   const onDrain = () => { cleanup(); resolve(); };
                   const onClose = () => { cleanup(); reject(new Error('Socket cerrado')); };
@@ -388,27 +572,19 @@ export function attachSender(server, files, code, onProgress, onComplete, option
 
           // Enviar control de fin de archivo con SHA-256 (tipo 0)
           const sha256 = fileHash.digest('hex');
-          const endPayload = Buffer.concat([
-            Buffer.from([0]),
-            Buffer.from(JSON.stringify({ k: 'end', index: i, sha256 }))
-          ]);
-          socket.write(frame(encryptChunk(endPayload, key)));
+          socket.write(control({ k: 'end', index: i, sha256 }));
         }
 
         if (socket.destroyed) return;
 
         // Enviar control done (tipo 0)
-        const donePayload = Buffer.concat([
-          Buffer.from([0]),
-          Buffer.from(JSON.stringify({ k: 'done' }))
-        ]);
-        socket.write(frame(encryptChunk(donePayload, key)));
+        socket.write(control({ k: 'done' }));
 
         const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
-        const avgSpeed = totalBytes / totalTimeSec;
+        const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
 
         if (onComplete) {
-          onComplete({ totalBytes, totalTimeSec, avgSpeed, socket });
+          onComplete({ totalBytes, totalTimeSec, avgSpeed, socket, resumedBytes: resumedTotal });
         } else if (onProgress) {
           onProgress(totalBytes, totalBytes, avgSpeed, manifest.files);
         }
@@ -430,10 +606,76 @@ export function createSenderServer(files, code, onProgress, onComplete, options 
 }
 
 /**
+ * Mira que `.part` reanudables hay para un manifiesto y prepara la peticion.
+ *
+ * Reserva todos los nombres de golpe (igual que antes: un nombre imposible en el
+ * ultimo archivo corta sin haber escrito un byte) y, para los que tienen un
+ * `.part` con pinta de servir, hashea el prefijo. Devuelve los destinos, los
+ * planes de reanudacion por indice y la lista `resume` que viaja al emisor.
+ */
+async function planResume(outputDir, entries, reserved, { overwrite, resume, onResume }) {
+  const destPaths = entries.map((f) => reserveOutputPath(outputDir, f.name, reserved, {
+    overwrite, subpath: f.path ?? null, resume, size: Number.isFinite(f.size) ? f.size : null,
+  }));
+  const plans = new Map();
+  const requests = [];
+  for (let i = 0; i < destPaths.length; i++) {
+    const { partPath, resumeFrom } = destPaths[i];
+    if (resumeFrom == null) continue;
+    // Un `.part` vacio se reutiliza igual (abrirlo con 'wx' fallaria), pero
+    // no hay nada que pedirle al emisor por el.
+    if (resumeFrom > 0 && onResume) onResume({ phase: 'check', index: i, name: entries[i].name, size: entries[i].size, offset: resumeFrom });
+    const plan = await hashPartial(partPath, resumeFrom);
+    plans.set(i, plan);
+    if (plan.offset > 0) requests.push({ index: i, offset: plan.offset, sha256: plan.sha256 });
+  }
+  return { destPaths, plans, requests };
+}
+
+/**
+ * Abre el sumidero del archivo `index` con el offset que ha decidido el emisor.
+ *
+ * Si acepto el prefijo (el offset es el que pedimos) se sigue sobre el mismo
+ * `.part`. Si lo rechazo (offset 0) lo que hay en ese `.part` no es de este
+ * archivo: no se toca -- puede ser de otro programa o de otro envio -- y el
+ * archivo va a un nombre nuevo, que es lo que pasaba antes con cualquier
+ * `.part` en el destino. Cualquier otro offset es un emisor que no hace lo que
+ * dice el protocolo.
+ */
+async function openSinkAt(outputDir, entry, index, offset, destPaths, plans, reserved, { overwrite, onResume }) {
+  const plan = plans.get(index);
+  let paths = destPaths[index];
+  let resume = null;
+  if (plan && offset === plan.offset) {
+    resume = plan;
+  } else if (offset !== 0) {
+    const err = new Error(`El emisor empieza ${JSON.stringify(entry.name)} en el byte ${offset}, que no es lo que se le pidió.`);
+    err.code = 'PROTOCOL_ERROR';
+    throw err;
+  } else if (plan) {
+    paths = reserveOutputPath(outputDir, entry.name, reserved, { overwrite, subpath: entry.path ?? null });
+  }
+  if (plan && plan.offset > 0 && onResume) {
+    onResume({ phase: resume ? 'resume' : 'restart', index, name: entry.name, size: entry.size, offset, requested: plan.offset, path: paths.finalPath });
+  }
+  return openFileSink({ ...paths, name: entry.name, index, overwrite, resume });
+}
+
+/** Al reventar una descarga a medias: el `.part` se queda y el error lo dice. */
+async function keepPartial(sink, err) {
+  const kept = await sink.detach().catch(() => 0);
+  if (kept > 0 && err && typeof err === 'object') {
+    err.resumable = true;
+    err.partPath = sink.partPath;
+    err.partBytes = kept;
+  }
+}
+
+/**
  * Cliente TCP del receptor que se conecta al emisor y guarda los archivos
  */
 export function receiveFiles(host, port, code, outputDir, onProgress, connectTimeoutMs = 0, options = {}) {
-  const { overwrite = false, onConnected } = options;
+  const { overwrite = false, onConnected, resume = true, onResume } = options;
   // Del lado receptor el limite frena la LECTURA: el socket esta en pausa
   // mientras se procesa la cola, asi que dormir aqui llena el buffer TCP y el
   // emisor se frena solo por la contrapresion de siempre.
@@ -468,11 +710,13 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
     let buffer = Buffer.alloc(0);
     let manifest = null;
     let destPaths = [];
-    let currentFileIndex = 0;
+    let plans = new Map();
     let sink = null;
     let committed = 0;
     const reserved = new Set();
     let totalReceived = 0;
+    // Bytes que ya estaban en disco: se descuentan de la velocidad media.
+    let resumedTotal = 0;
     let totalBytes = 0;
     let lastReport = performance.now();
     let lastBytes = 0;
@@ -557,12 +801,39 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
             // primer descriptor: si el manifiesto trae una ruta que se sale del
             // destino, la transferencia se corta sin haber escrito ni un byte, y
             // dos archivos con el mismo nombre reciben ya destinos distintos.
-            destPaths = manifest.files.map((f) => reserveOutputPath(outputDir, f.name, reserved, { overwrite, subpath: f.path ?? null }));
+            // De paso se mira que `.part` hay para reanudar y se hashea cada
+            // prefijo: eso es lo que va en el `ready`.
+            const planned = await planResume(outputDir, manifest.files, reserved, { overwrite, resume, onResume });
+            destPaths = planned.destPaths;
+            plans = planned.plans;
             startTime = performance.now();
-            if (manifest.files.length > 0) {
-              sink = await openFileSink({ ...destPaths[0], name: manifest.files[0].name, index: 0, overwrite });
-              receivedFiles.push({ path: sink.finalPath, name: path.basename(sink.finalPath), verified: false });
+            // El emisor no manda un byte hasta recibir esto.
+            socket.write(frame(encryptChunk(
+              Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify({ k: 'ready', resume: planned.requests }))]),
+              key,
+            )));
+            continue;
+          }
+
+          if (msg.k === 'start') {
+            if (sink) {
+              const err = new Error('El emisor abre un archivo sin haber cerrado el anterior.');
+              err.code = 'PROTOCOL_ERROR';
+              throw err;
             }
+            const index = msg.index;
+            if (!Number.isInteger(index) || index < 0 || index >= manifest.files.length) {
+              const err = new Error(`El emisor abre el archivo ${JSON.stringify(index)}, que no está en el manifiesto.`);
+              err.code = 'PROTOCOL_ERROR';
+              throw err;
+            }
+            const offset = Number.isInteger(msg.offset) && msg.offset > 0 ? msg.offset : 0;
+            sink = await openSinkAt(outputDir, manifest.files[index], index, offset, destPaths, plans, reserved, { overwrite, onResume });
+            receivedFiles[index] = { path: sink.finalPath, name: path.basename(sink.finalPath), verified: false, resumedFrom: sink.resumedFrom };
+            // Lo que ya estaba en disco cuenta como recibido: la barra arranca
+            // donde se quedo, no en cero.
+            totalReceived += sink.resumedFrom;
+            resumedTotal += sink.resumedFrom;
             continue;
           }
 
@@ -576,22 +847,12 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
             // entonces renombra: el nombre bueno nunca llega a existir con bytes
             // sin verificar.
             const calcHash = await sink.commit(msg.sha256);
+            const item = receivedFiles[sink.index];
             sink = null;
             committed++;
-            const item = receivedFiles[msg.index] || receivedFiles[receivedFiles.length - 1];
             if (item) {
               item.verified = true;
               item.sha256 = calcHash || msg.sha256;
-            }
-            currentFileIndex = msg.index + 1;
-            if (currentFileIndex < manifest.files.length) {
-              sink = await openFileSink({
-                ...destPaths[currentFileIndex],
-                name: manifest.files[currentFileIndex].name,
-                index: currentFileIndex,
-                overwrite,
-              });
-              receivedFiles.push({ path: sink.finalPath, name: path.basename(sink.finalPath), verified: false });
             }
             continue;
           }
@@ -626,6 +887,31 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
       }
     }
 
+    // Cierre por error, venga de donde venga: del socket o de un paquete que no
+    // se pudo procesar. Se espera a que la cola termine con lo que tenia
+    // (cerrar el archivo debajo de un `write` en curso lo dejaba abierto y
+    // perdia bytes que ya habian llegado) y se cierra el `.part` ANTES de
+    // rechazar: quien espera la promesa mira el directorio en cuanto le llega
+    // el error. El `.part` se queda para reanudar; si el hash no cuadraba,
+    // `commit` ya lo ha borrado y aqui no hay nada que conservar.
+    let finished = false;
+    const finish = async (err) => {
+      if (finished) return;
+      finished = true;
+      if (connTimer) {
+        clearTimeout(connTimer);
+        connTimer = null;
+      }
+      await packetQueue.catch(() => {});
+      if (sink) {
+        const abandoned = sink;
+        sink = null;
+        await keepPartial(abandoned, err);
+      }
+      socket.destroy();
+      reject(err);
+    };
+
     socket.on('data', (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
       packetQueue = packetQueue.then(async () => {
@@ -635,65 +921,42 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
         } finally {
           socket.resume();
         }
-      }).catch(async (err) => {
-        // El `.part` a medias se borra ANTES de rechazar: quien espera la promesa
-        // mira el directorio en cuanto le llega el error, y `socket.destroy` de
-        // aqui abajo hace su limpieza demasiado tarde para eso.
-        if (sink) {
-          const abandoned = sink;
-          sink = null;
-          await abandoned.abort().catch(() => {});
-        }
-        socket.destroy();
-        reject(err);
       });
+      packetQueue.catch(finish);
     });
 
     socket.on('end', async () => {
       try {
         await packetQueue;
-        if (connTimer) {
-          clearTimeout(connTimer);
-          connTimer = null;
-        }
+        if (finished) return;
         // Antes esto resolvia pasara lo que pasara: un emisor que se moria a
         // media transferencia dejaba archivos cortos con su nombre bueno y la
         // promesa daba la descarga por buena.
         if (!manifest || committed < manifest.files.length) {
-          if (sink) {
-            await sink.abort();
-            sink = null;
-          }
           const err = new Error('El emisor ha cerrado la conexión antes de terminar la transferencia.');
           err.code = 'TRUNCATED';
-          throw err;
+          await finish(err);
+          return;
+        }
+        finished = true;
+        if (connTimer) {
+          clearTimeout(connTimer);
+          connTimer = null;
         }
         const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
-        const avgSpeed = totalBytes / totalTimeSec;
-        receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
+        const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
+        receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
         // El emisor ya ha cerrado su mitad: cerrar la nuestra o la conexion se queda
         // a medias y mantiene vivo el proceso de quien use esto como libreria.
         socket.end();
         resolve(receivedFiles);
       } catch (err) {
-        reject(err);
+        finish(err);
       }
     });
 
-    socket.on('error', (err) => {
-      if (connTimer) {
-        clearTimeout(connTimer);
-        connTimer = null;
-      }
-      // El `.part` a medias se borra: dejarlo haria que el siguiente intento lo
-      // viera ocupado y acabase escribiendo `archivo (2).zip`.
-      if (sink) {
-        const abandoned = sink;
-        sink = null;
-        abandoned.abort().catch(() => {});
-      }
-      reject(err);
-    });
+    // Se ha caido la conexion: el `.part` se queda para reanudar.
+    socket.on('error', finish);
   });
 }
 
@@ -742,9 +1005,19 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 //
 //   cli-manifest   emisor -> receptor. La lista de archivos, ya autorizada.
 //   cli-accept     receptor -> emisor. "Listo para recibir": abre el envio.
+//                  Lleva `resume: [{ index, offset, sha256 }]` con los `.part`
+//                  que el receptor ya tiene de este manifiesto y el SHA-256 de
+//                  cada prefijo (vacio si no hay nada). Un emisor que no sepa
+//                  de reanudacion (el web) lo ignora y manda desde cero.
 //
 //   cli-start      emisor -> receptor. Empieza el archivo `index`, con nombre,
-//                  tamano y mime. Un `cli-start` con un archivo aun abierto
+//                  tamano, mime y `offset`: el byte desde el que vienen los
+//                  datos. Es el pedido en `cli-accept` si el emisor ha
+//                  comprobado que el prefijo es suyo (hashea sus primeros
+//                  `offset` bytes y compara), y 0 -- o ausente -- si no. Con
+//                  offset > 0 el receptor acusa recibo al momento: el emisor ha
+//                  sumado ese offset a su cuenta y sin acuse se quedaria parado
+//                  en la ventana. Un `cli-start` con un archivo aun abierto
 //                  significa que el emisor se salto su `cli-end`: lo que hubiera
 //                  a medias no esta verificado y su `.part` se tira.
 //   (binario)      emisor -> receptor. Trozos de 64 KiB del archivo en curso, en
@@ -788,7 +1061,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
  * senializacion. La descripcion del protocolo esta justo arriba.
  */
 export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = {}) {
-  const { overwrite = false, key } = options;
+  const { overwrite = false, key, resume = true, onResume } = options;
   // Por relay no hay contrapresion TCP con el emisor: lo que le frena es que
   // los acuses lleguen tarde, y los acuses salen de esta misma cola, detras de
   // la espera. Con la ventana de 8 MB el emisor se para en cuanto el receptor
@@ -798,8 +1071,11 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
   return new Promise((resolve, reject) => {
     let sink = null;
     const reserved = new Set();
+    let destPaths = [];
+    let plans = new Map();
     let totalBytes = manifest.reduce((acc, f) => acc + (f.size || 0), 0);
     let totalReceived = 0;
+    let resumedTotal = 0;
     let lastReport = performance.now();
     let lastBytes = 0;
     let speed = 0;
@@ -808,6 +1084,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
     let writeQueue = Promise.resolve();
     let lastAckBytes = 0;
     let idleTimer = null;
+    let settled = false;
 
     fs.mkdirSync(outputDir, { recursive: true });
 
@@ -827,25 +1104,27 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
       idleTimer.unref?.();
     };
 
-    const cleanup = () => {
+    // Deja de escuchar y cierra el archivo a medias, si lo hay. El `.part` se
+    // queda en disco para reanudar (el nombre bueno nunca se creo, asi que no
+    // hay nada que corregir), y `err` sale marcado como reanudable.
+    const cleanup = async (err = null) => {
       ws.removeEventListener('message', onMsg);
       if (idleTimer) {
         clearTimeout(idleTimer);
         idleTimer = null;
       }
       if (sink) {
-        // Se abandona el archivo a medias sin dejar el `.part` de rastro; el
-        // nombre bueno nunca se creó, así que no hay nada que corregir.
         const abandoned = sink;
         sink = null;
-        abandoned.abort().catch(() => {});
+        await keepPartial(abandoned, err);
       }
     };
 
     const failWithError = (err) => {
+      if (settled) return;
+      settled = true;
       sendSignal({ type: 'cli-error', message: err.message });
-      cleanup();
-      reject(err);
+      cleanup(err).finally(() => reject(err));
     };
 
     const onMsg = (ev) => {
@@ -926,11 +1205,35 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
               sink = null;
             }
             const idx = data.index || 0;
-            // Aquí los nombres llegan de uno en uno, así que el conjunto de
-            // reservas se arrastra entre mensajes en vez de calcularse de golpe.
-            const paths = reserveOutputPath(outputDir, data.name || 'archivo', reserved, { overwrite, subpath: data.path ?? null });
-            sink = await openFileSink({ ...paths, name: data.name, index: idx, overwrite });
-            receivedFiles.push({ path: sink.finalPath, name: path.basename(sink.finalPath), verified: false });
+            const offset = Number.isInteger(data.offset) && data.offset > 0 ? data.offset : 0;
+            // Los destinos se reservaron al aceptar, a partir del manifiesto.
+            // Un `cli-start` que no cuadra con el (indice fuera de rango, o un
+            // emisor que retransmite con otro nombre) se reserva aqui al vuelo,
+            // arrastrando el mismo conjunto de reservas.
+            const entry = destPaths[idx] && manifest[idx]?.name === data.name
+              ? manifest[idx]
+              : null;
+            if (entry) {
+              sink = await openSinkAt(outputDir, { ...entry, path: data.path ?? entry.path ?? null }, idx, offset, destPaths, plans, reserved, { overwrite, onResume });
+            } else {
+              if (offset !== 0) {
+                const err = new Error(`El emisor empieza ${JSON.stringify(data.name)} en el byte ${offset} sin haberlo pedido.`);
+                err.code = 'PROTOCOL_ERROR';
+                throw err;
+              }
+              const paths = reserveOutputPath(outputDir, data.name || 'archivo', reserved, { overwrite, subpath: data.path ?? null });
+              sink = await openFileSink({ ...paths, name: data.name, index: idx, overwrite });
+            }
+            receivedFiles[idx] = { path: sink.finalPath, name: path.basename(sink.finalPath), verified: false, resumedFrom: sink.resumedFrom };
+            if (sink.resumedFrom > 0) {
+              totalReceived += sink.resumedFrom;
+              resumedTotal += sink.resumedFrom;
+              // El emisor ha sumado el offset a su cuenta de enviados: sin este
+              // acuse se queda parado en la ventana antes de mandar el primer
+              // trozo, porque el acuse normal solo sale al recibir datos.
+              lastAckBytes = totalReceived;
+              sendSignal({ type: 'cli-ack', bytes: totalReceived });
+            }
           }).catch(failWithError);
         } else if (data?.type === 'cli-end') {
           writeQueue = writeQueue.then(async () => {
@@ -961,9 +1264,10 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
             // soltar la ventana: se manda con todo ya escrito en disco.
             sendSignal({ type: 'cli-complete', bytes: totalReceived });
             const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
-            const avgSpeed = totalBytes / totalTimeSec;
-            receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
-            cleanup();
+            const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
+            receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
+            settled = true;
+            await cleanup();
             resolve(receivedFiles);
           }).catch(failWithError);
         }
@@ -975,21 +1279,34 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
       failWithError(err);
     }, { once: true });
     ws.addEventListener('close', () => {
-      cleanup();
+      if (settled) return;
+      settled = true;
       if (receivedFiles.length > 0 && totalReceived >= totalBytes) {
-        if (!receivedFiles.stats) {
-          const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
-          const avgSpeed = totalBytes / totalTimeSec;
-          receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed };
-        }
-        resolve(receivedFiles);
+        cleanup().then(() => {
+          if (!receivedFiles.stats) {
+            const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
+            const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
+            receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
+          }
+          resolve(receivedFiles);
+        });
       } else {
-        reject(new Error('Conexión cerrada por el servidor antes de completar la descarga'));
+        const err = new Error('Conexión cerrada por el servidor antes de completar la descarga');
+        cleanup(err).finally(() => reject(err));
       }
     }, { once: true });
 
-    // Notificar al emisor que estamos listos para recibir por Relay
+    // Antes de decirle al emisor que mande, se mira que hay en el destino: los
+    // nombres se reservan del manifiesto entero y los `.part` con pinta de
+    // servir se hashean. El emisor comprueba cada prefijo contra su archivo y
+    // contesta en cada `cli-start` desde donde manda de verdad.
     armIdleTimer();
-    sendSignal({ type: 'cli-accept' });
+    planResume(outputDir, manifest, reserved, { overwrite, resume, onResume }).then(({ destPaths: d, plans: p, requests }) => {
+      if (settled) return;
+      destPaths = d;
+      plans = p;
+      armIdleTimer();
+      sendSignal({ type: 'cli-accept', resume: requests });
+    }).catch(failWithError);
   });
 }

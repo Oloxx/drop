@@ -114,11 +114,13 @@ test('TCP transfer detects corrupted chunks and triggers INTEGRITY_MISMATCH', as
 
   const server = net.createServer((socket) => {
     socket.setNoDelay(true);
+    socket.on('data', () => {}); // el `ready` del receptor, que aqui no importa
     // 1. Manifest
     const manifest = { v: PROTOCOL_VERSION, files: [{ name: 'file1.bin', size: content1.length }] };
     socket.write(frame(encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(manifest))]), key)));
 
-    // 2. Data
+    // 2. Start + Data
+    socket.write(frame(encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify({ k: 'start', index: 0, offset: 0 }))]), key)));
     socket.write(frame(encryptChunk(Buffer.concat([Buffer.from([1]), content1]), key)));
 
     // 3. Corrupt end packet with wrong hash
