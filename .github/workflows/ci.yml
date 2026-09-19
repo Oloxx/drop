@@ -47,3 +47,24 @@ jobs:
       # La suite levanta su propio servidor en un puerto efimero y lo apaga al
       # acabar, asi que no hay nada que preparar antes.
       - run: npm test
+
+  audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Solo las dependencias que se despliegan (`express` y `ws`, y lo que
+      # arrastran): un aviso en `playwright-core` no llega a produccion. A partir
+      # de `moderate` para que un `low` sin arreglo no bloquee un deploy.
+      - run: npm audit --omit=dev --audit-level=moderate
+      # Que siga habiendo dos dependencias de produccion. Anadir una tiene que
+      # ser una decision, no un `npm install` que se cuela.
+      - run: |
+          count=$(node -p "Object.keys(require('./package.json').dependencies).length")
+          test "$count" -eq 2 || { echo "hay $count dependencias de produccion, se esperaban 2"; exit 1; }
