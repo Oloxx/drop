@@ -31,19 +31,19 @@ de cifrado y no salen nunca de tu equipo. Detalle completo en
 | **Instalación** | **Cero**. Solo abrir el navegador | **Auto-instalable** (1 clic) sin dependencias |
 | **Protocolo** | WebRTC DataChannel | Sockets TCP directos + LAN UDP Broadcast |
 | **Velocidad** | ~15 MB/s (límite SCTP del navegador) | **100–115 MB/s** (satura Gigabit / Wi-Fi 6) |
-| **Compatibilidad** | Navegador a Navegador | **CLI a CLI** y **CLI a Web Browser** |
+| **Compatibilidad** | Con otro navegador y con el CLI | Con otro CLI y con el navegador (las cuatro combinaciones, ver [Interoperabilidad](#4-interoperabilidad-total-cli--web-browser)) |
 
 ---
 
-## 📥 Descargas (Versión v0.7.1)
+## 📥 Descargas (Versión v0.8.0)
 
-Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.7.1](https://github.com/Oloxx/drop/releases/tag/v0.7.1):
+Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.8.0](https://github.com/Oloxx/drop/releases/tag/v0.8.0):
 
-* **Windows (x64):** [`drop-v0.7.1-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.7.1/drop-v0.7.1-windows-x64.exe)
-* **Linux (x64):** [`drop-v0.7.1-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.7.1/drop-v0.7.1-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-v0.7.1-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.7.1/drop-v0.7.1-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-v0.7.1-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.7.1/drop-v0.7.1-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.7.1-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.7.1/drop-v0.7.1-macos-x64.tar.gz)
+* **Windows (x64):** [`drop-v0.8.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.8.0/drop-v0.8.0-windows-x64.exe)
+* **Linux (x64):** [`drop-v0.8.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.8.0/drop-v0.8.0-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-v0.8.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.8.0/drop-v0.8.0-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-v0.8.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.8.0/drop-v0.8.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-v0.8.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.8.0/drop-v0.8.0-macos-x64.tar.gz)
 
 
 ### Verificar la descarga
@@ -65,7 +65,7 @@ Esa clave pública es la del proyecto; la privada solo la usa el workflow de rel
 sha256sum -c SHA256SUMS --ignore-missing
 
 # Windows (PowerShell)
-Get-FileHash drop-v0.7.1-windows-x64.exe -Algorithm SHA256
+Get-FileHash drop-v0.8.0-windows-x64.exe -Algorithm SHA256
 ```
 
 `drop update` hace las dos por su cuenta antes de sustituir el ejecutable y aborta si algo no cuadra. Con una release anterior a la v0.5.2, que no lleva firma, avisa y exige `--allow-unsigned` para seguir: así, borrar la firma no basta para que se conforme con el hash.
@@ -75,7 +75,7 @@ Get-FileHash drop-v0.7.1-windows-x64.exe -Algorithm SHA256
 ## 🛠️ Instalación en el Sistema
 
 ### Windows
-Simplemente **descarga [`drop-v0.7.1-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.7.1/drop-v0.7.1-windows-x64.exe) y haz doble clic sobre él**.
+Simplemente **descarga [`drop-v0.8.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.8.0/drop-v0.8.0-windows-x64.exe) y haz doble clic sobre él**.
 1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
 2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
 3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
@@ -83,8 +83,8 @@ Simplemente **descarga [`drop-v0.7.1-windows-x64.exe`](https://github.com/Oloxx/
 ### Linux / macOS
 Descarga el archivo correspondiente, extráelo y ejecútalo con `install`:
 ```bash
-tar -xzf drop-v0.7.1-linux-x64.tar.gz
-./drop-v0.7.1-linux-x64 install
+tar -xzf drop-v0.8.0-linux-x64.tar.gz
+./drop-v0.8.0-linux-x64 install
 ```
 *(O muévelo manualmente a tu ruta del sistema: `sudo mv drop-linux-x64 /usr/local/bin/drop && chmod +x /usr/local/bin/drop`)*
 
@@ -273,12 +273,12 @@ drop speed <código>
 #### 4. Interoperabilidad total (CLI ↔ Web Browser)
 Cualquiera recibe de cualquiera, en las cuatro combinaciones:
 
-| Emisor → Receptor | Camino | Cifrado |
-|---|---|---|
-| Web → Web | WebRTC DataChannel, directo o por TURN | DTLS |
-| CLI → CLI | TCP directo (LAN, UPnP) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código |
-| CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código |
-| Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código |
+| Emisor → Receptor | Camino | Cifrado | Reanuda un corte |
+|---|---|---|---|
+| Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | No: el receptor web no guarda `.part` (#58) |
+| CLI → CLI | TCP directo (LAN, UPnP) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código) |
+| CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | No (#58) |
+| Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código | No: el emisor web ignora el `offset` y manda desde cero (#58) |
 
 * Si envías con `drop send` y el destinatario **no tiene la terminal**, abre el enlace en **Chrome,
   Edge, Firefox o Safari**, o entra en la web y teclea el código: verá los archivos y el botón
@@ -371,15 +371,17 @@ en voz alta no regale un verificador offline de 44 bits. El diseño completo est
 El diseño completo, con el razonamiento y los límites, está comentado en la cabecera de
 [`public/shared/codes.js`](public/shared/codes.js).
 
-### Compatibilidad con la v0.3.5
+### Versiones que se hablan entre sí
 
-Los binarios ya distribuidos usan tokens de 96 bits (`T_9q_4uzB9iJAf8x`), donde el token entero
-**era** la clave de cifrado. Darles un identificador de 4 dígitos les dejaría el AES en 13 bits,
-así que el servidor **sigue sirviéndoles el formato viejo**: solo entrega códigos nuevos a los
-clientes que lo piden explícitamente (`v:2`). Un cliente v0.4.0 también sabe *recibir* con un
-código antiguo. Emparejar una v0.3.5 con una v0.4.0 no funciona (los formatos de código son
-distintos) y no se puede arreglar sin debilitar a una de las dos. Todo el camino antiguo está
-marcado `@deprecated` y se elimina en la v0.5.0.
+Mientras la versión mayor sea `0`, una versión menor puede romper el protocolo, y cuando lo hace
+se dice en el [CHANGELOG](CHANGELOG.md). Hoy:
+
+* Dos `drop` tienen que compartir `PROTOCOL_VERSION` (la 3 desde la v0.7.0); si no, se rechazan
+  con un mensaje que pide `drop update` en vez de entenderse a medias. La web comprueba lo
+  mismo al recibir de un CLI.
+* Los tokens de la v0.3.5 (`T_9q_4uzB9iJAf8x`, 96 bits que además eran la clave de cifrado)
+  dejaron de aceptarse en la v0.8.0: el servidor contesta `VERSION` a un cliente que no pide
+  códigos memorizables, y ni el CLI ni la web los reconocen ya como código.
 
 ---
 

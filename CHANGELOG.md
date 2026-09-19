@@ -11,6 +11,40 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.8.0] — 2026-09-20
+
+> **Rompe compatibilidad con la v0.3.5:** el token largo (`T_9q_4uzB9iJAf8x`) deja de existir
+> en las tres partes. `PROTOCOL_VERSION` no cambia: una v0.7.x y una v0.8.0 se siguen hablando.
+
+### Eliminado
+- **El camino de la v0.3.5.** El servidor ya no sirve tokens de 96 bits a quien no pide
+  `v:2`: contesta `VERSION` y cierra. `parseCode` y `splitForKey` no reconocen el token viejo
+  (`legacy` desaparece de lo que devuelven), `deriveKey` pierde la rama HKDF y el CLI el aviso
+  de "código en formato antiguo". Estaba marcado `@deprecated` desde la v0.4.0 para irse en la
+  v0.5.0. `/speed` sigue teniendo un identificador largo, pero lo pide con `link: true`.
+
+### Añadido
+- **Cuota de caudal para el relay WebSocket** (#56). `DROP_RELAY_LIMIT` (por sala) y
+  `DROP_RELAY_LIMIT_TOTAL` (todo el proceso), en `10M`, `500K`, `1.5G` como `--limit`. Al
+  pasarse el servidor pausa el socket el tiempo justo y el emisor se frena por contrapresión:
+  ninguna transferencia se corta, llega entera y más despacio. Sin definir no cambia nada.
+  Están en `.env.example`, en `docker-compose.yml` y en `DEPLOY-VPS.md`.
+- **Métricas en `/healthz`:** salas e invitados activos, salas abiertas desde el arranque,
+  bytes y frames relayed, veces que ha saltado la cuota y rechazos por motivo (`NOT_FOUND`,
+  `RATE_LIMITED`, `ROOM_FULL`, `VERSION`…). Viven en el proceso y vuelven a cero al reiniciar.
+- **Vista para navegadores sin WebRTC.** Sin `RTCPeerConnection` (Tor Browser, Firefox con
+  `media.peerconnection.enabled=false`) la web explica el motivo y enseña el código que venía
+  en el enlace para abrirlo en otro navegador o con el CLI, en vez de fallar al abrir el canal.
+- `SECURITY.md`: cómo reportar, qué versiones tienen soporte y el modelo de amenazas en corto.
+- Checklist de release en `CONTRIBUTING.md`.
+- `npm audit --omit=dev --audit-level=moderate` en el CI, y un guardia para que `dependencies`
+  siga teniendo dos entradas.
+
+### Cambiado
+- La tabla de interoperabilidad del README dice qué combinación reanuda un corte, y la de
+  "Dos modos de uso" ya no afirma que la compatibilidad es solo CLI → Web.
+- `express` arrastraba un `qs` con dos avisos moderados; `package-lock.json` actualizado.
+
 ## [0.7.1] — 2026-09-14
 
 ### Corregido

@@ -17,12 +17,12 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       CLI encima de `receiveFromRelay` en `cli/src/transfer.js`: marcos JSON, trozos binarios,
       cadena de relay (`relay`/`linked`/`orphaned`/`resume`/`hold`/`go`), qué va en banda y qué
       por el canal de control. Hoy vive repartido entre `CLAUDE.md` y `app.js`.
-- [ ] **Quitar el camino de la v0.3.5** (`@deprecated` en `server/index.js`, `cli/src/cli.js`,
-      `cli/src/crypto.js`). El README decía que se iba en la v0.5.0 y sigue ahí; la 1.0 no
-      debería arrastrar un formato de código con AES de 96 bits en el token.
-- [ ] **Tabla de interoperabilidad en el README**: Web↔Web, CLI↔CLI, CLI→Web, Web→CLI, con
-      qué transporte usa cada una (TCP directo, relay cifrado, DataChannel) y qué reanuda. La
-      tabla de "Dos modos de uso" aún dice que la compatibilidad es solo CLI→Web.
+- [x] **Quitar el camino de la v0.3.5** (`@deprecated` en `server/index.js`, `cli/src/cli.js`,
+      `cli/src/crypto.js`). Hecho en la v0.8.0: el servidor contesta `VERSION` a quien no pide
+      `v:2`, y `parseCode` ya no reconoce el token largo.
+- [x] **Tabla de interoperabilidad en el README**: Web↔Web, CLI↔CLI, CLI→Web, Web→CLI, con
+      qué transporte usa cada una (TCP directo, relay cifrado, DataChannel) y qué reanuda.
+      Hecho en la v0.8.0, con la columna de reanudación y la fila de "Dos modos" corregida.
 - [ ] **Reanudación en todas las combinaciones que puedan** (#58): Web→CLI respetando el
       `offset` de `cli-accept`, receptor web con File System Access escribiendo a `.part`. Y
       dejar por escrito dónde no hay reanudación posible (receptor web sin disco).
@@ -51,18 +51,18 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 
 ## Servidor y despliegue
 
-- [ ] **Cuota de caudal para el relay WebSocket** (#56): TURN tiene credenciales efímeras, el
-      relay propio no tiene nada y es el que paga el ancho de banda del VPS.
-- [ ] **Métricas mínimas** en `/healthz` o un `/metrics`: salas activas, invitados, bytes
-      relayed, conexiones rechazadas por cuota. Sin esto no hay forma de saber si el límite
-      de #56 está bien puesto.
+- [x] **Cuota de caudal para el relay WebSocket** (#56): `DROP_RELAY_LIMIT` por sala y
+      `DROP_RELAY_LIMIT_TOTAL` por proceso desde la v0.8.0. Pausa el socket, no corta.
+- [x] **Métricas mínimas** en `/healthz`: salas, invitados, bytes y frames relayed, pausas
+      por cuota y rechazos por motivo. Desde la v0.8.0.
 - [ ] **Decidir la escala**: las salas viven en un `Map` y una sola instancia es una
       restricción documentada. Para la 1.0 o se acepta explícitamente (y se quita `fly.toml`
       y la alternativa Fly del README, que no se prueba) o se mueven las salas a Redis.
 - [ ] **Copia de seguridad y rotación** del `.env` de valhalla (`TURN_SECRET`,
       `DROP_SIGNING_KEY`), con el procedimiento escrito en `DEPLOY-VPS.md`.
-- [ ] **`npm audit` y actualización de dependencias en CI** (son dos: `express` y `ws`, más
-      `playwright-core` en dev; que siga siendo así).
+- [x] **`npm audit` y actualización de dependencias en CI**: job `audit` en `ci.yml`, solo
+      producción y a partir de `moderate`, y falla si `dependencies` deja de tener dos entradas.
+      Desde la v0.8.0.
 
 ## Distribución del CLI
 
@@ -87,8 +87,8 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [ ] **Revisión externa** o al menos una pasada formal sobre `crypto.js`, `e2ee.js`,
       `scrypt.js`, `sas.js` y la derivación de claves. Son implementaciones propias y la 1.0
       las promete.
-- [ ] **`SECURITY.md`** con lo que ya dice `CONTRIBUTING.md` sobre reportar fallos, para que
-      GitHub lo enlace desde la pestaña de seguridad y el aviso salga en el sitio esperado.
+- [x] **`SECURITY.md`** con cómo reportar, qué versiones tienen soporte y el modelo de
+      amenazas en corto. Desde la v0.8.0; el documento largo del punto de arriba sigue pendiente.
 - [ ] **Subresource integrity o hash publicado de `app.js`** por release, para que quien
       quiera pueda comprobar que el servidor sirve el código del repositorio.
 
@@ -98,15 +98,14 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       tres. El `accept` con índices es un cambio de protocolo, así que va antes de congelar.
 - [ ] **Accesibilidad básica**: foco visible, `aria-live` en la fila de progreso, contraste
       del tema Tokyo Night verificado, todo operable con teclado.
-- [ ] **Página de error para navegadores sin WebRTC** en vez de un fallo silencioso.
+- [x] **Página de error para navegadores sin WebRTC** en vez de un fallo silencioso. Desde la
+      v0.8.0: vista `unsupported`, con el código del enlace a la vista para abrirlo en otro sitio.
 
 ## Documentación y proceso
 
 - [ ] **README en inglés** además del español, o al menos la parte de instalación y uso. La
       web ya es en inglés; el proyecto se anuncia en un idioma y se documenta en otro.
-- [ ] **Checklist de release** en `CONTRIBUTING.md`: tests en las tres plataformas, `CHANGELOG`
-      con la sección movida de *Sin publicar*, enlaces del README, firma verificada con el
-      `minisign` real, `drop update` desde la versión anterior.
+- [x] **Checklist de release** en `CONTRIBUTING.md` ("Publicar una versión"). Desde la v0.8.0.
 - [ ] **Cerrar o descartar** cada issue abierto con `P3` que no entre: #38 (mDNS), #39
       (servidor de señalización embebido). Una 1.0 con quince issues de "algún día" abiertos
       no dice nada; una con cinco decididos, sí.

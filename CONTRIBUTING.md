@@ -107,13 +107,43 @@ decisiones que parecen simplificables y no lo son -- por qué los trozos y los m
 control van por canales distintos, por qué un relay tiene que volver a trocear lo que reenvía --
 y cada una está ahí porque romperla costó una tarde.
 
+## Publicar una versión
+
+Una release son dos commits y un tag; el workflow `release.yml` hace el resto (compila los
+cinco binarios, firma `SHA256SUMS`, verifica la firma con el `minisign` real y publica). Lo que
+no puede comprobar la máquina va en esta lista, en este orden:
+
+1. **`npm test` en verde en las tres plataformas.** Localmente pasa en una; el CI de la PR
+   cubre las otras dos. No se etiqueta con la matriz en rojo.
+2. **Si cambia el protocolo**, sube `PROTOCOL_VERSION` en `public/shared/protocol.js` y
+   di en el `CHANGELOG` que rompe compatibilidad y con qué versiones. Un cambio de protocolo
+   sin subir el número deja dos versiones entendiéndose a medias, que es peor que rechazarse.
+3. **`CHANGELOG.md`:** mueve *Sin publicar* a una sección `[X.Y.Z] — AAAA-MM-DD` y deja
+   *Sin publicar* vacía.
+4. **`README.md`:** los enlaces de descarga apuntan a la versión nueva
+   (`test/version.test.mjs` lo comprueba). La prosa que nombra versiones concretas ("a partir de
+   la v0.5.2") se deja como está.
+5. **`ROADMAP.md`:** marca lo que entra y quita lo que ya no aplica.
+6. Commit de docs (`docs: enlaces de descarga y changelog para la vX.Y.Z`) y, encima, el de
+   versión con el tag:
+
+   ```bash
+   npm version X.Y.Z -m "chore(release): v%s"
+   git push --follow-tags
+   ```
+
+7. Cuando el workflow termine, **`drop update` desde la versión anterior** en al menos una
+   máquina real: es la única prueba de extremo a extremo de la firma y de que el binario
+   arranca fuera del CI. `minisign -Vm SHA256SUMS -P <clave del README>` sobre lo descargado
+   también vale como comprobación independiente.
+8. Abre la web en producción y haz una transferencia entre dos pestañas. El deploy es
+   automático con el push a `main`, pero nadie lo ha mirado hasta que alguien lo mira.
+
 ## Seguridad
 
 Si encuentras un fallo con impacto en seguridad, **no abras una issue pública**: escribe por
-[advisory privado](https://github.com/Oloxx/drop/security/advisories/new). Lo que trata el
-proyecto como parte de su modelo de amenazas está en el README; en resumen: el
-servidor no ve los archivos, el token de sala es un secreto que viaja en el fragmento de la URL,
-y las releases van firmadas.
+[advisory privado](https://github.com/Oloxx/drop/security/advisories/new). El modelo de
+amenazas, con lo que cubre y lo que no, está en [SECURITY.md](SECURITY.md).
 
 ## Licencia
 
