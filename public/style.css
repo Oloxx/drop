@@ -185,7 +185,8 @@ main { max-width: var(--col); margin: 0 auto; }
 
 .view { display: none; flex-direction: column; gap: 1.25rem; }
 body[data-view="send"] .view[data-name="send"],
-body[data-view="recv"] .view[data-name="recv"] { display: flex; }
+body[data-view="recv"] .view[data-name="recv"],
+body[data-view="unsupported"] .view[data-name="unsupported"] { display: flex; }
 
 h1 {
   margin: 0;

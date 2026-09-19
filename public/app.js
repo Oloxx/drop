@@ -1948,6 +1948,24 @@ $('#alerts-toggle').onclick = () => {
 let fragment = location.hash.slice(1);
 try { fragment = decodeURIComponent(fragment); } catch { /* %-escapes rotos: se usa tal cual */ }
 fragment = fragment.replace(/[^A-Za-z0-9_\- ]/g, '');
+
+// Sin `RTCPeerConnection` no hay nada que hacer: la pagina cargaria, dejaria
+// soltar un archivo y reventaria al abrir el canal con un `ReferenceError` que
+// nadie ve. Tor Browser y un Firefox con `media.peerconnection.enabled=false`
+// llegan aqui. Si venia un codigo en el enlace se ensenia, que es lo unico que
+// hace falta para abrirlo en otro navegador o con el CLI.
+if (typeof RTCPeerConnection === 'undefined') {
+  showView('unsupported');
+  setStatus('unsupported', 'bad');
+  if (fragment) {
+    const el = $('#unsupported-code');
+    el.hidden = false;
+    el.textContent = `code in this link: ${fragment}`;
+  }
+  fragment = '';
+  // Dejar el estado montado (`window.__drop`) sigue siendo util para el bench.
+}
+
 if (fragment) {
   showView('recv');
   try {

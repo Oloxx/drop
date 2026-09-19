@@ -76,6 +76,18 @@
     <div class="peers" id="peers"></div>
   </section>
 
+  <!-- ---------- Sin WebRTC (navegador viejo, Tor, WebRTC apagado) ---------- -->
+  <section class="view" data-name="unsupported">
+    <h1><span class="prompt">❯</span> no webrtc</h1>
+    <p class="lead">This browser has no <code>RTCPeerConnection</code>, and the files travel
+      on one: there is no fallback through a server, on purpose.</p>
+    <p class="hint">Usual causes: a very old browser, Tor Browser, or WebRTC switched off in
+      the settings (<code>media.peerconnection.enabled</code> in Firefox, a privacy
+      extension in Chrome). Open the same link in Chrome, Edge, Firefox or Safari, or use the
+      CLI, which needs no browser at all.</p>
+    <p class="hint" id="unsupported-code" hidden></p>
+  </section>
+
   <!-- ---------- Recibir (solo se llega abriendo un enlace) ---------- -->
   <section class="view" data-name="recv">
     <h1><span class="prompt">❯</span> <span id="recv-title">handshake…</span></h1>
