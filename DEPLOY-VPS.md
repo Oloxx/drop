@@ -117,6 +117,34 @@ mete `turn:TU_DOMINIO:3478` con ese `username` y ese `credential`, y comprueba q
 candidato de tipo `relay`. Si solo salen `host` y `srflx`, el TURN no está llegando: casi siempre
 es el paso 1b, o las IPs de `--external-ip`.
 
+### Cuota de caudal del relay
+
+El TURN va con credenciales que caducan, pero el relay WebSocket propio (el camino `--relay`
+del CLI y las transferencias CLI ↔ navegador) pasa por tu VPS y es el que paga el ancho de
+banda. Por defecto no tiene tope; con `DROP_RELAY_LIMIT` en el `.env` se limita **por sala** y
+con `DROP_RELAY_LIMIT_TOTAL` entre todas (`10M`, `500K`, `1.5G`, bytes por segundo):
+
+```bash
+DROP_RELAY_LIMIT=10M
+DROP_RELAY_LIMIT_TOTAL=50M
+```
+
+Al pasarse **no se corta nada**: el servidor deja de leer del socket el tiempo justo y el emisor
+se frena solo por la contrapresión; la transferencia termina íntegra, solo más despacio. Al
+arrancar lo confirma (`caudal del relay: 10485760 B/s por sala | ...`), y `/healthz` dice si
+está saltando:
+
+```bash
+curl -s https://TU_DOMINIO/healthz
+# {"ok":true,"rooms":2,"guests":3,"uptime":86400,"roomsOpened":41,
+#  "relay":{"bytes":734003200,"frames":11200,"throttled":57,"limit":10485760,"limitTotal":52428800},
+#  "rejected":{"NOT_FOUND":3,"RATE_LIMITED":1}}
+```
+
+`relay.throttled` es cuántas veces se ha pausado un socket; si es cero durante días el límite
+no está haciendo nada, y si `rejected` acumula `RATE_LIMITED` o `TOO_MANY_ROOMS` alguien está
+barriendo. Los contadores viven en el proceso y vuelven a cero al reiniciarlo, a propósito.
+
 Actualizar después de tocar código:
 
 ```bash

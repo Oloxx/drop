@@ -37,26 +37,14 @@ export function deriveKey(code) {
   const cached = keyCache.get(code);
   if (cached) return cached;
 
-  const { roomId, secret, legacy } = splitForKey(code);
-
-  let key;
-  if (legacy) {
-    // @deprecated Camino de la v0.3.5: token base64url de 96 bits. Ahi el token
-    // entero ERA el secreto y tenia entropia de sobra, asi que HKDF bastaba.
-    // Se mantiene solo para poder recibir de binarios ya distribuidos; se elimina
-    // en la v0.5.0 junto con el resto del soporte de codigos viejos.
-    const salt = crypto.createHash('sha256').update('drop-salt-v1').digest();
-    key = crypto.hkdfSync('sha256', Buffer.from(code), salt, Buffer.from('drop-e2ee-key'), 32);
-    key = Buffer.from(key);
-  } else {
-    const salt = crypto.createHash('sha256').update(`drop-code-v2|${roomId}`).digest();
-    key = crypto.scryptSync(Buffer.from(secret, 'utf-8'), salt, 32, {
-      N: SCRYPT_N,
-      r: SCRYPT_R,
-      p: SCRYPT_P,
-      maxmem: SCRYPT_MAXMEM,
-    });
-  }
+  const { roomId, secret } = splitForKey(code);
+  const salt = crypto.createHash('sha256').update(`drop-code-v2|${roomId}`).digest();
+  const key = crypto.scryptSync(Buffer.from(secret, 'utf-8'), salt, 32, {
+    N: SCRYPT_N,
+    r: SCRYPT_R,
+    p: SCRYPT_P,
+    maxmem: SCRYPT_MAXMEM,
+  });
 
   keyCache.set(code, key);
   return key;

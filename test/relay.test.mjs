@@ -140,6 +140,54 @@ function runCli(args) {
   return proc;
 }
 
+/**
+ * Transferencia real CLI -> CLI por el relay, con el servidor arrancado con `env`.
+ * Devuelve los segundos que tardo la descarga (medidos desde el `recv`).
+ */
+async function relayRoundTrip(env, sizeMb) {
+  const server = await startServer(env);
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-e2e-'));
+  const outDir = path.join(work, 'destino');
+  fs.mkdirSync(outDir);
+
+  const body = crypto.randomBytes(sizeMb * 1024 * 1024);
+  const src = path.join(work, 'grande.bin');
+  fs.writeFileSync(src, body);
+
+  const sender = runCli(['send', src, '--server', server.http, '--relay']);
+  let receiver = null;
+  try {
+    const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
+    const t0 = performance.now();
+    receiver = runCli(['recv', code, '--server', server.http, '--relay', '-o', outDir]);
+    const exitCode = await receiver.exited;
+    const seconds = (performance.now() - t0) / 1000;
+
+    assert.equal(exitCode, 0, `el receptor falló:
+${receiver.output}
+--- emisor ---
+${sender.output}`);
+    const got = fs.readFileSync(path.join(outDir, 'grande.bin'));
+    assert.equal(got.length, body.length);
+    assert.equal(sha256(got), sha256(body), 'el archivo recibido no coincide');
+    await sender.waitFor(/Transferencia completada con éxito/, 15_000);
+    return seconds;
+  } finally {
+    receiver?.kill('SIGKILL');
+    sender.kill('SIGKILL');
+    server.proc.kill('SIGKILL');
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
+// Con `DROP_RELAY_LIMIT` puesto la transferencia tiene que llegar entera, solo
+// mas despacio: el servidor pausa el socket, no descarta frames (#56). 12 MB a
+// 4 MB/s no pueden bajar de ~2 s; sin limite, en loopback, tarda menos de uno.
+test('relay CLI -> CLI con DROP_RELAY_LIMIT llega integro y frenado', { timeout: 120_000 }, async () => {
+  const seconds = await relayRoundTrip({ DROP_RELAY_LIMIT: '4M' }, 12);
+  assert.ok(seconds >= 2, `12 MB a 4 MB/s no pueden tardar ${seconds.toFixed(2)} s`);
+});
+
 test('relay CLI -> CLI entrega un archivo por encima de la ventana de 8 MB', { timeout: 120_000 }, async () => {
   const server = await startServer();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-e2e-'));

@@ -18,9 +18,6 @@ const BROADCAST_PORT = 42424;
  * Si se emitiese un hash del codigo completo, ese hash seria un verificador
  * offline de un secreto de 44 bits regalado a toda la LAN cada 600 ms: se rompe
  * con SHA-256 en minutos. Por eso el secreto no entra aqui de ninguna forma.
- *
- * Con codigos v0.3.5 el identificador de sala ES el token entero, asi que el hash
- * sale byte a byte igual que antes y los binarios viejos se siguen encontrando.
  */
 export function roomHash(code) {
   const { roomId } = splitForKey(code);

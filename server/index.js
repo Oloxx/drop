@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 3000;
 // limita los `join` fallidos por IP y quema las salas cuyo emisor denuncia
 // receptores que no saben el secreto.
 
-/** @type {Map<string, {host: import('ws').WebSocket, guests: Map<number, import('ws').WebSocket>, createdAt: number, lastActivity: number, badGuests: number}>} */
+/** @type {Map<string, {host: import('ws').WebSocket, guests: Map<number, import('ws').WebSocket>, createdAt: number, lastActivity: number, badGuests: number, relay: {rate: number, tokens: number, at: number} | null}>} */
 const rooms = new Map();
 let nextGuestId = 1;
 
@@ -31,19 +31,20 @@ const num = (name, fallback) => {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 };
 
-// Token base64url de 96 bits: el formato de la v0.3.5. Se sigue sirviendo a
-// quien no pide `v:2` por dos motivos distintos:
-//   · @deprecated los binarios ya distribuidos no saben pedirlo, y para ellos el
-//     token ES el material de clave: darles 4 digitos les romperia el cifrado.
-//     Este motivo desaparece en la v0.5.0.
-//   · la pagina /speed no necesita un codigo dictable (se comparte por enlace),
-//     asi que le viene mejor un identificador largo e inadivinable.
-const LEGACY_TOKEN_BYTES = 12;
+// Dos formatos de identificador de sala:
+//   · 4 digitos publicos (`randomRoomId`) para `drop send` y la web: el secreto
+//     son las palabras, que nunca llegan aqui.
+//   · 96 bits base64url para /speed, que se comparte por enlace y no tiene mas
+//     secreto que el propio identificador: le hace falta que sea inadivinable.
+// El token largo fue tambien el formato de la v0.3.5, donde ademas era la clave
+// de cifrado. Ese camino se elimino en la v0.8.0: un cliente que no pide `v:2`
+// recibe `VERSION` en vez de un token que ya no sabria usar.
+const LINK_TOKEN_BYTES = 12;
 
-function newRoomId(legacy) {
+function newRoomId(link) {
   for (let attempt = 0; attempt < 200; attempt++) {
-    const id = legacy
-      ? randomBytes(LEGACY_TOKEN_BYTES).toString('base64url')
+    const id = link
+      ? randomBytes(LINK_TOKEN_BYTES).toString('base64url')
       : randomRoomId(randomBytes);
     if (!rooms.has(id)) return id;
   }
@@ -52,8 +53,8 @@ function newRoomId(legacy) {
   return null;
 }
 
-// El identificador de sala nuevo ya es publico, pero el token viejo era la llave
-// entera: en los logs va solo un prefijo, que basta para seguir una sesion.
+// El identificador de 4 digitos ya es publico, pero el token largo de /speed es
+// la llave entera: en los logs va solo un prefijo, que basta para seguir una sesion.
 const tag = (token) => (token.length <= ROOM_ID_DIGITS ? token : token.slice(0, 4) + '...');
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
@@ -168,6 +169,81 @@ function takeToken(ws) {
   ws.tokens--;
   return true;
 }
+
+// ------------------------------------------------------- caudal del relay
+//
+// Los frames binarios no pasan por el cubo de arriba (una transferencia por relay
+// son ~160 frames/s de 64 KiB, muy por encima de cualquier ritmo sano de control),
+// asi que hasta aqui el unico tope era `maxPayload`. El TURN tiene credenciales
+// efimeras; el relay propio, que es el que paga el ancho de banda del VPS, no
+// tenia nada: con `--relay` cualquiera lo usaba como tuberia ilimitada entre dos
+// CLI que se hablarian por TCP directo (#56).
+//
+// Dos cubos de bytes que admiten deficit, como `cli/src/throttle.js`: uno por
+// sala (`DROP_RELAY_LIMIT`) y otro para el proceso entero (`DROP_RELAY_LIMIT_TOTAL`),
+// para que 25 salas a tope no saturen la linea. Al excederse NO se corta nada:
+// se deja de leer del socket (`ws.pause()`) el tiempo que tarde en haber fichas,
+// la contrapresion llega al emisor por TCP y por sus acuses, y la transferencia
+// termina integra, solo mas despacio. Sin definir, no cambia nada.
+//
+// `rate()` entiende `10M`, `500K`, `1.5G` (base 1024) y bytes a secas, igual que
+// `--limit` en el CLI. `0`, vacio o basura desactivan el limite.
+function rate(name) {
+  const raw = String(process.env[name] || '').trim().toLowerCase();
+  const m = raw.match(/^(\d+(?:\.\d+)?)\s*([kmg])?(?:b|ib|b\/s)?$/);
+  if (!m) return 0;
+  const factor = { k: 1024, m: 1024 ** 2, g: 1024 ** 3 }[m[2]] || 1;
+  const value = Math.round(Number(m[1]) * factor);
+  return value > 0 ? value : 0;
+}
+const RELAY_LIMIT = rate('DROP_RELAY_LIMIT');
+const RELAY_LIMIT_TOTAL = rate('DROP_RELAY_LIMIT_TOTAL');
+
+function makeBucket(bytesPerSec) {
+  return { rate: bytesPerSec, tokens: bytesPerSec, at: Date.now() };
+}
+
+/** Descuenta `bytes` y devuelve cuantos ms hay que esperar (0 si sobran fichas). */
+function drain(bucket, bytes) {
+  if (!bucket) return 0;
+  const now = Date.now();
+  bucket.tokens = Math.min(bucket.rate, bucket.tokens + ((now - bucket.at) / 1000) * bucket.rate);
+  bucket.at = now;
+  bucket.tokens -= bytes;
+  return bucket.tokens < 0 ? Math.ceil((-bucket.tokens / bucket.rate) * 1000) : 0;
+}
+
+const relayTotal = RELAY_LIMIT_TOTAL ? makeBucket(RELAY_LIMIT_TOTAL) : null;
+
+// Un socket pausado no dispara `message`, y `ws` deja de leer del TCP: el
+// emisor ve la ventana llena y se frena solo. Se reanuda con un timer, nunca
+// desde otro frame, porque no hay otro frame mientras esta pausado.
+function throttleRelay(ws, room, bytes) {
+  const wait = Math.max(drain(room.relay, bytes), drain(relayTotal, bytes));
+  if (wait <= 0 || ws.paused) return;
+  ws.paused = true;
+  metrics.relay.throttled++;
+  ws.pause();
+  const timer = setTimeout(() => {
+    ws.paused = false;
+    if (ws.readyState === ws.OPEN) ws.resume();
+  }, wait);
+  timer.unref?.();
+}
+
+// ---------------------------------------------------------------- metricas
+//
+// Contadores del proceso, expuestos en /healthz. Sin ellos no hay forma de saber
+// si `DROP_RELAY_LIMIT` esta bien puesto o si alguien se esta comiendo el cupo de
+// salas: el log dice que paso, no cuanto. Se reinician con el proceso, a proposito:
+// no hay estado en disco y no se quiere.
+const metrics = {
+  startedAt: Date.now(),
+  roomsOpened: 0,
+  relay: { bytes: 0, frames: 0, throttled: 0 },
+  rejected: {},   // motivo -> veces (NOT_FOUND, RATE_LIMITED, ROOM_FULL, ...)
+};
+const reject = (reason) => { metrics.rejected[reason] = (metrics.rejected[reason] || 0) + 1; };
 
 // ------------------------------------------------------- origenes permitidos
 //
@@ -335,7 +411,24 @@ app.get('/config', (_req, res) => {
   res.json({ iceServers, ttl: TURN_TTL });
 });
 
-app.get('/healthz', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
+app.get('/healthz', (_req, res) => {
+  let guests = 0;
+  for (const room of rooms.values()) guests += room.guests.size;
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    rooms: rooms.size,
+    guests,
+    uptime: Math.round((Date.now() - metrics.startedAt) / 1000),
+    roomsOpened: metrics.roomsOpened,
+    relay: {
+      ...metrics.relay,
+      limit: RELAY_LIMIT,
+      limitTotal: RELAY_LIMIT_TOTAL,
+    },
+    rejected: metrics.rejected,
+  });
+});
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'] }));
 
@@ -378,6 +471,8 @@ wss.on('connection', (ws, req) => {
       // minutos u horas: si esto no cuenta como actividad, el barrido de salas
       // inactivas cierra la sala en mitad del envio.
       room.lastActivity = Date.now();
+      metrics.relay.bytes += raw.length;
+      metrics.relay.frames++;
       if (ws.role === 'host') {
         if (raw.length < 4) return;
         const toGuestId = raw.readUInt32BE(0);
@@ -387,12 +482,16 @@ wss.on('connection', (ws, req) => {
       } else if (ws.role === 'guest') {
         if (room.host && room.host.readyState === 1) room.host.send(raw, { binary: true });
       }
+      // Despues de reenviar, no antes: el frame ya esta en memoria y pausar
+      // ahora solo retrasa el siguiente, que es lo que se quiere.
+      if (room.relay || relayTotal) throttleRelay(ws, room, raw.length);
       return;
     }
 
     // El cubo solo mide frames de control. Los binarios ya van acotados por
     // `maxPayload` y por el hecho de que hay que estar dentro de una sala.
     if (!takeToken(ws)) {
+      reject('FLOOD');
       send(ws, { t: 'error', reason: 'FLOOD' });
       log('socket cortado por inundacion desde', ws.clientIp || '(ip desconocida)');
       ws.close();
@@ -412,35 +511,52 @@ wss.on('connection', (ws, req) => {
         // Un socket abre como mucho una sala (`ws.role` lo impide despues), asi
         // que abrir muchas es abrir muchos sockets: lo que se cuenta es la IP.
         if (tooManyRooms(ws.clientIp)) {
+          reject('TOO_MANY_ROOMS');
           send(ws, { t: 'error', reason: 'TOO_MANY_ROOMS' });
           log('demasiadas salas abiertas desde', ws.clientIp || '(ip desconocida)');
           ws.close();
           return;
         }
+        // `v:2` es el cliente diciendo "se de codigos memorizables, dame solo el
+        // identificador publico". Un binario v0.3.5 no lo manda, y para el ese
+        // token largo era la clave de cifrado: mejor decirle que actualice que
+        // darle algo que no puede usar.
+        if (msg.v !== 2) {
+          reject('VERSION');
+          send(ws, { t: 'error', reason: 'VERSION' });
+          log('cliente sin v:2 (anterior a la v0.4.0) desde', ws.clientIp || '(ip desconocida)');
+          ws.close();
+          return;
+        }
         // Con codigos de 4 digitos `newRoomId` ya se niega a las ~10.000 salas,
-        // pero los tokens largos de la v0.3.5 no tienen ese techo natural.
+        // pero los tokens largos de /speed no tienen ese techo natural.
         if (rooms.size >= MAX_ROOMS) {
+          reject('NO_ROOMS');
           send(ws, { t: 'error', reason: 'NO_ROOMS' });
           log('tope de salas alcanzado |', rooms.size);
           return;
         }
-        // `v:2` es el cliente diciendo "se de codigos memorizables, dame solo el
-        // identificador publico". Quien no lo manda es un binario v0.3.5 y se le
-        // sigue dando el token largo de siempre. @deprecated
-        const legacy = msg.v !== 2;
-        const token = newRoomId(legacy);
+        // `link:true` es /speed: sala compartida por enlace, sin palabras, asi que
+        // el identificador tiene que ser largo e inadivinable.
+        const link = msg.link === true;
+        const token = newRoomId(link);
         if (!token) {
+          reject('NO_ROOMS');
           send(ws, { t: 'error', reason: 'NO_ROOMS' });
           log('sin identificadores de sala libres | salas activas:', rooms.size);
           return;
         }
         const now = Date.now();
-        rooms.set(token, { host: ws, guests: new Map(), createdAt: now, lastActivity: now, badGuests: 0 });
+        rooms.set(token, {
+          host: ws, guests: new Map(), createdAt: now, lastActivity: now, badGuests: 0,
+          relay: RELAY_LIMIT ? makeBucket(RELAY_LIMIT) : null,
+        });
+        metrics.roomsOpened++;
         noteRoom(ws.clientIp);
         ws.role = 'host';
         ws.token = token;
-        send(ws, { t: 'hosted', token, room: token, v: legacy ? 1 : 2, publicIp: ws.clientIp });
-        log('sala abierta', tag(token), legacy ? '(codigo v1)' : '', '| salas activas:', rooms.size);
+        send(ws, { t: 'hosted', token, room: token, v: 2, publicIp: ws.clientIp });
+        log('sala abierta', tag(token), link ? '(enlace)' : '', '| salas activas:', rooms.size);
         break;
       }
 
@@ -457,12 +573,14 @@ wss.on('connection', (ws, req) => {
         // una vez no le quede castigo pegado durante un minuto.
         if (!room) {
           if (tooManyFailures(ws.clientIp)) {
+            reject('RATE_LIMITED');
             send(ws, { t: 'error', reason: 'RATE_LIMITED' });
             log('demasiados intentos fallidos desde', ws.clientIp || '(ip desconocida)');
             ws.close();
             return;
           }
           noteFailure(ws.clientIp);
+          reject('NOT_FOUND');
           send(ws, { t: 'error', reason: 'NOT_FOUND' });
           log('enlace caducado o invalido', token ? tag(token) : '(vacio)');
           return;
@@ -472,6 +590,7 @@ wss.on('connection', (ws, req) => {
         // encima de este numero es mas probable que sea alguien llenando la sala
         // que una entrega de verdad.
         if (room.guests.size >= MAX_GUESTS) {
+          reject('ROOM_FULL');
           send(ws, { t: 'error', reason: 'ROOM_FULL' });
           log('sala llena', tag(token), '| receptores:', room.guests.size);
           return;
@@ -505,11 +624,13 @@ wss.on('connection', (ws, req) => {
         if (!room) return;
         const guest = room.guests.get(msg.guestId);
         if (guest) {
+          reject('BAD_SECRET');
           send(guest, { t: 'error', reason: 'BAD_SECRET' });
           guest.close();
         }
         if (++room.badGuests >= BAD_GUEST_MAX) {
           log('sala quemada por intentos fallidos de secreto', tag(ws.token));
+          reject('BURNED');
           closeRoom(ws.token, 'BURNED');
         }
         break;
@@ -582,6 +703,8 @@ server.listen(PORT, () => {
   // Una lista mal puesta se nota como "la web no conecta" y nada mas: dejarla
   // escrita al arrancar es lo que ahorra buscarlo a ciegas.
   log('origenes permitidos:', ORIGIN_ANY ? '(cualquiera)' : [...ALLOWED_ORIGINS].join(', '));
+  log('caudal del relay:', RELAY_LIMIT ? RELAY_LIMIT + ' B/s por sala' : 'sin limite por sala',
+      '|', RELAY_LIMIT_TOTAL ? RELAY_LIMIT_TOTAL + ' B/s en total' : 'sin limite total');
   // Un TURN configurado a medias no da error: simplemente no se ofrece, y las
   // conexiones que necesitaban relay fallan sin explicacion. Mejor decirlo aqui.
   if (process.env.TURN_URL && !process.env.TURN_SECRET) {

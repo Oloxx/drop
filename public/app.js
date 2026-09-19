@@ -577,8 +577,8 @@ async function createLink() {
   armAlerts();
   try {
     await connectSignaling();
-    // `v:2` pide un identificador de sala corto en vez del token largo de la
-    // v0.3.5. El servidor sigue sirviendo el formato viejo a quien no lo pida.
+    // `v:2` pide un identificador de sala de 4 digitos: las palabras las
+    // sorteamos aqui y el servidor no las ve nunca.
     wsSend({ t: 'host', v: 2 });
   } catch (err) {
     $('#create-link').disabled = false;
@@ -1228,6 +1228,7 @@ const JOIN_ERRORS = {
   TOO_MANY_ROOMS: 'Too many channels opened from this network. Wait a minute and try again.',
   EXPIRED: 'Channel expired: it sat idle too long. Ask for a fresh one.',
   FLOOD: 'The server cut the connection: too many messages.',
+  VERSION: 'This page is too old for the server. Reload it.',
 };
 
 // Lo que ve el emisor cuando el servidor le cierra la sala por su cuenta.
@@ -1236,6 +1237,7 @@ const HOST_ERRORS = {
   EXPIRED: 'channel expired · idle',
   TOO_MANY_ROOMS: 'too many channels · wait a minute',
   FLOOD: 'disconnected · too many messages',
+  VERSION: 'page too old · reload',
 };
 
 function onJoinError(reason) {

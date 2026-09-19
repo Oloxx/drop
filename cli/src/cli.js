@@ -1494,11 +1494,6 @@ async function runRecv(args, options) {
   // lo único que puede salir a la red: al servidor y al broadcast de la LAN.
   const code = parsed.code;
   const roomId = parsed.roomId;
-  if (parsed.legacy) {
-    // @deprecated Código de la v0.3.5. Se acepta para poder recibir de emisores
-    // ya distribuidos; se elimina en la v0.5.0.
-    console.log(`\n  ${c.yellow}Aviso: código en formato antiguo (v0.3.5). Sigue funcionando, pero pídele al emisor que actualice.${c.reset}`);
-  }
   // --stdout: el contenido va por stdout, asi que TODO lo demas -- mensajes,
   // barra de progreso, errores -- tiene que irse a stderr. Se recibe en un
   // temporal, con todas las comprobaciones de siempre, y se vuelca al final.

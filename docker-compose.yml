@@ -22,6 +22,9 @@ services:
       TURN_URL: "turn:${DROP_DOMAIN}:3478"
       TURN_SECRET: "${TURN_SECRET}"
       TURN_TTL_SECONDS: "${TURN_TTL_SECONDS:-43200}"
+      # Caudal del relay (ver .env.example). Vacio = sin limite.
+      DROP_RELAY_LIMIT: "${DROP_RELAY_LIMIT:-}"
+      DROP_RELAY_LIMIT_TOTAL: "${DROP_RELAY_LIMIT_TOTAL:-}"
 
   # Caddy saca y renueva el certificado de Let's Encrypt solo, y proxea
   # WebSockets sin configuracion extra.

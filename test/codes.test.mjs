@@ -45,8 +45,7 @@ test('un codigo generado tiene el formato y la entropia esperados', () => {
   const code = newCode(randomRoomId(randomBytes), randomBytes);
   assert.match(code, /^[0-9]{4}(-[a-z]{3,8}){4}$/);
 
-  const { roomId, words, secret, legacy } = parseCode(code);
-  assert.equal(legacy, false);
+  const { roomId, words, secret } = parseCode(code);
   assert.equal(roomId.length, ROOM_ID_DIGITS);
   assert.equal(words.length, SECRET_WORDS);
   assert.equal(secret, words.join('-'));
@@ -146,14 +145,12 @@ test('normalizeCode e isRoomId hacen lo que dicen', () => {
   assert.equal(formatCode('4271', ['lemon', 'radar', 'tiger', 'orbit']), '4271-lemon-radar-tiger-orbit');
 });
 
-// @deprecated Compatibilidad con los codigos de la v0.3.5.
-test('los tokens base64url de la v0.3.5 se siguen aceptando', () => {
-  const viejo = 'T_9q_4uzB9iJAf8x';
-  const parsed = parseCode(viejo);
-  assert.equal(parsed.legacy, true);
-  assert.equal(parsed.roomId, viejo);         // el token entero era el identificador
-  assert.equal(parsed.secret, '');
-  assert.equal(parseCode(`https://drop.oloxx.dev/#${viejo}`).code, viejo);
+// El token de la v0.3.5 (`T_9q_4uzB9iJAf8x`) dejo de aceptarse en la v0.8.0. Si
+// volviese a colar, `deriveKey` lo trataria como un codigo sin palabras y el
+// receptor esperaria para siempre a un emisor que habla otro formato.
+test('los tokens base64url de la v0.3.5 ya no se aceptan', () => {
+  assert.throws(() => parseCode('T_9q_4uzB9iJAf8x'), CodeError);
+  assert.throws(() => parseCode('https://drop.oloxx.dev/#T_9q_4uzB9iJAf8x'), CodeError);
 });
 
 // ------------------------------------------------------------ derivacion de clave
@@ -198,9 +195,7 @@ test('la clave se memoriza: scrypt solo se paga una vez por codigo', () => {
 
 test('splitForKey separa identificador y secreto sin validar', () => {
   assert.deepEqual(splitForKey('4271-lemon-radar-tiger-orbit'),
-    { roomId: '4271', secret: 'lemon-radar-tiger-orbit', legacy: false });
-  // Los tokens viejos no tienen parte secreta: el token entero es el material.
-  assert.equal(splitForKey('T_9q_4uzB9iJAf8x').legacy, true);
+    { roomId: '4271', secret: 'lemon-radar-tiger-orbit' });
 });
 
 test('la prueba de conocimiento del secreto depende del nonce', () => {

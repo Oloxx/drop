@@ -102,15 +102,27 @@ test('una sala inexistente devuelve NOT_FOUND', async () => {
   guest.close();
 });
 
-// @deprecated Compatibilidad con los binarios v0.3.5, que no saben pedir `v:2`.
-// Para ellos el token ES la clave de cifrado: si les diesemos 4 digitos, su AES
-// pasaria de 96 a 13 bits de entropia. Se elimina en la v0.5.0.
-test('un cliente sin v:2 sigue recibiendo el token largo de la v0.3.5', async () => {
+// Hasta la v0.7.x un `host` sin `v:2` recibia el token largo de la v0.3.5, que
+// para aquellos binarios era la clave de cifrado entera. Ese camino ya no existe:
+// si volviese a dar un token, un binario viejo se creeria emparejado con AES
+// derivado de un formato que nadie mas habla. Mejor un `VERSION` explicito.
+test('un cliente sin v:2 recibe VERSION y se le cierra el socket', async () => {
   const host = await open();
   host.say({ t: 'host' });
+  const msg = await host.next();
+  assert.equal(msg.t, 'error');
+  assert.equal(msg.reason, 'VERSION');
+  await new Promise((r) => host.on('close', r));
+});
+
+// /speed no dicta codigo: comparte un enlace y no tiene mas secreto que el
+// identificador, asi que tiene que pedir uno largo con `link:true`. Con 4 digitos
+// cualquiera podria colarse en una medicion ajena barriendo el espacio.
+test('host con link:true recibe un identificador largo e inadivinable', async () => {
+  const host = await open();
+  host.say({ t: 'host', v: 2, link: true });
   const hosted = await host.next();
   assert.match(hosted.token, /^[A-Za-z0-9_-]{16}$/);           // 96 bits en base64url
-  assert.equal(hosted.v, 1);
 
   const guest = await open();
   guest.say({ t: 'join', token: hosted.token });

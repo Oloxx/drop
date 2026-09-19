@@ -13,6 +13,7 @@ const ERRORS = {
   TOO_MANY_ROOMS: 'Demasiadas salas abiertas desde esta IP. Espera un minuto.',
   EXPIRED: 'La sala ha caducado por inactividad.',
   FLOOD: 'El servidor ha cortado la conexion: demasiados mensajes seguidos.',
+  VERSION: 'El servidor ya no admite esta version del CLI. Ejecuta `drop update`.',
 };
 
 export function connectSignaling(serverUrl) {
@@ -29,8 +30,8 @@ export function connectSignaling(serverUrl) {
 /**
  * Pide una sala. Devuelve solo el IDENTIFICADOR PUBLICO (4 digitos): la parte
  * secreta del codigo la genera el cliente y no pasa por aqui.
- * `v:2` le dice al servidor que entendemos codigos memorizables; sin eso nos
- * daria un token largo de los de la v0.3.5.
+ * `v:2` le dice al servidor que entendemos codigos memorizables; sin eso (un
+ * binario anterior a la v0.4.0) contesta `VERSION` y cierra.
  */
 export function createRoom(ws) {
   return new Promise((resolve, reject) => {

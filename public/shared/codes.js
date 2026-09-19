@@ -91,11 +91,6 @@ export const SECRET_WORDS = 4;        // palabras de la parte secreta
 export const SECRET_BITS = SECRET_WORDS * 11;   // 44 bits
 export const MIN_PREFIX = 3;          // prefijo minimo aceptado al corregir erratas
 
-// Token de la v0.3.5: 12 bytes en base64url. Se sigue aceptando para no romper
-// los binarios ya distribuidos.
-// @deprecated Se elimina en la v0.5.0.
-export const LEGACY_TOKEN_RE = /^[A-Za-z0-9_-]{16}$/;
-
 const WORD_SET = new Set(WORDLIST);
 
 // Indice prefijo -> palabras que empiezan por el. Se construye una vez: el parser
@@ -289,32 +284,15 @@ export function isRoomId(value) {
 }
 
 /**
- * @deprecated Token de sala de la v0.3.5. Se acepta solo para poder recibir de
- * clientes ya distribuidos; se elimina en la v0.5.0.
- */
-export function isLegacyToken(value) {
-  return LEGACY_TOKEN_RE.test(String(value == null ? '' : value).trim());
-}
-
-/**
  * Valida y descompone un codigo. Lanza `CodeError` con un mensaje que se puede
  * enseniar tal cual, en el idioma de `lang` (`es` o `en`). Se llama ANTES de
  * tocar la red: no tiene sentido abrir un websocket para descubrir que faltaba
  * una palabra.
  *
- * Devuelve `{ roomId, words, secret, code, legacy }`.
+ * Devuelve `{ roomId, words, secret, code }`.
  */
 export function parseCode(input, { lang = 'es' } = {}) {
   const raw = String(input == null ? '' : input).trim();
-
-  // Camino viejo: token base64url de 16 caracteres de la v0.3.5. Sensible a
-  // mayusculas, asi que se comprueba antes de normalizar nada.
-  // @deprecated
-  const bare = raw.includes('#') ? raw.slice(raw.lastIndexOf('#') + 1).trim() : raw;
-  if (isLegacyToken(bare)) {
-    return { roomId: bare, words: [], secret: '', code: bare, legacy: true };
-  }
-
   const normalized = normalizeCode(raw);
   if (!normalized) throw fail(lang, 'empty');
 
@@ -326,7 +304,7 @@ export function parseCode(input, { lang = 'es' } = {}) {
   if (rest.length !== SECRET_WORDS) throw fail(lang, 'wordCount', rest.length);
 
   const words = rest.map((w) => resolveWord(w, lang));
-  return { roomId, words, secret: words.join('-'), code: formatCode(roomId, words), legacy: false };
+  return { roomId, words, secret: words.join('-'), code: formatCode(roomId, words) };
 }
 
 /**
@@ -336,10 +314,8 @@ export function parseCode(input, { lang = 'es' } = {}) {
  * de los tests) mientras ambos deriven exactamente lo mismo.
  */
 export function splitForKey(input) {
-  const raw = String(input == null ? '' : input).trim();
-  if (isLegacyToken(raw)) return { roomId: raw, secret: '', legacy: true };
-  const normalized = normalizeCode(raw);
+  const normalized = normalizeCode(String(input == null ? '' : input).trim());
   const cut = normalized.indexOf('-');
-  if (cut < 0) return { roomId: normalized, secret: '', legacy: false };
-  return { roomId: normalized.slice(0, cut), secret: normalized.slice(cut + 1), legacy: false };
+  if (cut < 0) return { roomId: normalized, secret: '' };
+  return { roomId: normalized.slice(0, cut), secret: normalized.slice(cut + 1) };
 }
