@@ -1,6 +1,11 @@
 name: Deploy to Production VPS
 
 on:
+  # A mano desde la pestaña Actions: para volver a desplegar `main` cuando el
+  # push que tocaba producción se quedó sin desplegar (la puerta de tests
+  # falló por una carrera y el arreglo llegó en un commit que no toca estas
+  # rutas, como pasó con la v0.9.0).
+  workflow_dispatch:
   push:
     branches:
       - main
