@@ -67,3 +67,18 @@ export function watchServerErrors(server, onError) {
   server.on('error', (err) => onError(explainListenError(err, server.address()?.port)));
   return server;
 }
+
+/**
+ * Escucha en todas las interfaces, IPv6 incluida. `::` con `ipv6Only: false`
+ * (lo que hace Node por defecto) acepta tambien IPv4, que llega como
+ * `::ffff:a.b.c.d`; en un sistema con IPv6 apagado el bind a `::` falla y se
+ * vuelve a `0.0.0.0`, que es lo que habia siempre.
+ */
+export async function listenAnyFamily(server, port) {
+  try {
+    return await listenOrExplain(server, port, '::');
+  } catch (err) {
+    if (!['EAFNOSUPPORT', 'EADDRNOTAVAIL', 'EINVAL'].includes(err?.code)) throw err;
+    return listenOrExplain(server, port, '0.0.0.0');
+  }
+}

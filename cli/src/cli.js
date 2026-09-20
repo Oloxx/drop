@@ -8,10 +8,10 @@ import readline from 'node:readline';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete, setProgressStream } from './ui.js';
-import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
+import { getCandidateIPs, startBroadcasting, listenForLAN, probeCandidateIPs, rankCandidates, isLocalAddress, plainAddress } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
 import { attachSender, receiveFiles, receiveFromRelay, verifyPrefix, openSource, totalOf, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
-import { listenOrExplain, watchServerErrors } from './listen.js';
+import { listenAnyFamily, watchServerErrors } from './listen.js';
 import { proofFromKey, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
@@ -750,7 +750,7 @@ async function runSend(args, options) {
   activeServer.on('connection', rejectEarly);
 
   try {
-    await listenOrExplain(activeServer, options.port || 0, '0.0.0.0');
+    await listenAnyFamily(activeServer, options.port || 0);
   } catch (err) {
     console.error(`\n  ${c.red}${err.message}${c.reset}\n`);
     process.exit(1);
@@ -835,7 +835,7 @@ async function runSend(args, options) {
     ({ totalBytes, totalTimeSec, avgSpeed, socket, resumedBytes }) => {
       renderProgressBarComplete(totalBytes, totalTimeSec, avgSpeed);
       delivered++;
-      console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${socket.remoteAddress})!${c.reset}`);
+      console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${plainAddress(socket.remoteAddress)})!${c.reset}`);
       if (resumedBytes > 0) console.log(`  ${c.dim}${fmtBytes(resumedBytes)} ya estaban en el receptor: no se han vuelto a mandar.${c.reset}`);
       if (acceptingPeers()) console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
     },
@@ -845,7 +845,7 @@ async function runSend(args, options) {
       // Con el canal caducado o ya entregado (--once) no se sirve a nadie mas.
       onPeer: async ({ address, sas: peerSas }) => {
         if (!acceptingPeers()) return false;
-        const ok = await askPeer({ who: address || '(dirección desconocida)', sas: peerSas, path: 'TCP directo' });
+        const ok = await askPeer({ who: plainAddress(address) || '(dirección desconocida)', sas: peerSas, path: 'TCP directo' });
         // A partir de aqui stdin es de este receptor: nadie mas lo puede leer.
         if (ok && fromStdin) stdinSpent = true;
         return ok;
@@ -1086,7 +1086,8 @@ function printSenderResume({ name, size, requested, offset, address }) {
 
   // 4. Si hay WS de señalización, escuchar si el receptor conecta por WAN o Web
   if (ws) {
-    const localIPs = getLocalIPs();
+    // IPv4 e IPv6 (globales y unicas locales) juntas: el receptor las ordena.
+    const localIPs = getCandidateIPs();
     ws.addEventListener('message', async (ev) => {
       try {
         const msg = JSON.parse(ev.data);
@@ -1274,9 +1275,8 @@ function printSenderResume({ name, size, requested, offset, address }) {
   }
 
   activeServer.on('connection', (socket) => {
-    const isLocal = socket.remoteAddress?.includes('127.0.0.1') || socket.remoteAddress?.includes('::1') || socket.remoteAddress?.startsWith('192.168.') || socket.remoteAddress?.startsWith('10.');
-    const tag = isLocal ? `${c.green}[CONEXIÓN LAN DIRECTA]${c.reset}` : `${c.cyan}[CONEXIÓN DIRECTA]${c.reset}`;
-    console.log(`\n  ${c.bold}Receptor CLI conectado:${c.reset} ${socket.remoteAddress} ${tag}\n`);
+    const tag = isLocalAddress(socket.remoteAddress) ? `${c.green}[CONEXIÓN LAN DIRECTA]${c.reset}` : `${c.cyan}[CONEXIÓN DIRECTA]${c.reset}`;
+    console.log(`\n  ${c.bold}Receptor CLI conectado:${c.reset} ${plainAddress(socket.remoteAddress)} ${tag}\n`);
     // Por TCP la entrega se cuenta en onComplete; aqui solo se sabe cuando el
     // socket se ha ido, que es el momento en que --once/--expire pueden cerrar.
     inFlight++;
@@ -1690,17 +1690,7 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
   const key = deriveKey(code);
 
   // 3. Probar si alguna IP es accesible directamente por TCP (misma red local, VPN o UPnP en Internet)
-  const localIPs = getLocalIPs();
-  function scoreIP(ip) {
-    if (ip === '127.0.0.1' || ip === '::1') return 100;
-    const rsub = ip.split('.').slice(0, 3).join('.');
-    if (localIPs.some((lip) => lip.split('.').slice(0, 3).join('.') === rsub)) return 90;
-    if (ip.startsWith('192.168.')) return 80;
-    if (ip.startsWith('10.')) return 70;
-    if (ip.startsWith('172.')) return 60;
-    return 50;
-  }
-  const candidateIPs = port && !forceRelay ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
+  const candidateIPs = port && !forceRelay ? rankCandidates(ips) : [];
 
   if (candidateIPs.length > 0) {
     term.write(`  ${c.dim}Comprobando ruta TCP directa con el emisor...${c.reset}`);
@@ -1708,10 +1698,11 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
     term.write('\r\x1b[K');
     if (probe) {
       try { probe.socket.destroy(); } catch {}
-      const isLocal = probe.ip?.includes('127.0.0.1') || probe.ip?.includes('::1') || probe.ip?.startsWith('192.168.') || probe.ip?.startsWith('10.');
-      const tag = isLocal ? 'Sockets TCP nativos - LAN' : 'Sockets TCP nativos - Internet/P2P';
-      console.log(`  ${c.green}✔ Emisor alcanzable por TCP directo:${c.reset} ${probe.ip}:${port}`);
-      console.log(`\n  ${c.bold}Conectando a:${c.reset} ${probe.ip}:${port} (${tag})\n`);
+      const tag = isLocalAddress(probe.ip) ? 'Sockets TCP nativos - LAN' : 'Sockets TCP nativos - Internet/P2P';
+      // Una IPv6 va entre corchetes al lado del puerto, como en una URL.
+      const shown = probe.ip.includes(':') ? `[${probe.ip}]:${port}` : `${probe.ip}:${port}`;
+      console.log(`  ${c.green}✔ Emisor alcanzable por TCP directo:${c.reset} ${shown}`);
+      console.log(`\n  ${c.bold}Conectando a:${c.reset} ${shown} (${tag})\n`);
       try {
         const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed, list) => {
           renderProgressBar(current, total, speed, 30, list);

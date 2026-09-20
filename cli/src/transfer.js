@@ -1074,8 +1074,9 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 // MENSAJES, en el orden en que ocurren
 //
 //   cli-offer      emisor -> receptor. Al entrar alguien en la sala. Lleva `v`
-//                  (PROTOCOL_VERSION), las IPs y el puerto para intentar TCP
-//                  directo, y un `nonce` nuevo por receptor. NO lleva el
+//                  (PROTOCOL_VERSION), las IPs (IPv4 e IPv6 como cadenas
+//                  sueltas, sin campo de familia) y el puerto para intentar
+//                  TCP directo, y un `nonce` nuevo por receptor. NO lleva el
 //                  manifiesto: acertar una sala son 4 digitos y los nombres de
 //                  los archivos ya son informacion. El receptor corta aqui si
 //                  `v` no es la suya: es lo unico que va en claro y lo unico

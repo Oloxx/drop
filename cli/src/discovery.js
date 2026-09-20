@@ -24,7 +24,9 @@ export function roomHash(code) {
   return crypto.createHash('sha256').update(roomId).digest('hex').slice(0, 16);
 }
 
-// Obtiene todas las direcciones IPv4 locales no internas
+// Obtiene todas las direcciones IPv4 locales no internas. Sigue siendo solo
+// IPv4 porque UPnP (SSDP) y el broadcast de LAN abren un socket udp4 por cada
+// una; las candidatas de la oferta salen de `getCandidateIPs`.
 export function getLocalIPs() {
   const ips = [];
   const ifaces = os.networkInterfaces();
@@ -36,6 +38,85 @@ export function getLocalIPs() {
     }
   }
   return ips;
+}
+
+/** `fe80::/10`: solo vale con indice de zona (`%eth0`), que no viaja. */
+export function isLinkLocalV6(ip) {
+  return /^fe[89ab][0-9a-f]:/i.test(ip);
+}
+
+/** `fc00::/7`: la direccion privada de IPv6 (la de Tailscale, por ejemplo). */
+export function isUniqueLocalV6(ip) {
+  return /^f[cd][0-9a-f]{2}:/i.test(ip);
+}
+
+/**
+ * Direcciones IPv6 locales que un receptor puede usar para conectar: globales
+ * y unicas locales. Las de enlace (`fe80::`) se quedan fuera porque sin el
+ * indice de zona no sirven en el otro extremo, y el indice es local.
+ */
+export function getLocalIPv6s() {
+  const ips = [];
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name] || []) {
+      if (iface.family === 'IPv6' && !iface.internal && !isLinkLocalV6(iface.address)) {
+        ips.push(iface.address.replace(/%.*$/, ''));
+      }
+    }
+  }
+  return ips;
+}
+
+/**
+ * Lo que va en `ips` de la oferta (`cli-offer`): IPv4 y despues IPv6, como
+ * cadenas sueltas sin distinguir familia. El receptor las ordena con
+ * `rankCandidates` y las sondea escalonadas; una que no le vale (sin IPv6 en
+ * su red) solo cuesta un intento que falla.
+ */
+export function getCandidateIPs() {
+  return [...getLocalIPs(), ...getLocalIPv6s()];
+}
+
+/** `::ffff:192.168.1.5` (IPv4 por un socket dual) -> `192.168.1.5`. */
+export function plainAddress(addr) {
+  return typeof addr === 'string' ? addr.replace(/^::ffff:/i, '') : addr;
+}
+
+/** La otra punta esta en loopback o en una red privada: se dice "LAN". */
+export function isLocalAddress(addr) {
+  const ip = plainAddress(addr) || '';
+  if (ip === '127.0.0.1' || ip === '::1') return true;
+  if (/^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) return true;
+  return isUniqueLocalV6(ip);
+}
+
+/**
+ * Ordena las IPs de una oferta de mas a menos probable, para que el sondeo
+ * escalonado (`probeCandidateIPs`) pruebe primero lo que suele responder:
+ * loopback, la misma subred que alguna interfaz nuestra, redes privadas, y al
+ * final lo publico. IPv6 va entre medias: una unica local (fc00::/7) es una
+ * VPN o una LAN, y una global puede ser directa sin NAT que atravesar.
+ */
+export function rankCandidates(ips, local = getCandidateIPs()) {
+  const v4prefix = (ip) => ip.split('.').slice(0, 3).join('.');
+  const v6prefix = (ip) => ip.toLowerCase().split(':').slice(0, 4).join(':');
+  const localV4 = local.filter((ip) => ip.includes('.')).map(v4prefix);
+  const localV6 = local.filter((ip) => ip.includes(':')).map(v6prefix);
+  const score = (ip) => {
+    if (ip === '127.0.0.1' || ip === '::1') return 100;
+    if (ip.includes(':')) {
+      if (localV6.includes(v6prefix(ip))) return 85;
+      if (isUniqueLocalV6(ip)) return 65;
+      return 55;
+    }
+    if (localV4.includes(v4prefix(ip))) return 90;
+    if (ip.startsWith('192.168.')) return 80;
+    if (ip.startsWith('10.')) return 70;
+    if (ip.startsWith('172.')) return 60;
+    return 50;
+  };
+  return [...new Set(ips)].sort((a, b) => score(b) - score(a));
 }
 
 // Obtiene todas las direcciones de difusión (broadcast) calculadas por interfaz

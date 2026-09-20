@@ -33,6 +33,13 @@ Las notas de cada release, con los binarios, están en
   conocido; si el SHA-256 no cuadra la respuesta se rompe y el navegador marca la descarga
   como fallida. Sin worker (contexto no seguro, navegador antiguo) se sigue por Blob. El worker
   no cachea nada y solo contesta a `/__drop-download/…`; la CSP no cambia.
+- **IPv6 en las rutas directas** (#37, primera mitad). Las direcciones IPv6 globales y únicas
+  locales (`fc00::/7`, la de una VPN tipo Tailscale) van en las candidatas de la oferta junto a
+  las IPv4, el emisor escucha en las dos familias (`::`, con vuelta a `0.0.0.0` si el sistema no
+  tiene IPv6) y el receptor las ordena con las demás y las sondea escalonadas. En una red solo
+  IPv6 ya hay ruta directa en vez de caer siempre al relay. El formato de `ips` no cambia:
+  cadenas sueltas sin campo de familia, y así se queda para la 1.0. Falta el descubrimiento
+  local por multicast IPv6 (sigue en #37).
 - **Rompe compatibilidad:** `PROTOCOL_VERSION` sube a 4. Un archivo del manifiesto (por TCP y
   en `cli-manifest`/`cli-start` por relay) puede llevar `size: null`; un receptor v3 se creería
   el total y acabaría con `NaN` en la barra y sin mandar el último acuse, así que se rechaza.

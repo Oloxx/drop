@@ -2,10 +2,10 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { c, fmtBytes, fmtSpeed, fmtDuration, fmtMs } from './ui.js';
 import { deriveKey, encryptChunk, decryptChunk } from './crypto.js';
-import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
+import { getCandidateIPs, startBroadcasting, listenForLAN, probeCandidateIPs, rankCandidates, isLocalAddress, plainAddress } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom } from './signaling.js';
 import { mapPort } from './upnp.js';
-import { listenOrExplain, watchServerErrors } from './listen.js';
+import { listenAnyFamily, watchServerErrors } from './listen.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 
 const TCP_CHUNK_SIZE = 256 * 1024;    // 256 KB por bloque para máxima velocidad en TCP
@@ -601,7 +601,7 @@ export async function runSpeedHost(options = {}) {
 
   const tcpServer = net.createServer();
   try {
-    await listenOrExplain(tcpServer, options.port || 0, '0.0.0.0');
+    await listenAnyFamily(tcpServer, options.port || 0);
   } catch (err) {
     console.error(`
   ${c.red}${err.message}${c.reset}
@@ -666,10 +666,10 @@ export async function runSpeedHost(options = {}) {
       }
       socket.setNoDelay(true);
 
-      const isLocal = socket.remoteAddress?.includes('127.0.0.1') || socket.remoteAddress?.includes('::1') || socket.remoteAddress?.startsWith('192.168.') || socket.remoteAddress?.startsWith('10.');
+      const isLocal = isLocalAddress(socket.remoteAddress);
       const pathDesc = isLocal
-        ? `Directa TCP (LAN/Loopback - ${socket.remoteAddress})`
-        : `Directa TCP (Internet/P2P - ${socket.remoteAddress})`;
+        ? `Directa TCP (LAN/Loopback - ${plainAddress(socket.remoteAddress)})`
+        : `Directa TCP (Internet/P2P - ${plainAddress(socket.remoteAddress)})`;
 
       const ch = new TcpSpeedChannel(socket, code, true, pathDesc);
 
@@ -696,7 +696,7 @@ export async function runSpeedHost(options = {}) {
     });
 
     if (ws) {
-      const localIPs = getLocalIPs();
+      const localIPs = getCandidateIPs();
       ws.addEventListener('message', async (ev) => {
         if (resolved) return;
         try {
@@ -880,17 +880,7 @@ export async function runSpeedGuest(input, options = {}) {
   const { ips = [], port } = offer;
 
   // 3. Probar si alguna IP responde por TCP directo si no se fuerza relay
-  const localIPs = getLocalIPs();
-  function scoreIP(ip) {
-    if (ip === '127.0.0.1' || ip === '::1') return 100;
-    const rsub = ip.split('.').slice(0, 3).join('.');
-    if (localIPs.some((lip) => lip.split('.').slice(0, 3).join('.') === rsub)) return 90;
-    if (ip.startsWith('192.168.')) return 80;
-    if (ip.startsWith('10.')) return 70;
-    if (ip.startsWith('172.')) return 60;
-    return 50;
-  }
-  const candidateIPs = !forceRelay && port ? [...new Set(ips)].sort((a, b) => scoreIP(b) - scoreIP(a)) : [];
+  const candidateIPs = !forceRelay && port ? rankCandidates(ips) : [];
 
   let tcpSocket = null;
   let connectedIP = null;

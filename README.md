@@ -301,7 +301,7 @@ Cualquiera recibe de cualquiera, en las cuatro combinaciones:
 | Emisor → Receptor | Camino | Cifrado | Reanuda un corte |
 |---|---|---|---|
 | Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | No: el receptor web no guarda `.part` (#58) |
-| CLI → CLI | TCP directo (LAN, UPnP) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código). No con `drop send -`: una tubería no se rebobina |
+| CLI → CLI | TCP directo (LAN, UPnP, IPv4 o IPv6) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código). No con `drop send -`: una tubería no se rebobina |
 | CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | No (#58) |
 | Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código | No: el emisor web ignora el `offset` y manda desde cero (#58) |
 

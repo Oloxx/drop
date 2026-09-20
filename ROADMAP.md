@@ -26,9 +26,10 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [ ] **Reanudación en todas las combinaciones que puedan** (#58): Web→CLI respetando el
       `offset` de `cli-accept`, receptor web con File System Access escribiendo a `.part`. Y
       dejar por escrito dónde no hay reanudación posible (receptor web sin disco).
-- [ ] Decidir si **IPv6** (#37) entra en el descubrimiento y las rutas directas antes de
-      congelar el formato de `cli-offer`, porque añadir direcciones después es un cambio de
-      protocolo.
+- [x] Decidir si **IPv6** (#37) entra en las rutas directas antes de congelar el formato de
+      `cli-offer`. Decidido y hecho en la v0.9.0: las IPv6 van en `ips` como cadenas sueltas,
+      sin campo de familia, y el emisor escucha en las dos. Lo que queda de #37 (multicast IPv6
+      en el descubrimiento local) no toca la oferta, así que puede ir después.
 
 ## Robustez de lo que ya existe
 
