@@ -211,7 +211,9 @@ test('si el receptor se cae a medias, el emisor de stdin sale con error en vez d
   const server = await startServer();
   t.after(() => server.stop());
   const outDir = scratch(t, 'drop-stdin-cut-');
-  const body = crypto.randomBytes(8 * 1024 * 1024);
+  // Mas que la ventana de 8 MB del relay: asi el emisor esta parado esperando
+  // acuses cuando el receptor muere, que es el caso normal con algo grande.
+  const body = crypto.randomBytes(24 * 1024 * 1024);
 
   const sender = runCli(['send', '-', '--relay', '--server', server.http, '--yes'], { stdin: 'pipe' });
   t.after(() => sender.kill('SIGKILL'));

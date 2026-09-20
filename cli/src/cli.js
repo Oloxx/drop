@@ -1060,6 +1060,13 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
         onProgress(Math.min(sentBytes, ackInfo.acked), totalBytes, speed, manifest);
       }
     }
+    // El bucle tambien sale si el receptor se ha ido (`guest-gone`, `cli-error`)
+    // con bytes sin confirmar: eso no es una entrega. Antes se daba por buena, y
+    // con un archivo que cabe en la ventana de 8 MB pasaba siempre que el
+    // receptor muriese antes del ultimo acuse.
+    if (!ackInfo.completed && ackInfo.acked < sentBytes) {
+      throw new Error('Receptor desconectado antes de confirmar la descarga.');
+    }
 
     const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
     const avgSpeed = (sentBytes - resumedTotal) / totalTimeSec;
