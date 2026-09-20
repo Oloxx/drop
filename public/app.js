@@ -79,6 +79,8 @@ function secretProof(nonce, secret) {
 }
 
 function fmtBytes(n) {
+  // `null` es "no se sabe": un emisor CLI leyendo de stdin no tiene total.
+  if (!Number.isFinite(n)) return '?';
   if (n < 1024) return n + ' B';
   const units = ['KB', 'MB', 'GB', 'TB'];
   let i = -1;
@@ -203,7 +205,7 @@ function connectSignaling() {
     ws.onerror = () => reject(new Error('No route to the server'));
     ws.onclose = () => {
       setStatus('uplink lost', 'bad');
-      if (rx.isCli && rx.row && !rx.finished && rx.received < rx.total) {
+      if (rx.isCli && rx.row && rxIncomplete()) {
         rx.row.fail('uplink lost');
       }
     };
@@ -345,6 +347,15 @@ function makeProgressRow(container, title) {
       lastBytes = done;
       lastTime = now;
     }
+    // Sin total (el emisor lee de stdin) no hay porcentaje ni ETA: solo lo que
+    // ha llegado y a que ritmo. Una barra al 0% que no se mueve parece colgada.
+    if (total == null) {
+      elBar.style.width = '100%';
+      elBar.classList.add('unknown');
+      elState.textContent = fmtBytes(done) + ' · size unknown';
+      elRate.textContent = rate > 0 ? fmtBytes(rate) + '/s' : '';
+      return;
+    }
     const pct = total ? (done / total) * 100 : 0;
     elBar.style.width = pct.toFixed(1) + '%';
     elState.textContent =
@@ -395,6 +406,7 @@ function makeProgressRow(container, title) {
       stopPainting();
       api.closed = true;
       el.classList.add('done');
+      elBar.classList.remove('unknown');
       elBar.style.width = '100%';
       elState.textContent = text;
       elRate.textContent = '';
@@ -1271,7 +1283,27 @@ function onHostGone() {
   // La sala muere con el emisor, pero los canales P2P no: si nos alimenta otro
   // receptor puede quedarle cola por entregarnos y esto todavia puede acabar.
   if (rx.up && rx.up.peerId !== 0) return;
-  if (rx.row && !rx.finished && rx.received < rx.total) rx.row.fail('severed');
+  if (rx.row && rxIncomplete()) rx.row.fail('severed');
+}
+
+/**
+ * Sigue llegando algo. Con un total conocido es que faltan bytes; sin total
+ * (emisor CLI leyendo de stdin, `size: null`) lo unico que dice que ha
+ * terminado es el `done` del emisor.
+ */
+function rxIncomplete() {
+  if (rx.finished) return false;
+  return rx.total == null || rx.received < rx.total;
+}
+
+/** Suma del manifiesto, o `null` si algun archivo no trae tamano. */
+function totalOf(files) {
+  let total = 0;
+  for (const f of files) {
+    if (!Number.isFinite(f.size)) return null;
+    total += f.size;
+  }
+  return total;
 }
 
 /** Canal por el que nos llega algo: el del emisor, o el del eslabon de arriba. */
@@ -1407,7 +1439,7 @@ function onControl(msg) {
 
     case 'manifest':
       rx.manifest = msg.files;
-      rx.total = msg.files.reduce((sum, f) => sum + f.size, 0);
+      rx.total = totalOf(msg.files);
       showOffer(msg.files);
       break;
 
@@ -1478,7 +1510,7 @@ function onControl(msg) {
         }
         if (rx.row) { rx.row.file(''); rx.row.finish('received · ✔ verified (SHA-256)'); }
         setStatus('transfer complete', 'live');
-        alertFinished('transfer complete · ' + fmtBytes(rx.total) + ' verified');
+        alertFinished('transfer complete · ' + fmtBytes(rx.received) + ' verified');
       });
       break;
   }
@@ -1490,14 +1522,16 @@ function onChunk(buffer) {
   if (rx.fileHasher) rx.fileHasher.update(buffer);
   rx.writes = rx.writes.then(() => rx.sink && rx.sink.write(buffer));
   if (rx.row) rx.row.progress(rx.received, rx.total);
+  // Sin total conocido el ultimo acuse lo da el `cli-complete` del `done`.
+  const atEnd = rx.total != null && rx.received >= rx.total;
   if (rx.isCli) {
-    if (rx.received - rx.lastAck >= ACK_EVERY || rx.received >= rx.total) {
+    if (rx.received - rx.lastAck >= ACK_EVERY || atEnd) {
       rx.lastAck = rx.received;
       wsSend({ t: 'signal', data: { type: 'cli-ack', bytes: rx.received } });
     }
     return;
   }
-  if (rx.received - rx.lastAck >= ACK_EVERY || rx.received >= rx.total) {
+  if (rx.received - rx.lastAck >= ACK_EVERY || atEnd) {
     rx.lastAck = rx.received;
     sendHost({ k: 'ack', bytes: rx.received });
   }
@@ -1524,14 +1558,14 @@ function showOffer(files) {
   $('#recv-title').textContent = 'incoming payload';
   $('#offer').hidden = false;
   $('#offer-title').textContent =
-    files.length + (files.length === 1 ? ' file' : ' files') + ' · ' + fmtBytes(rx.total);
+    files.length + (files.length === 1 ? ' file' : ' files') + ' · ' + (rx.total == null ? 'size unknown' : fmtBytes(rx.total));
   const list = $('#offer-list');
   list.innerHTML = '';
   for (const file of files) {
     const li = document.createElement('li');
     li.innerHTML = '<span class="name"></span><span class="size"></span><span class="badge" hidden></span>';
     li.querySelector('.name').textContent = file.path || file.name;
-    li.querySelector('.size').textContent = fmtBytes(file.size);
+    li.querySelector('.size').textContent = Number.isFinite(file.size) ? fmtBytes(file.size) : 'stream';
     list.appendChild(li);
   }
   $('#offer-hint').textContent = supportsDirectPicker(files)
@@ -1612,11 +1646,12 @@ function retryFile(index) {
 // archivo pequeño la descarga normal del navegador es más cómoda (y funciona en
 // Firefox y Safari, que no tienen la File System Access API).
 function supportsDirectPicker(files) {
-  const total = files.reduce((sum, f) => sum + f.size, 0);
+  const total = totalOf(files);
   // Una carpeta solo se puede recrear escribiendo a disco: sin la API, cada
   // archivo baja suelto con su nombre (el navegador no crea carpetas en Descargas).
   const hasFolders = files.some((f) => f.path && f.path.includes('/'));
-  return !!window.showDirectoryPicker && (files.length > 1 || hasFolders || total > 128 * 1024 * 1024);
+  // Sin tamano (stdin del CLI) puede ser cualquier cosa: mejor a disco.
+  return !!window.showDirectoryPicker && (files.length > 1 || hasFolders || total == null || total > 128 * 1024 * 1024);
 }
 
 function memorySink(meta) {
@@ -1690,7 +1725,7 @@ async function acceptTransfer() {
       const dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'drop' });
       rx.makeSink = (meta) => diskSink(dir, meta);
     } catch {
-      const isHuge = rx.total > 500 * 1024 * 1024;
+      const isHuge = rx.total == null || rx.total > 500 * 1024 * 1024;
       $('#offer-hint').textContent = isHuge
         ? 'Warning: large file held in RAM. Choosing a folder is recommended to avoid browser crashes.'
         : 'No folder chosen. Held in memory until the transfer completes.';
@@ -1795,7 +1830,7 @@ function routeSignal(from, data) {
   }
   if (data.type === 'cli-manifest') {
     rx.manifest = data.manifest || [];
-    rx.total = rx.manifest.reduce((sum, f) => sum + f.size, 0);
+    rx.total = totalOf(rx.manifest);
     showOffer(rx.manifest);
     // La huella sale de la clave, y ahora por relay se cifra con esa misma
     // clave: significa lo mismo que por TCP directo entre dos CLI.
@@ -1991,7 +2026,7 @@ window.__drop = { out, rx };
 // Aviso si se cierra la pestaña con una transferencia a medias.
 window.addEventListener('beforeunload', (e) => {
   const sending = [...out.peers.values()].some((c) => !c.cancelled && c.acked < totalBytes());
-  const receiving = rx.row && rx.received > 0 && rx.received < rx.total;
+  const receiving = rx.row && rx.received > 0 && rxIncomplete();
   // Aunque ya hayamos terminado podemos seguir siendo el eslabon de alguien.
   const relaying = rx.down && rx.down.dc && rx.down.dc.readyState === 'open';
   if (sending || receiving || relaying) { e.preventDefault(); e.returnValue = ''; }

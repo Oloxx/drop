@@ -104,6 +104,16 @@ function fileLineFor(files, current) {
  */
 export function renderProgressBar(current, total, speed, width = 30, files = null) {
   const barWidth = getBarWidth(width);
+
+  // Sin total (el emisor lee de stdin) no hay porcentaje ni ETA que pintar:
+  // una barra al 0% que no se mueve parece colgada, asi que van solo los
+  // bytes y la velocidad.
+  if (total == null) {
+    fileLine = false;
+    out.write(`\r  ${c.cyan}${'·'.repeat(barWidth)}${c.reset} ${fmtBytes(current)} · ${fmtSpeed(speed)} ${c.dim}(sin total: stdin)${c.reset}   \x1b[K`);
+    return;
+  }
+
   const pct = total > 0 ? Math.min(1, current / total) : 0;
   const filled = Math.round(barWidth * pct);
   const empty = barWidth - filled;

@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete, setProgressStream } from './ui.js';
 import { getLocalIPs, startBroadcasting, listenForLAN, probeCandidateIPs } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
-import { attachSender, receiveFiles, receiveFromRelay, verifyPrefix, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
+import { attachSender, receiveFiles, receiveFromRelay, verifyPrefix, openSource, totalOf, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
 import { listenOrExplain, watchServerErrors } from './listen.js';
 import { proofFromKey, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
@@ -462,6 +462,7 @@ ${c.bold}USO:${c.reset}
   drop send <carpeta>                   Envía una carpeta entera, con su árbol
   drop send --text "..."                Envía un texto sin crear un archivo antes
   drop send --clipboard                 Envía el contenido del portapapeles
+  ... | drop send -                     Envía lo que llegue por la entrada estándar
   drop recv <código-o-enlace>           Recibe los archivos
   drop recv <código> --stdout           Escribe lo recibido en la salida estándar
   drop speed [código-o-enlace]          Mide la velocidad de transferencia entre 2 clientes CLI
@@ -478,6 +479,8 @@ ${c.bold}OPCIONES:${c.reset}
                          los mensajes y el progreso se van a stderr
   --text <texto>         Envía ese texto como message.txt
   --clipboard            Envía el portapapeles como clipboard.txt
+  --name <nombre>        Nombre con el que llega lo que entra por stdin
+                         (por defecto: stdin). Solo con "drop send -"
   --relay                Fuerza la transferencia a través del servidor de Relay
   --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
   --overwrite            Sobrescribe los archivos que ya existan en el destino
@@ -514,6 +517,8 @@ ${c.bold}EJEMPLOS:${c.reset}
   drop send pelicula.mkv --limit 10M
   drop send --text "la clave del wifi es ..."
   drop recv 4271-lemon-radar-tiger-orbit --stdout | pbcopy
+  tar czf - proyecto/ | drop send - --name proyecto.tgz
+  drop recv 4271-lemon-radar-tiger-orbit -o - | tar xzf -
   drop recv 4271-lemon-radar-tiger-orbit
   drop recv https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
   drop speed
@@ -611,8 +616,30 @@ function stageInlineContent(options) {
   return { staged, cleanup };
 }
 
+/**
+ * `drop send -`: lo que entra por stdin se manda tal cual, sin pasar por un
+ * archivo temporal (un `tar` de varios GB no cabe, y ademas no hace falta).
+ * El manifiesto lleva `size: null` porque no se sabe cuanto va a llegar, y el
+ * envio es de un solo uso: lo leido no se puede volver a leer, asi que sirve
+ * a UN receptor y se cierra, como con `--once`, tanto si acaba bien como si
+ * no. Por lo mismo no hay reanudacion: un corte a medias es empezar la
+ * tuberia otra vez.
+ */
+function stdinEntry(options) {
+  if (process.stdin.isTTY) {
+    console.error(`\n${c.red}"drop send -" lee de la entrada estándar y no hay nada conectado a ella.${c.reset}`);
+    console.error(`${c.dim}Ejemplo: tar czf - proyecto/ | drop send - --name proyecto.tgz${c.reset}\n`);
+    process.exit(1);
+  }
+  const name = options.name || 'stdin';
+  // El nombre lo pone el usuario y lo escribe el receptor: se queda solo con
+  // el ultimo tramo, igual que hace el receptor por su lado.
+  return { path: null, name: path.basename(name), size: null, stream: process.stdin };
+}
+
 async function runSend(args, options) {
-  const filePaths = [...args];
+  const filePaths = args.filter((a) => a !== '-');
+  const fromStdin = args.includes('-');
   let inlineCleanup = null;
   if (options.text != null || options.clipboard) {
     const { staged, cleanup } = stageInlineContent(options);
@@ -620,13 +647,22 @@ async function runSend(args, options) {
     inlineCleanup = cleanup;
     process.on('exit', cleanup);
   }
-  if (!filePaths.length) {
-    console.error(`${c.red}Error: Debes especificar al menos un archivo para enviar (o --text / --clipboard).${c.reset}`);
+  if (fromStdin && filePaths.length) {
+    console.error(`${c.red}Error: "drop send -" no se puede combinar con otros archivos ni con --text / --clipboard.${c.reset}`);
+    process.exit(1);
+  }
+  if (options.name && !fromStdin) {
+    console.error(`${c.red}Error: --name solo tiene sentido con "drop send -".${c.reset}`);
+    process.exit(1);
+  }
+  if (!filePaths.length && !fromStdin) {
+    console.error(`${c.red}Error: Debes especificar al menos un archivo para enviar (o --text / --clipboard, o - para stdin).${c.reset}`);
     process.exit(1);
   }
 
   const files = [];
   let folders = 0;
+  if (fromStdin) files.push(stdinEntry(options));
   for (const fp of filePaths) {
     const full = path.resolve(fp);
     if (!fs.existsSync(full)) {
@@ -647,8 +683,10 @@ async function runSend(args, options) {
     files.push({ path: full, size: stat.size });
   }
 
-  const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
-  console.log(`\n${c.bold}Preparando envío:${c.reset} ${files.length} archivo(s)${folders ? ` en ${folders} carpeta(s)` : ''} · ${c.cyan}${fmtBytes(totalBytes)}${c.reset}`);
+  const totalBytes = totalOf(files);
+  const sizeLabel = totalBytes == null ? 'tamaño desconocido (stdin)' : fmtBytes(totalBytes);
+  console.log(`\n${c.bold}Preparando envío:${c.reset} ${files.length} archivo(s)${folders ? ` en ${folders} carpeta(s)` : ''} · ${c.cyan}${sizeLabel}${c.reset}`);
+  if (fromStdin) console.log(`  ${c.dim}Lo que entra por stdin se sirve a un solo receptor y el canal se cierra al acabar.${c.reset}`);
 
   // 1. Reservar el puerto TCP antes de nada, para poder lanzar el mapeo UPnP en
   // paralelo con la señalización. Aquí solo hace falta el número de puerto, no la
@@ -681,17 +719,29 @@ async function runSend(args, options) {
   let inFlight = 0;      // receptores a los que se esta sirviendo ahora mismo
   let delivered = 0;     // descargas completas (por relay, ademas verificadas)
   let expired = false;
+  // Con stdin solo hay una lectura: en cuanto un receptor empieza a comer de
+  // ella no se acepta a nadie mas, y si ese receptor se cae el envio no se
+  // puede repetir. `stdinSpent` es "ya se ha leido algo": se cierra al acabar.
+  let stdinSpent = false;
   const finishIfDue = () => {
     if (inFlight > 0) return;
     if (options.once && delivered > 0) {
       console.log(`\n  ${c.green}✔ Entrega única completada: se cierra el canal (--once).${c.reset}`);
       onExit(0);
+    } else if (fromStdin && stdinSpent) {
+      if (delivered > 0) {
+        console.log(`\n  ${c.green}✔ Lo que entró por stdin ya está entregado: se cierra el canal.${c.reset}`);
+        onExit(0);
+        return;
+      }
+      console.log(`\n  ${c.red}La entrada estándar ya se ha consumido a medias: no se puede volver a servir. Vuelve a lanzar la tubería.${c.reset}\n`);
+      onExit(1);
     } else if (expired) {
       console.log(`\n  ${c.yellow}Canal caducado (--expire ${options.expire}): se cierra.${c.reset}`);
       onExit(0);
     }
   };
-  const acceptingPeers = () => !expired && !(options.once && delivered > 0);
+  const acceptingPeers = () => !expired && !(options.once && delivered > 0) && !(fromStdin && stdinSpent);
 
   activeServer = net.createServer();
   // Entre el bind y el momento en que se conoce el codigo no hay nada que servir:
@@ -793,9 +843,13 @@ async function runSend(args, options) {
       // Nada se escribe en el socket hasta que esto devuelve true: quien conecta
       // sabe el código, pero saber el código no da derecho a los archivos.
       // Con el canal caducado o ya entregado (--once) no se sirve a nadie mas.
-      onPeer: ({ address, sas: peerSas }) => (acceptingPeers()
-        ? askPeer({ who: address || '(dirección desconocida)', sas: peerSas, path: 'TCP directo' })
-        : false),
+      onPeer: async ({ address, sas: peerSas }) => {
+        if (!acceptingPeers()) return false;
+        const ok = await askPeer({ who: address || '(dirección desconocida)', sas: peerSas, path: 'TCP directo' });
+        // A partir de aqui stdin es de este receptor: nadie mas lo puede leer.
+        if (ok && fromStdin) stdinSpent = true;
+        return ok;
+      },
       onResume: printSenderResume,
       throttle,
     }
@@ -857,8 +911,9 @@ function sendSealed(ws, guestId, obj) {
 async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests = []) {
   const CHUNK = 64 * 1024;
   const MAX_IN_FLIGHT = 8 * 1024 * 1024; // Ventana deslizante de 8 MB máximo sin confirmar
-  const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
-  const manifest = files.map((f) => ({ name: path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) }));
+  // `null` con stdin: no hay total hasta que se acaba de leer.
+  const totalBytes = totalOf(files);
+  const manifest = files.map((f) => ({ name: f.name ?? path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) }));
   // Lo que el receptor dice tener ya (`resume` del cli-accept), por indice.
   const requests = new Map();
   for (const r of Array.isArray(resumeRequests) ? resumeRequests : []) {
@@ -893,8 +948,9 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
       // El prefijo que dice tener el receptor se comprueba contra el archivo
       // antes de aceptarlo (hash de los primeros `offset` bytes): es lo unico
       // que garantiza que su `.part` es el principio de ESTE archivo.
+      // Con stdin no hay prefijo que comprobar ni forma de volver atras.
       const request = requests.get(index);
-      const accepted = request ? await verifyPrefix(file.path, file.size, request) : null;
+      const accepted = request && !file.stream ? await verifyPrefix(file.path, file.size, request) : null;
       const startAt = accepted ? accepted.offset : 0;
       if (request) {
         printSenderResume({ index, name: manifest[index].name, size: file.size, requested: request.offset, offset: startAt, address: guestId });
@@ -904,7 +960,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
       sendSealed(ws, guestId, {
         type: 'cli-start',
         index,
-        name: path.basename(file.path),
+        name: manifest[index].name,
         size: file.size,
         mime: 'application/octet-stream',
         offset: startAt,
@@ -915,12 +971,13 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
       totalSent += startAt;
       resumedTotal += startAt;
 
-      const fd = await fs.promises.open(file.path, 'r');
+      const source = await openSource(file);
       const buf = Buffer.allocUnsafe(CHUNK);
       let offset = startAt;
 
       try {
-        while (offset < file.size) {
+        // Con tamano desconocido el final lo marca la lectura vacia.
+        while (file.size == null || offset < file.size) {
           if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
 
           // Control de flujo (Backpressure): pausar si hay más de 8 MB en tránsito sin confirmar
@@ -941,8 +998,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
             });
           }
 
-          const toRead = Math.min(CHUNK, file.size - offset);
-          const { bytesRead } = await fd.read(buf, 0, toRead, offset);
+          const bytesRead = await source.read(buf, offset);
           if (bytesRead === 0) break;
 
           const slice = buf.subarray(0, bytesRead);
@@ -963,7 +1019,9 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
           const dt = (now - lastReport) / 1000;
           if (dt >= 0.15) {
             // El progreso real mostrado se basa en lo que el receptor ha confirmado (ACKs)
-            const progressBytes = Math.min(totalBytes, Math.max(ackInfo.acked, Math.min(totalSent, totalBytes)));
+            const progressBytes = totalBytes == null
+              ? Math.max(ackInfo.acked, 0)
+              : Math.min(totalBytes, Math.max(ackInfo.acked, Math.min(totalSent, totalBytes)));
             const inst = (progressBytes - lastBytes) / dt;
             speed = speed ? speed * 0.7 + inst * 0.3 : inst;
             lastBytes = progressBytes;
@@ -972,7 +1030,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
           }
         }
       } finally {
-        await fd.close().catch(() => {});
+        await source.close();
       }
 
       if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
@@ -988,20 +1046,24 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
     // El reloj se pone a cero aquí: enviar el último archivo puede haber llevado más
     // que el propio timeout sin necesitar un solo acuse por el camino.
     ackInfo.lastProgress = Date.now();
-    while (ackInfo.acked < totalBytes && !ackInfo.completed && activeStreams.has(guestId)) {
+    // Con stdin el total es lo que se ha acabado mandando; `cli-complete` lo
+    // pone en `acked` porque el receptor no acusa cada byte por su cuenta.
+    const sentBytes = totalBytes ?? totalSent;
+    ackInfo.sent = totalSent;
+    while (ackInfo.acked < sentBytes && !ackInfo.completed && activeStreams.has(guestId)) {
       failIfStalled();
       await new Promise((resolve) => {
         ackInfo.notify = resolve;
         setTimeout(resolve, 50);
       });
       if (onProgress) {
-        onProgress(Math.min(totalBytes, ackInfo.acked), totalBytes, speed, manifest);
+        onProgress(Math.min(sentBytes, ackInfo.acked), totalBytes, speed, manifest);
       }
     }
 
     const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
-    const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
-    return { totalBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
+    const avgSpeed = (sentBytes - resumedTotal) / totalTimeSec;
+    return { totalBytes: sentBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
   } finally {
     activeStreams.delete(guestId);
     guestAcks.delete(guestId);
@@ -1109,7 +1171,7 @@ function printSenderResume({ name, size, requested, offset, address }) {
               type: 'cli-manifest',
               v: PROTOCOL_VERSION,
               manifest: files.map((f) => ({
-                name: path.basename(f.path),
+                name: f.name ?? path.basename(f.path),
                 size: f.size,
                 type: 'application/octet-stream',
                 ...(f.rel ? { path: f.rel } : {}),
@@ -1121,6 +1183,7 @@ function printSenderResume({ name, size, requested, offset, address }) {
             const guest = msg.from;
             if (!acceptingPeers()) return;
             console.log(`\n  ${c.bold}Receptor conectado (${guest}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
+            if (fromStdin) stdinSpent = true;
             inFlight++;
             try {
               const stats = await streamToWebGuest(guest, files, ws, (sent, total, speed, list) => {
@@ -1159,7 +1222,7 @@ function printSenderResume({ name, size, requested, offset, address }) {
               ackInfo.completed = true;
               // El total del envío en curso, no el de la sesión: un `cli-retry`
               // reenvía solo una parte de los archivos.
-              ackInfo.acked = ackInfo.total ?? totalBytes;
+              ackInfo.acked = ackInfo.total ?? ackInfo.sent ?? ackInfo.acked;
               ackInfo.lastProgress = Date.now();
               if (ackInfo.notify) {
                 const cb = ackInfo.notify;
@@ -1240,7 +1303,7 @@ function printSenderResume({ name, size, requested, offset, address }) {
   }
 
   const vigencia = [
-    options.once ? 'se cierra tras la primera descarga (--once)' : '',
+    options.once ? 'se cierra tras la primera descarga (--once)' : fromStdin ? 'se cierra tras la primera descarga (stdin)' : '',
     options.expire ? `caduca en ${options.expire} (--expire)` : '',
   ].filter(Boolean).join(' y ');
   console.log(vigencia
@@ -1849,6 +1912,7 @@ async function main() {
     stdout: false,
     text: null,
     clipboard: false,
+    name: null,
     limit: 0,
   };
 
@@ -1870,6 +1934,12 @@ async function main() {
       }
     } else if (argv[i] === '--clipboard') {
       options.clipboard = true;
+    } else if (argv[i] === '--name') {
+      options.name = argv[++i];
+      if (!options.name) {
+        console.error(`\n${c.red}--name necesita el nombre del archivo.${c.reset}\n`);
+        process.exit(1);
+      }
     } else if (argv[i] === '-p' || argv[i] === '--port') {
       options.port = parseInt(argv[++i], 10) || 0;
     } else if (argv[i] === '-t' || argv[i] === '--time') {

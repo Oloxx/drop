@@ -225,6 +225,91 @@ export async function verifyPrefix(filePath, size, request) {
 }
 
 /**
+ * Suma de tamanos de un manifiesto, o `null` si alguno no se conoce. Un
+ * archivo con `size: null` viene de `drop send -` (stdin): el emisor no sabe
+ * cuanto va a mandar hasta que se acaba, asi que no hay total, ni porcentaje,
+ * ni ETA; solo bytes que van llegando y el `end` con su SHA-256.
+ */
+export function totalOf(files) {
+  let total = 0;
+  for (const f of files) {
+    if (!Number.isFinite(f?.size)) return null;
+    total += f.size;
+  }
+  return total;
+}
+
+/**
+ * De donde lee el emisor los bytes de un archivo del manifiesto. Un archivo
+ * de disco se lee por descriptor y offset, como siempre. Uno de stdin
+ * (`{ stream, size: null }`) se lee en orden y una sola vez: no hay offset al
+ * que volver, ni segundo receptor al que servirselo, ni prefijo que
+ * comprobar para reanudar. Los dos bucles de envio (TCP directo y relay) usan
+ * esto para no tener cada uno su copia de la lectura.
+ */
+export async function openSource(file) {
+  if (!file.stream) {
+    const fd = await fs.promises.open(file.path, 'r');
+    return {
+      read: async (buf, offset) => {
+        const want = Math.min(buf.length, file.size - offset);
+        if (want <= 0) return 0;
+        const { bytesRead } = await fd.read(buf, 0, want, offset);
+        return bytesRead;
+      },
+      close: () => fd.close().catch(() => {}),
+    };
+  }
+
+  const stream = file.stream;
+  // Trozos del stream que todavia no se han entregado. `read` los va cortando
+  // al tamano pedido; lo que sobra espera al siguiente `read`.
+  const pending = [];
+  let ended = false;
+  let failed = null;
+  let wake = null;
+  const onData = (chunk) => { pending.push(chunk); stream.pause(); wake?.(); };
+  const onEnd = () => { ended = true; wake?.(); };
+  const onError = (err) => { failed = err; wake?.(); };
+  stream.on('data', onData);
+  stream.once('end', onEnd);
+  stream.once('error', onError);
+  stream.pause();
+  let consumed = 0;
+
+  return {
+    read: async (buf, offset) => {
+      if (offset !== consumed) {
+        throw new Error(`La entrada estándar no se puede leer desde el byte ${offset}: va por el ${consumed}.`);
+      }
+      while (!pending.length) {
+        if (failed) throw failed;
+        if (ended) return 0;
+        stream.resume();
+        await new Promise((resolve) => { wake = resolve; });
+        wake = null;
+      }
+      let filled = 0;
+      while (pending.length && filled < buf.length) {
+        const head = pending[0];
+        const take = Math.min(head.length, buf.length - filled);
+        head.copy(buf, filled, 0, take);
+        filled += take;
+        if (take === head.length) pending.shift();
+        else pending[0] = head.subarray(take);
+      }
+      consumed += filled;
+      return filled;
+    },
+    close: async () => {
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+    },
+  };
+}
+
+/**
  * Sumidero de un archivo: escribe en `nombre.part`, calcula el SHA-256 sobre la
  * marcha y solo renombra al nombre bueno cuando el hash cuadra.
  *
@@ -412,6 +497,8 @@ function readControlFrame(socket, key) {
 // 0x01 son datos del archivo en curso.
 //
 //   manifiesto   emisor -> receptor. `{ v, files: [{ name, size, path? }] }`.
+//                `size` es `null` si el emisor lee de stdin (`drop send -`):
+//                no hay total, y el archivo acaba donde diga su `end`.
 //   ready        receptor -> emisor. `{ k:'ready', resume: [{ index, offset,
 //                sha256 }] }`: los `.part` que tiene y el hash de cada prefijo.
 //                Va aunque no haya nada que reanudar (`resume: []`): el emisor
@@ -431,7 +518,8 @@ export function attachSender(server, files, code, onProgress, onComplete, option
   // limite es un `take` vacio y el camino caliente no cambia.
   const throttle = options.throttle || makeThrottle(0);
   const senderSas = sasFromKey(key, splitForKey(code).roomId);
-  let totalBytes = files.reduce((acc, f) => acc + f.size, 0);
+  // `null` si algun archivo viene de stdin: no hay total que enseñar.
+  const totalBytes = totalOf(files);
 
   server.on('connection', (socket) => {
     socket.setNoDelay(true);
@@ -463,7 +551,7 @@ export function attachSender(server, files, code, onProgress, onComplete, option
         // 1. Enviar manifiesto de archivos cifrado (tipo 0 = control JSON)
         const manifest = {
           v: PROTOCOL_VERSION,
-          files: files.map((f) => ({ name: path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) })),
+          files: files.map((f) => ({ name: f.name ?? path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) })),
         };
         const control = (obj) => frame(encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(obj))]), key));
         // El `ready` se espera desde ANTES de escribir el manifiesto: un receptor
@@ -500,8 +588,10 @@ export function attachSender(server, files, code, onProgress, onComplete, option
           // verdad antes de aceptarlo: cuesta leer esos bytes, que es mucho menos
           // que volver a mandarlos, y es lo unico que garantiza que el `.part`
           // que hay al otro lado es el principio de ESTE archivo.
+          // Con stdin no hay prefijo que comprobar: lo que ya se leyo no se
+          // puede volver a leer, asi que se manda entero pase lo que pase.
           const request = requests.get(i);
-          const accepted = request ? await verifyPrefix(file.path, file.size, request) : null;
+          const accepted = request && !file.stream ? await verifyPrefix(file.path, file.size, request) : null;
           const startAt = accepted ? accepted.offset : 0;
           if (request && onResume) {
             onResume({ index: i, name: manifest.files[i].name, size: file.size, requested: request.offset, offset: startAt, address: socket.remoteAddress });
@@ -511,17 +601,17 @@ export function attachSender(server, files, code, onProgress, onComplete, option
           sentTotal += startAt;
           resumedTotal += startAt;
 
-          const fd = await fs.promises.open(file.path, 'r');
+          const source = await openSource(file);
           const fileHash = accepted ? accepted.hash : crypto.createHash('sha256');
 
           try {
             const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
             let fileOffset = startAt;
 
-            while (fileOffset < file.size) {
+            // Con tamano desconocido el final lo marca la lectura vacia.
+            while (file.size == null || fileOffset < file.size) {
               if (socket.destroyed) throw new Error('Socket cerrado por el receptor');
-              const bytesToRead = Math.min(CHUNK_SIZE, file.size - fileOffset);
-              const { bytesRead } = await fd.read(buffer, 0, bytesToRead, fileOffset);
+              const bytesRead = await source.read(buffer, fileOffset);
               if (bytesRead === 0) break;
 
               const slice = buffer.subarray(0, bytesRead);
@@ -565,7 +655,7 @@ export function attachSender(server, files, code, onProgress, onComplete, option
               }
             }
           } finally {
-            await fd.close().catch(() => {});
+            await source.close();
           }
 
           if (socket.destroyed) break;
@@ -581,12 +671,14 @@ export function attachSender(server, files, code, onProgress, onComplete, option
         socket.write(control({ k: 'done' }));
 
         const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
-        const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
+        // Con stdin el total es lo que se ha acabado mandando.
+        const sentBytes = totalBytes ?? sentTotal;
+        const avgSpeed = (sentBytes - resumedTotal) / totalTimeSec;
 
         if (onComplete) {
-          onComplete({ totalBytes, totalTimeSec, avgSpeed, socket, resumedBytes: resumedTotal });
+          onComplete({ totalBytes: sentBytes, totalTimeSec, avgSpeed, socket, resumedBytes: resumedTotal });
         } else if (onProgress) {
-          onProgress(totalBytes, totalBytes, avgSpeed, manifest.files);
+          onProgress(sentBytes, sentBytes, avgSpeed, manifest.files);
         }
         socket.end();
       } catch (err) {
@@ -796,7 +888,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
             }
 
             manifest = msg;
-            totalBytes = manifest.files.reduce((acc, f) => acc + f.size, 0);
+            totalBytes = totalOf(manifest.files);
             // Los nombres se validan y se RESERVAN todos aqui, antes de abrir el
             // primer descriptor: si el manifiesto trae una ruta que se sale del
             // destino, la transferencia se corta sin haber escrito ni un byte, y
@@ -944,8 +1036,9 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
           connTimer = null;
         }
         const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
-        const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
-        receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
+        const gotBytes = totalBytes ?? totalReceived;
+        const avgSpeed = (gotBytes - resumedTotal) / totalTimeSec;
+        receivedFiles.stats = { totalBytes: gotBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
         // El emisor ya ha cerrado su mitad: cerrar la nuestra o la conexion se queda
         // a medias y mantiene vivo el proceso de quien use esto como libreria.
         socket.end();
@@ -1004,6 +1097,8 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 //   cual. El servidor reenvia igual que antes: para el es ruido con destino.
 //
 //   cli-manifest   emisor -> receptor. La lista de archivos, ya autorizada.
+//                  `size: null` en un archivo es que el emisor lee de stdin
+//                  y no sabe cuanto va a mandar: no hay total ni reanudacion.
 //   cli-accept     receptor -> emisor. "Listo para recibir": abre el envio.
 //                  Lleva `resume: [{ index, offset, sha256 }]` con los `.part`
 //                  que el receptor ya tiene de este manifiesto y el SHA-256 de
@@ -1073,7 +1168,8 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
     const reserved = new Set();
     let destPaths = [];
     let plans = new Map();
-    let totalBytes = manifest.reduce((acc, f) => acc + (f.size || 0), 0);
+    // `null` con un emisor de stdin: el final lo dice `cli-done`, no la cuenta.
+    const totalBytes = totalOf(manifest);
     let totalReceived = 0;
     let resumedTotal = 0;
     let lastReport = performance.now();
@@ -1164,7 +1260,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
 
             // Acuse de recibo: sin esto el emisor se para a los 8 MB y los dos
             // extremos se quedan esperando para siempre.
-            if (totalReceived - lastAckBytes >= RELAY_ACK_EVERY || totalReceived >= totalBytes) {
+            if (totalReceived - lastAckBytes >= RELAY_ACK_EVERY || (totalBytes != null && totalReceived >= totalBytes)) {
               lastAckBytes = totalReceived;
               sendSignal({ type: 'cli-ack', bytes: totalReceived });
             }
@@ -1264,8 +1360,9 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
             // soltar la ventana: se manda con todo ya escrito en disco.
             sendSignal({ type: 'cli-complete', bytes: totalReceived });
             const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);
-            const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
-            receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
+            const gotBytes = totalBytes ?? totalReceived;
+            const avgSpeed = (gotBytes - resumedTotal) / totalTimeSec;
+            receivedFiles.stats = { totalBytes: gotBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
             settled = true;
             await cleanup();
             resolve(receivedFiles);
@@ -1281,7 +1378,8 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
     ws.addEventListener('close', () => {
       if (settled) return;
       settled = true;
-      if (receivedFiles.length > 0 && totalReceived >= totalBytes) {
+      // Sin total conocido, un cierre antes del `cli-done` es un corte.
+      if (receivedFiles.length > 0 && totalBytes != null && totalReceived >= totalBytes) {
         cleanup().then(() => {
           if (!receivedFiles.stats) {
             const totalTimeSec = Math.max(0.001, (performance.now() - (startTime || performance.now())) / 1000);

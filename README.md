@@ -216,6 +216,21 @@ El portapapeles se lee con las herramientas del sistema (`Get-Clipboard`, `pbpas
 mensajes y el progreso se van a stderr, y el contenido se vuelca solo cuando el SHA-256 ha
 cuadrado: una tubería no se puede rebobinar.
 
+**Tuberías.** `drop send -` lee de la entrada estándar y lo manda según llega, sin pasar por un
+archivo temporal ni saber cuánto va a ocupar:
+
+```bash
+tar czf - proyecto/ | drop send - --name proyecto.tgz   # sin --name llega como "stdin"
+drop recv 4271-lemon-radar-tiger-orbit -o - | tar xzf -
+pg_dump base | gzip | drop send - --name base.sql.gz
+```
+
+Como no hay total, la barra enseña solo los bytes que van saliendo y la velocidad. Y como lo
+leído de una tubería no se puede volver a leer, el envío es de **un solo receptor**: el canal se
+cierra al terminar (como con `--once`), no hay reanudación, y si el receptor se cae a medias el
+emisor sale con error para que vuelvas a lanzar la tubería. En la web el archivo aparece con
+tamaño `stream` y baja igual, verificado al final.
+
 #### 2. Recibir archivos (`drop recv`)
 En otro ordenador con `drop` instalado:
 ```bash
@@ -276,7 +291,7 @@ Cualquiera recibe de cualquiera, en las cuatro combinaciones:
 | Emisor → Receptor | Camino | Cifrado | Reanuda un corte |
 |---|---|---|---|
 | Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | No: el receptor web no guarda `.part` (#58) |
-| CLI → CLI | TCP directo (LAN, UPnP) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código) |
+| CLI → CLI | TCP directo (LAN, UPnP) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código). No con `drop send -`: una tubería no se rebobina |
 | CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | No (#58) |
 | Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código | No: el emisor web ignora el `offset` y manda desde cero (#58) |
 
@@ -376,7 +391,7 @@ El diseño completo, con el razonamiento y los límites, está comentado en la c
 Mientras la versión mayor sea `0`, una versión menor puede romper el protocolo, y cuando lo hace
 se dice en el [CHANGELOG](CHANGELOG.md). Hoy:
 
-* Dos `drop` tienen que compartir `PROTOCOL_VERSION` (la 3 desde la v0.7.0); si no, se rechazan
+* Dos `drop` tienen que compartir `PROTOCOL_VERSION` (la 4 desde la v0.9.0); si no, se rechazan
   con un mensaje que pide `drop update` en vez de entenderse a medias. La web comprueba lo
   mismo al recibir de un CLI.
 * Los tokens de la v0.3.5 (`T_9q_4uzB9iJAf8x`, 96 bits que además eran la clave de cifrado)

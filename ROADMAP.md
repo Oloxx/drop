@@ -38,8 +38,8 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [ ] **CLI a CLI por WAN** (#11): hoy el TCP directo solo funciona en la misma LAN o con UPnP;
       fuera de eso cae al relay del servidor. Como mínimo, STUN para conocer la IP pública y
       documentar honestamente qué velocidad se obtiene en cada caso.
-- [ ] **Tuberías** (#29): `drop send -` desde stdin con tamaño desconocido. `--stdout` ya
-      existe; falta la mitad de entrada.
+- [x] **Tuberías** (#29): `drop send -` desde stdin con tamaño desconocido (`size: null` en el
+      manifiesto, protocolo 4). Hecho en la v0.9.0; `--stdout` ya existía.
 - [ ] **Safari de escritorio y iOS probados de verdad** con transferencia web completa (SCTP,
       `maxMessageSize`, sin `showDirectoryPicker`). Hoy solo hay medición en Chrome.
 - [ ] **Tests del cliente web en CI**: `npm run bench` y `bench:fanout` pasan por Chrome real

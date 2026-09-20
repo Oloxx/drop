@@ -427,6 +427,13 @@ button {
 }
 .peer.done .bar > i   { background: var(--green); }
 .peer.failed .bar > i { background: var(--red); }
+/* Sin total (el emisor lee de stdin): rayas en movimiento, no un porcentaje. */
+.bar > i.unknown {
+  background: repeating-linear-gradient(90deg, var(--blue) 0 12px, transparent 12px 24px);
+  animation: bar-unknown 1s linear infinite;
+}
+.peer.done .bar > i.unknown, .peer.failed .bar > i.unknown { animation: none; }
+@keyframes bar-unknown { to { background-position: 24px 0; } }
 
 .peer-file {
   display: flex;

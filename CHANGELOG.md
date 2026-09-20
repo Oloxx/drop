@@ -11,6 +11,23 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+> **Rompe compatibilidad con la v0.8.x:** el protocolo pasa a la versión 4 (tamaño desconocido).
+> Un `drop` viejo y uno nuevo se rechazan con un mensaje que pide `drop update`, y la web
+> rechaza a un CLI de la v0.8 al recibir.
+
+### Añadido
+- **Enviar por tubería** con `drop send -` (#29). Lee de la entrada estándar y lo manda según
+  llega, sin archivo temporal y sin saber cuánto va a ocupar: `tar czf - proyecto/ | drop send -
+  --name proyecto.tgz` en un lado y `drop recv <código> -o - | tar xzf -` en el otro. `--name`
+  pone el nombre con el que llega (por defecto `stdin`). Como una tubería no se rebobina, el
+  envío sirve a un solo receptor y cierra el canal al terminar; si el receptor se cae a medias el
+  emisor sale con error en vez de esperar a otro. El SHA-256 se calcula sobre la marcha y se
+  verifica al final como siempre. Sin total, la barra del CLI enseña solo bytes y velocidad, y
+  la web pinta el archivo como `stream` con una barra rayada.
+- **Rompe compatibilidad:** `PROTOCOL_VERSION` sube a 4. Un archivo del manifiesto (por TCP y
+  en `cli-manifest`/`cli-start` por relay) puede llevar `size: null`; un receptor v3 se creería
+  el total y acabaría con `NaN` en la barra y sin mandar el último acuse, así que se rechaza.
+
 ## [0.8.0] — 2026-09-20
 
 > **Rompe compatibilidad con la v0.3.5:** el token largo (`T_9q_4uzB9iJAf8x`) deja de existir

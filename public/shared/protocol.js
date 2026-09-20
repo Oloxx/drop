@@ -13,4 +13,10 @@
 //      con `start` y el offset desde el que manda; por relay lo mismo dentro de
 //      `cli-accept` y `cli-start`. Un emisor v2 manda datos sin `start` y un
 //      receptor v2 nunca contesta al manifiesto: no se entienden a medias.
-export const PROTOCOL_VERSION = 3;
+//   4  tamano desconocido: un archivo del manifiesto (TCP directo y
+//      `cli-manifest`/`cli-start` por relay) puede llevar `size: null`, que es
+//      lo que manda `drop send -` al leer de stdin. El archivo acaba donde
+//      diga su `end`, no en un byte contado. Un receptor v3 se creia el total
+//      (NaN en la barra, acuses que no salen) y "funcionaba" a medias, que es
+//      peor que rechazarse.
+export const PROTOCOL_VERSION = 4;
