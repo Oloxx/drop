@@ -24,6 +24,15 @@ Las notas de cada release, con los binarios, están en
   emisor sale con error en vez de esperar a otro. El SHA-256 se calcula sobre la marcha y se
   verifica al final como siempre. Sin total, la barra del CLI enseña solo bytes y velocidad, y
   la web pinta el archivo como `stream` con una barra rayada.
+- **Descarga en streaming sin File System Access** (#55). Donde no hay `showDirectoryPicker`
+  (Firefox, Safari de escritorio y todo iOS) el receptor web acumulaba el archivo entero en
+  memoria y una pestaña moría sin mensaje con un vídeo grande. Ahora un Service Worker
+  (`public/sw.js`, sin dependencias) sirve la descarga como respuesta HTTP en streaming: la
+  página lo alimenta trozo a trozo con contrapresión por créditos y el navegador escribe a
+  Descargas según llega, con memoria constante. Se usa a partir de 32 MB o sin tamaño
+  conocido; si el SHA-256 no cuadra la respuesta se rompe y el navegador marca la descarga
+  como fallida. Sin worker (contexto no seguro, navegador antiguo) se sigue por Blob. El worker
+  no cachea nada y solo contesta a `/__drop-download/…`; la CSP no cambia.
 - **Rompe compatibilidad:** `PROTOCOL_VERSION` sube a 4. Un archivo del manifiesto (por TCP y
   en `cli-manifest`/`cli-start` por relay) puede llevar `size: null`; un receptor v3 se creería
   el total y acabaría con `NaN` en la barra y sin mandar el último acuse, así que se rechaza.

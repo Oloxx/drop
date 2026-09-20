@@ -32,9 +32,9 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 
 ## Robustez de lo que ya existe
 
-- [ ] **Descarga en streaming sin File System Access** (#55): en Firefox, Safari y todo iOS el
-      receptor acumula el archivo en memoria y una pestaña muere sin mensaje con un vídeo
-      grande. Es justo el caso que el botón **qr** invita a probar.
+- [x] **Descarga en streaming sin File System Access** (#55): Service Worker en `public/sw.js`
+      que sirve la descarga como respuesta HTTP en streaming, desde la v0.9.0. Probado en
+      Chrome; falta pasarlo por Firefox y Safari/iOS de verdad (ver el punto de abajo).
 - [ ] **CLI a CLI por WAN** (#11): hoy el TCP directo solo funciona en la misma LAN o con UPnP;
       fuera de eso cae al relay del servidor. Como mínimo, STUN para conocer la IP pública y
       documentar honestamente qué velocidad se obtiene en cada caso.

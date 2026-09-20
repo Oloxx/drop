@@ -1571,6 +1571,15 @@ function showOffer(files) {
   $('#offer-hint').textContent = supportsDirectPicker(files)
     ? 'You will be asked for a folder. Written straight to disk, no buffering.'
     : 'Downloads start on their own once complete.';
+  // Si el worker esta, lo grande no se acumula en memoria: se dice, porque es
+  // lo que decide si alguien se atreve con un video en el movil.
+  if (!supportsDirectPicker(files)) {
+    swReady.then((reg) => {
+      if (reg && files.some((f) => f.size == null || f.size >= SW_MIN)) {
+        $('#offer-hint').textContent = 'Streamed to your downloads folder as it arrives.';
+      }
+    });
+  }
   setStatus('channel up', 'live');
 }
 
@@ -1654,6 +1663,133 @@ function supportsDirectPicker(files) {
   return !!window.showDirectoryPicker && (files.length > 1 || hasFolders || total == null || total > 128 * 1024 * 1024);
 }
 
+// ------------------------------------------ descarga en streaming por Service Worker
+//
+// Sin File System Access (Firefox, Safari, todo iOS) el receptor acumulaba
+// cada archivo entero en memoria y lo soltaba como Blob al final: con un video
+// de 2 GB hacia un iPhone la pestana moria sin mensaje. Con el worker
+// (public/sw.js) la descarga es una respuesta HTTP en streaming que el
+// navegador escribe a disco segun llega, con memoria constante. A partir de
+// SW_MIN bytes -- o sin tamano conocido -- se usa si esta disponible; por
+// debajo la descarga normal por Blob es mas comoda y esta mas probada.
+
+const SW_MIN = 32 * 1024 * 1024;
+
+// Registro del worker. Solo en contexto seguro (HTTPS o localhost) y solo si el
+// navegador lo tiene: si falla, `swReady` resuelve a null y se cae al Blob.
+const swReady = (async () => {
+  if (!window.isSecureContext || !('serviceWorker' in navigator) || typeof ReadableStream === 'undefined') return null;
+  try {
+    const reg = await navigator.serviceWorker.register('sw.js', { scope: './' });
+    // `register` devuelve antes de que el worker controle la pagina; la primera
+    // descarga tiene que esperar a que este activo o el iframe iria a la red.
+    const sw = reg.active || reg.waiting || reg.installing;
+    if (!sw) return null;
+    if (sw.state !== 'activated') {
+      await new Promise((resolve) => {
+        const check = () => { if (sw.state === 'activated' || sw.state === 'redundant') resolve(); };
+        sw.addEventListener('statechange', check);
+        check();
+      });
+    }
+    if (sw.state !== 'activated') return null;
+    if (!navigator.serviceWorker.controller) {
+      // Primera visita: el worker se ha activado pero esta pagina todavia no
+      // esta bajo su control hasta que `clients.claim()` termina.
+      await new Promise((resolve) => {
+        if (navigator.serviceWorker.controller) return resolve();
+        navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true });
+        setTimeout(resolve, 3000);
+      });
+    }
+    return navigator.serviceWorker.controller ? reg : null;
+  } catch (err) {
+    console.warn('service worker', err);
+    return null;
+  }
+})();
+
+// Pings al worker mientras haya descargas en curso: algunos navegadores lo
+// matan si lleva un rato sin atender peticiones, y con el se iria el stream.
+let swPinger = null;
+let swDownloads = 0;
+function swKeepAlive(delta) {
+  swDownloads += delta;
+  if (swDownloads > 0 && !swPinger) {
+    swPinger = setInterval(() => { fetch('__drop-download/ping', { cache: 'no-store' }).catch(() => {}); }, 10_000);
+  } else if (swDownloads <= 0 && swPinger) {
+    clearInterval(swPinger);
+    swPinger = null;
+    swDownloads = 0;
+  }
+}
+
+function swSink(reg, meta) {
+  const id = crypto.randomUUID();
+  const { port1, port2 } = new MessageChannel();
+  let credits = 0;
+  let wake = null;
+  let cancelled = false;
+  let ready = null;
+  const readyPromise = new Promise((resolve) => { ready = resolve; });
+
+  port1.onmessage = (ev) => {
+    const msg = ev.data;
+    if (!msg) return;
+    if (msg.type === 'ready') { credits = msg.credits; ready(); }
+    else if (msg.type === 'pull') { credits++; if (wake) { const w = wake; wake = null; w(); } }
+    else if (msg.type === 'cancel') { cancelled = true; if (wake) { const w = wake; wake = null; w(); } }
+  };
+
+  // Una carpeta baja archivo a archivo: el navegador no crea carpetas en
+  // Descargas, asi que va el nombre suelto.
+  const name = safeName(meta.name);
+  const size = Number.isFinite(meta.size) ? meta.size : null;
+  reg.active.postMessage({ type: 'drop-stream', id, name, size, mime: meta.type || '' }, [port2]);
+
+  // El iframe es lo que dispara el dialogo de descarga: navega a la URL que
+  // solo el worker sabe contestar. Se quita al terminar, o al fallar.
+  const frame = document.createElement('iframe');
+  frame.hidden = true;
+  frame.setAttribute('aria-hidden', 'true');
+  const opened = readyPromise.then(() => {
+    frame.src = '__drop-download/' + id;
+    document.body.appendChild(frame);
+    swKeepAlive(+1);
+  });
+  const cleanup = () => {
+    swKeepAlive(-1);
+    setTimeout(() => frame.remove(), 5000);
+    port1.close();
+  };
+
+  return {
+    write: async (chunk) => {
+      await opened;
+      while (credits <= 0 && !cancelled) await new Promise((resolve) => { wake = resolve; });
+      if (cancelled) throw new Error('download cancelled in the browser');
+      credits--;
+      // Se copia (structured clone), no se transfiere: el trozo puede estar
+      // reenviandose a otro receptor de la cadena. Una vista sobre un buffer
+      // mayor se recorta antes, o el clon se llevaria el buffer entero.
+      const data = chunk instanceof ArrayBuffer ? chunk
+        : (chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength) ? chunk.buffer
+          : chunk.slice().buffer;
+      port1.postMessage({ type: 'chunk', data });
+    },
+    abort: async () => {
+      await opened;
+      port1.postMessage({ type: 'abort' });
+      cleanup();
+    },
+    close: async () => {
+      await opened;
+      port1.postMessage({ type: 'end' });
+      cleanup();
+    },
+  };
+}
+
 function memorySink(meta) {
   let parts = [];
   return {
@@ -1720,15 +1856,23 @@ async function acceptTransfer() {
   armAlerts();
 
   rx.makeSink = (meta) => memorySink(meta);
+  // Sin carpeta elegida, los archivos grandes (o de tamano desconocido) van por
+  // el worker en streaming si lo hay; el resto, por Blob como siempre.
+  const reg = await swReady;
+  if (reg) {
+    rx.makeSink = (meta) => ((meta.size == null || meta.size >= SW_MIN) ? swSink(reg, meta) : memorySink(meta));
+  }
   if (supportsDirectPicker(rx.manifest)) {
     try {
       const dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'drop' });
       rx.makeSink = (meta) => diskSink(dir, meta);
     } catch {
       const isHuge = rx.total == null || rx.total > 500 * 1024 * 1024;
-      $('#offer-hint').textContent = isHuge
-        ? 'Warning: large file held in RAM. Choosing a folder is recommended to avoid browser crashes.'
-        : 'No folder chosen. Held in memory until the transfer completes.';
+      $('#offer-hint').textContent = reg
+        ? 'No folder chosen. Streamed to your downloads folder as it arrives.'
+        : isHuge
+          ? 'Warning: large file held in RAM. Choosing a folder is recommended to avoid browser crashes.'
+          : 'No folder chosen. Held in memory until the transfer completes.';
     }
   }
 

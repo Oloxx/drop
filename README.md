@@ -110,7 +110,17 @@ tar -xzf drop-v0.8.0-linux-x64.tar.gz
 2. **Recibir:**
    * El receptor abre el enlace en su navegador, **o** entra en la web y teclea el código
      en el campo *«…or receive: type the code you were given»*.
-   * Pulsa **Descargar**. Con la *File System Access API* (Chrome/Edge), se guardan en streaming directo a la carpeta elegida; en navegadores sin esta API, se descargan a la carpeta habitual de Descargas.
+   * Pulsa **receive**. Dónde acaban los bytes depende del navegador:
+
+     | Ruta | Cuándo | Memoria |
+     |---|---|---|
+     | Carpeta elegida (*File System Access API*) | Chrome/Edge, con varios archivos, carpetas o más de 128 MB | Constante: se escribe según llega |
+     | Descarga en streaming por *Service Worker* ([`public/sw.js`](public/sw.js)) | Firefox, Safari (macOS e iOS) y Chrome sin carpeta elegida, a partir de 32 MB o sin tamaño conocido | Constante: el navegador escribe a Descargas según llega |
+     | Descarga normal (Blob) | Archivos pequeños, o si el worker no está (contexto no seguro, navegador antiguo) | El archivo entero en RAM hasta el final |
+
+     En las tres se verifica el SHA-256 al terminar; por el worker, si no cuadra, la descarga
+     se aborta y el navegador la marca como fallida en vez de dejar un archivo corrupto. El
+     worker no cachea nada y solo atiende su propia URL de descarga.
 3. **Test de velocidad P2P (`/speed`):**
    * Abre `https://drop.oloxx.dev/speed` para medir latencia (RTT), velocidad simétrica de subida/bajada y si la ruta es directa o rebotada por TURN.
 
