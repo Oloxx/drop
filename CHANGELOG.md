@@ -11,6 +11,11 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+### Añadido
+- **El cliente web tiene un test de extremo a extremo en la suite** (`test/web.test.mjs`):
+  dos pestañas de Chrome, un archivo de 6 MB, la misma huella en las dos y SHA-256 al final.
+  Se salta sin Chrome; el CI lo exige en Linux con `DROP_REQUIRE_CHROME=1`.
+
 ## [0.9.0] — 2026-09-20
 
 > **Rompe compatibilidad con la v0.8.x:** el protocolo pasa a la versión 4 (tamaño desconocido).

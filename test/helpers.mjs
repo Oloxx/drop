@@ -9,6 +9,7 @@
 // El puerto lo elige el sistema (`freePort`), asi que dos ficheros de tests
 // pueden correr a la vez sin chocar, y el origen que el servidor acepta por
 // defecto (`http://localhost:<PORT>`) sale de ese mismo puerto.
+import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -116,3 +117,21 @@ export function open(url, options) {
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Ruta a un Chrome instalado, o `null`. playwright-core no descarga navegador:
+ * usa el del sistema, y `CHROME_PATH` manda sobre las rutas conocidas.
+ */
+export function findChrome() {
+  const candidates = [
+    process.env.CHROME_PATH,
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ].filter(Boolean);
+  return candidates.find((p) => fs.existsSync(p)) || null;
+}

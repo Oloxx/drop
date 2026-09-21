@@ -43,9 +43,10 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       manifiesto, protocolo 4). Hecho en la v0.9.0; `--stdout` ya existía.
 - [ ] **Safari de escritorio y iOS probados de verdad** con transferencia web completa (SCTP,
       `maxMessageSize`, sin `showDirectoryPicker`). Hoy solo hay medición en Chrome.
-- [ ] **Tests del cliente web en CI**: `npm run bench` y `bench:fanout` pasan por Chrome real
-      pero no se ejecutan en `ci.yml`; un cambio en `app.js` solo lo detecta quien lo prueba a
-      mano. Un caso corto (un archivo, dos pestañas, SHA-256) en Playwright dentro de la suite.
+- [x] **Tests del cliente web en CI**: `test/web.test.mjs` (un archivo, dos pestañas, huella
+      igual en las dos, SHA-256) corre dentro de `npm test` con el Chrome del runner y el CI
+      lo exige en Linux (`DROP_REQUIRE_CHROME=1`). `bench` y `bench:fanout` siguen siendo
+      benches.
 - [ ] **Errores con mensaje en todos los cortes conocidos**: pestaña del emisor cerrada
       a mitad, receptor que rechaza, `.part` huérfano, servidor caído durante la señalización.
       Revisar que cada uno acaba en `fail()` con texto y no en un `transmitting…` eterno.

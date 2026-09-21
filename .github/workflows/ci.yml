@@ -46,7 +46,14 @@ jobs:
 
       # La suite levanta su propio servidor en un puerto efimero y lo apaga al
       # acabar, asi que no hay nada que preparar antes.
+      #
+      # test/web.test.mjs conduce dos pestanas del Chrome que trae el runner
+      # (playwright-core no descarga ninguno). Sin Chrome se salta; en Linux se
+      # exige, para que un runner que un dia venga sin el falle en vez de dejar
+      # app.js sin probar en silencio.
       - run: npm test
+        env:
+          DROP_REQUIRE_CHROME: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}
 
   audit:
     name: npm audit
