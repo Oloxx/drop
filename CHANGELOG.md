@@ -18,6 +18,13 @@ Las notas de cada release, con los binarios, están en
 - `docs/PROTOCOL.md`: el protocolo web entero (señalización, DataChannel, cadena de reenvío,
   reparación) en un documento, con lo que se congela en la 1.0 y lo que se puede extender.
 
+### Corregido
+- **El receptor web ya no se queda en `handshake…` para siempre.** Si el emisor cierra la
+  pestaña antes de que se acepte, si ICE falla sin ruta ni TURN, o si el servidor cae antes de
+  que abra el DataChannel, se retira la oferta y se explica qué ha pasado, con el cuadro para
+  teclear otro código. Con el canal ya abierto la transferencia sigue aunque el servidor
+  desaparezca, y el emisor avisa de que el código ha dejado de valer para receptores nuevos.
+
 ## [0.9.0] — 2026-09-20
 
 > **Rompe compatibilidad con la v0.8.x:** el protocolo pasa a la versión 4 (tamaño desconocido).

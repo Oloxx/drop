@@ -46,9 +46,11 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       igual en las dos, SHA-256) corre dentro de `npm test` con el Chrome del runner y el CI
       lo exige en Linux (`DROP_REQUIRE_CHROME=1`). `bench` y `bench:fanout` siguen siendo
       benches.
-- [ ] **Errores con mensaje en todos los cortes conocidos**: pestaña del emisor cerrada
-      a mitad, receptor que rechaza, `.part` huérfano, servidor caído durante la señalización.
-      Revisar que cada uno acaba en `fail()` con texto y no en un `transmitting…` eterno.
+- [x] **Errores con mensaje en todos los cortes conocidos**: en la web todos pasan por
+      `recvDead()` — emisor que cierra antes o después de aceptar, ICE que falla sin TURN,
+      servidor caído antes de que abra el canal — y con el canal ya abierto la transferencia
+      termina sin servidor (probado en `test/web.test.mjs`). El CLI ya decía qué pasa con un
+      rechazo del emisor y con un `.part` conservado.
 
 ## Servidor y despliegue
 

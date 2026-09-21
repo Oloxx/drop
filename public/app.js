@@ -207,7 +207,19 @@ function connectSignaling() {
       setStatus('uplink lost', 'bad');
       if (rx.isCli && rx.row && rxIncomplete()) {
         rx.row.fail('uplink lost');
+        return;
       }
+      // Receptor web sin canal abierto todavia: sin servidor no va a llegar ni
+      // la oferta ni el ICE, y "handshake…" para siempre no le dice nada.
+      // Con el DataChannel ya abierto la transferencia sigue sin servidor.
+      if (document.body.dataset.view === 'recv' && !rx.finished
+          && !(rx.host && rx.host.readyState === 'open')) {
+        recvDead('Lost the server before the peer connected. Reload and try the code again.', 'uplink lost');
+        return;
+      }
+      // Emisor: la sala muere con el websocket. Lo que esta en curso termina,
+      // pero el codigo ya no le sirve a nadie nuevo.
+      if (out.code) setStatus('uplink lost · code no longer valid, open a new channel', 'bad');
     };
     ws.onmessage = (ev) => {
       // Binario por el websocket solo lo manda un emisor CLI: es un trozo
@@ -1272,7 +1284,11 @@ function onJoined(guestId) {
   $('#recv-title').textContent = 'handshake…';
   const conn = makeLink(0);
   conn.pc.onconnectionstatechange = () => {
-    if (conn.pc.connectionState === 'failed' && rx.row && !rx.finished) rx.row.fail('link failed');
+    // Sin ruta (NAT simetrica y sin TURN) ICE acaba en `failed`. Antes de
+    // aceptar no hay fila donde ponerlo, y la pagina se quedaba en "handshake…".
+    if (conn.pc.connectionState === 'failed' && !rx.finished) {
+      recvDead('Could not reach the sender: no direct route and no relay. Try another network, or ask the sender to retry.', 'link failed');
+    }
   };
   conn.pc.ondatachannel = (e) => attachInbound(conn, e.channel);
 }
@@ -1283,7 +1299,30 @@ function onHostGone() {
   // La sala muere con el emisor, pero los canales P2P no: si nos alimenta otro
   // receptor puede quedarle cola por entregarnos y esto todavia puede acabar.
   if (rx.up && rx.up.peerId !== 0) return;
-  if (rx.row && rxIncomplete()) rx.row.fail('severed');
+  recvDead('The sender closed the channel. Ask for a fresh code.', 'severed');
+}
+
+/**
+ * El receptor se ha quedado sin nada que esperar. Todos los cortes conocidos
+ * pasan por aqui para que ninguno acabe en un "handshake…" o "transmitting…"
+ * eterno: con la fila de progreso ya creada se cierra con `fail(short)`; antes
+ * de aceptar se retira la oferta y se ensena `text` con el cuadro de reintento.
+ */
+function recvDead(text, short) {
+  if (rx.finished) return;
+  if (rx.row) {
+    // Una fila ya cerrada tiene su motivo (un hash que no cuadra, por
+    // ejemplo) y no se pisa con el segundo corte que llegue.
+    if (!rx.row.closed && rxIncomplete()) rx.row.fail(short);
+    return;
+  }
+  $('#offer').hidden = true;
+  $('#recv-title').textContent = 'dead link';
+  const el = $('#join-error');
+  el.hidden = false;
+  el.textContent = text;
+  $('#retry-box').hidden = false;
+  setStatus(short, 'bad');
 }
 
 /**
@@ -1312,7 +1351,9 @@ function attachInbound(conn, dc) {
   dc.binaryType = 'arraybuffer';
   if (conn.peerId === 0) rx.host = dc;
   dc.onmessage = (ev) => onInbound(conn, ev);
-  dc.onclose = () => onUpstreamLost(conn);
+  // El canal del emisor cerrandose es el mismo caso que `host-gone`, para
+  // cuando el aviso no puede llegar porque el websocket ya se habia ido.
+  dc.onclose = () => (conn.peerId === 0 ? onHostGone() : onUpstreamLost(conn));
 }
 
 function onInbound(conn, ev) {

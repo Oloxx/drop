@@ -96,3 +96,70 @@ test('web -> web: un archivo llega entero y verificado entre dos pestanas', { sk
   assert.equal(sha256(got), sha256(body), 'lo descargado no es lo que se envio');
   assert.deepEqual(errors, [], 'la consola no deberia tener errores');
 });
+
+// Montaje comun de los casos de corte: emisor con un archivo pequeno y receptor
+// con la oferta a la vista (DataChannel abierto, sin aceptar todavia).
+async function offerReady(t, srv, context, size = 512 * 1024) {
+  const body = crypto.randomBytes(size);
+  const sender = await context.newPage();
+  await sender.goto(srv.http, { waitUntil: 'domcontentloaded' });
+  await sender.evaluate((b64) => {
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+    const dt = new DataTransfer();
+    dt.items.add(new File([bytes], 'corte.bin'));
+    const input = document.getElementById('file-input');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, body.toString('base64'));
+  await sender.click('#create-link');
+  await sender.waitForFunction(() => document.getElementById('link-out').value.includes('#'), null, { timeout: 15_000 });
+  const link = await sender.inputValue('#link-out');
+  const receiver = await context.newPage();
+  await receiver.addInitScript(() => { delete window.showDirectoryPicker; });
+  await receiver.goto(link, { waitUntil: 'domcontentloaded' });
+  await receiver.waitForSelector('#accept:visible', { timeout: 20_000 });
+  return { sender, receiver, body };
+}
+
+test('web: los cortes conocidos acaban con un mensaje, no en un handshake eterno', { skip: !CHROME && !REQUIRED && 'sin Chrome (CHROME_PATH)', timeout: 120_000 }, async (t) => {
+  assert.ok(CHROME, 'DROP_REQUIRE_CHROME=1 pero no hay Chrome: indicalo con CHROME_PATH');
+  const { chromium } = await import('playwright-core');
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  t.after(() => browser.close());
+
+  // 1. El emisor cierra la pestana antes de que el receptor acepte: la oferta
+  //    se retira y se explica, con el cuadro para teclear otro codigo.
+  {
+    const srv = await startServer();
+    const context = await browser.newContext({ acceptDownloads: true });
+    const { sender, receiver } = await offerReady(t, srv, context);
+    await sender.close();
+    await receiver.waitForSelector('#join-error:visible', { timeout: 20_000 });
+    assert.match(await receiver.textContent('#join-error'), /sender closed the channel/);
+    assert.equal(await receiver.isVisible('#accept'), false, 'la oferta no deberia seguir a la vista');
+    assert.equal(await receiver.isVisible('#retry-box'), true);
+    await context.close();
+    srv.stop();
+  }
+
+  // 2. El servidor cae con el DataChannel ya abierto: la transferencia no lo
+  //    necesita y tiene que terminar igual. Es la promesa de "el servidor solo
+  //    empareja", puesta a prueba.
+  {
+    const srv = await startServer();
+    const context = await browser.newContext({ acceptDownloads: true });
+    const { sender, receiver, body } = await offerReady(t, srv, context);
+    const downloaded = new Promise((resolve) => receiver.on('download', resolve));
+    srv.proc.kill('SIGKILL');
+    await receiver.waitForFunction(() => /uplink lost/.test(document.getElementById('status').textContent), null, { timeout: 10_000 });
+    assert.equal(await receiver.isVisible('#accept'), true, 'con el canal abierto la oferta sigue valiendo');
+    await receiver.click('#accept');
+    await sender.waitForFunction(
+      () => /delivered/.test(document.querySelector('.peer .state')?.textContent || ''),
+      null, { timeout: 60_000 });
+    const got = fs.readFileSync(await (await downloaded).path());
+    assert.equal(sha256(got), sha256(body));
+    await context.close();
+  }
+});
