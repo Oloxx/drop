@@ -323,6 +323,19 @@ drop --version    # Muestra la versión instalada
 drop --help       # Muestra la ayuda de comandos
 ```
 
+**Autocompletado.** `drop completion <shell>` imprime el script y no toca ningún perfil por su
+cuenta; se carga así:
+
+```bash
+eval "$(drop completion bash)"                                  # ~/.bashrc
+eval "$(drop completion zsh)"                                   # ~/.zshrc
+drop completion fish > ~/.config/fish/completions/drop.fish     # fish
+drop completion powershell | Out-String | Invoke-Expression     # $PROFILE
+```
+
+Completa las órdenes, los flags que valen para cada una, las carpetas tras `-o` y los archivos
+tras `send`.
+
 ---
 
 ## ⚙️ ¿Cómo funciona por dentro?

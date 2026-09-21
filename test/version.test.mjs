@@ -16,6 +16,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { ROOT } from './helpers.mjs';
+import { FLAGS, COMMANDS, SHELLS, completionScript } from '../cli/src/completion.js';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
@@ -53,4 +54,37 @@ test('los enlaces de descarga del README apuntan a la version actual', () => {
   for (const version of new Set(links)) {
     assert.equal(version, pkg.version, `el README enlaza a la v${version} y el package.json dice ${pkg.version}`);
   }
+});
+
+// Todo flag que el parser de cli.js reconoce tiene que salir en `--help` y en
+// la tabla del autocompletado: el roadmap de la 1.0 pide una ayuda completa, y
+// la forma de que se quede completa es que un flag nuevo sin documentar falle.
+function parsedFlags() {
+  const source = fs.readFileSync(CLI, 'utf8');
+  const flags = new Set();
+  for (const m of source.matchAll(/argv(?:\[i\])?(?:\.includes\(| === )'(--?[a-z][a-z-]*)'/g)) flags.add(m[1]);
+  return [...flags];
+}
+
+test('todo flag del parser sale en --help y en el autocompletado', () => {
+  const help = execFileSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' });
+  const known = new Set(FLAGS.map(([f]) => f));
+  const flags = parsedFlags();
+  assert.ok(flags.length >= 20, `el extractor no ha encontrado flags: ${flags}`);
+  for (const f of flags) {
+    assert.ok(help.includes(f), `${f} no aparece en drop --help`);
+    assert.ok(known.has(f), `${f} no esta en FLAGS de cli/src/completion.js`);
+  }
+  for (const [cmd] of COMMANDS) assert.ok(help.includes(`drop ${cmd}`), `drop ${cmd} no aparece en la ayuda`);
+});
+
+test('drop completion imprime un script por shell, sin colores', () => {
+  for (const shell of SHELLS) {
+    const out = execFileSync(process.execPath, [CLI, 'completion', shell], { encoding: 'utf8' });
+    assert.equal(out, completionScript(shell));
+    assert.doesNotMatch(out, /\[/, `${shell}: un eval no quiere codigos ANSI`);
+    for (const [cmd] of COMMANDS) assert.ok(out.includes(cmd), `${shell}: falta la orden ${cmd}`);
+    assert.ok(out.includes('no-resume'), `${shell}: faltan los flags`);
+  }
+  assert.throws(() => completionScript('nope'), (err) => err.code === 'UNKNOWN_SHELL');
 });

@@ -77,9 +77,9 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [ ] **`drop update` probado contra una release real** en las tres plataformas antes de cada
       release (hoy está cubierto por tests unitarios de `minisign.js` y `shasums.js`, no por un
       flujo de extremo a extremo).
-- [ ] **Autocompletado de shell** (`bash`, `zsh`, `fish`, PowerShell) y `drop --help` completo
-      con todos los flags que existen (`--limit`, `--once`, `--expire`, `--text`, `--clipboard`,
-      `--stdout`, `--no-qr`, `--relay`).
+- [x] **Autocompletado de shell** (`drop completion bash|zsh|fish|powershell`, en
+      `cli/src/completion.js`) y `drop --help` completo: `test/version.test.mjs` saca del parser
+      todos los flags y falla si alguno falta en la ayuda o en la tabla del autocompletado.
 
 ## Seguridad
 

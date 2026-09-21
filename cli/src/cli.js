@@ -19,6 +19,7 @@ import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared
 import { verifySignature } from './minisign.js';
 import { encodeQr, qrToBlocks, ECL } from '../../public/shared/qr.js';
 import { makeThrottle, parseRate } from './throttle.js';
+import { completionScript, SHELLS } from './completion.js';
 import pkg from '../../package.json' with { type: 'json' };
 
 // La version sale del package.json y de ningun otro sitio. Estuvo escrita a mano
@@ -469,6 +470,7 @@ ${c.bold}USO:${c.reset}
   drop update                           Busca e instala la última versión disponible
   drop install                          Instala drop en el sistema y lo añade al PATH
   drop uninstall                        Desinstala drop del sistema
+  drop completion <shell>               Imprime el autocompletado (bash, zsh, fish, powershell)
 
 ${c.bold}OPCIONES:${c.reset}
   -t, --time <segundos>  Duración de cada fase del test de velocidad (por defecto: 5s)
@@ -525,6 +527,7 @@ ${c.bold}EJEMPLOS:${c.reset}
   drop speed 4271-lemon-radar-tiger-orbit
   drop speed 4271-lemon-radar-tiger-orbit -t 10
   drop update
+  eval "$(drop completion bash)"        # o zsh; fish y powershell en la ayuda del script
 `);
 }
 
@@ -1868,6 +1871,18 @@ async function main() {
 
   if (argv.includes('uninstall')) {
     await uninstallSelf();
+    return;
+  }
+
+  // `drop completion bash` imprime el script y nada mas: sin colores, sin
+  // cabecera, para que un `eval "$(...)"` se lo trague tal cual.
+  if (argv[0] === 'completion') {
+    try {
+      process.stdout.write(completionScript(argv[1]));
+    } catch (err) {
+      console.error(`\n${c.red}${err.message}${c.reset}\n  Uso: drop completion <${SHELLS.join('|')}>\n`);
+      process.exit(1);
+    }
     return;
   }
 
