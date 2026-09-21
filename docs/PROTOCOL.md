@@ -151,7 +151,7 @@ baja con los trozos, salto a salto; *control* va siempre directo entre ese recep
 |-------------|------|--------|-------|-------|
 | `challenge` | E→R  | `nonce` (32 hex) | control | Nuevo por receptor. |
 | `proof`     | R→E  | `proof` (64 hex) | control | `sha256Hex("drop-proof-v2\|" + nonce + "\|" + secreto)`; `secreto` son las cuatro palabras con guiones. Misma fórmula en `cli/src/crypto.js`. |
-| `manifest`  | E→R  | `files: [{ name, size, type, path? }]` | control | `path` es la ruta relativa con `/` cuando se envía una carpeta. `size` puede ser `null` sólo con un emisor CLI leyendo de stdin (§7). |
+| `manifest`  | E→R  | `files: [{ name, size, type, path? }]` | control | `path` es la ruta relativa con `/` cuando se envía una carpeta. `size` es `null` cuando el emisor no lo sabe (hoy sólo un CLI leyendo de stdin, §7): el receptor no da porcentaje y cierra el archivo con el `end`, no contando bytes. |
 | `accept`    | R→E  | — | control | |
 | `start`     | E→R  | `index`, `name`, `size`, `type`, `from`, `path?` | **en banda** | Abre el archivo `index`. `from` > 0 sólo al retomar (§5): el receptor no recrea el destino, sigue escribiendo. |
 | `end`       | E→R  | `index`, `sha256` | **en banda** | SHA-256 del archivo **entero** (prefijo retomado incluido). El receptor compara con el suyo; si no cuadra, aborta el destino y ofrece `retry`. |
@@ -186,10 +186,15 @@ Un `k` desconocido se ignora en los dos lados (no cierra nada, no se escribe en 
 
 Lo decide el receptor al pulsar `accept` (`supportsDirectPicker`): varios archivos, una carpeta,
 más de 128 MB o tamaño desconocido → pide directorio (File System Access, Chrome/Edge) y escribe a
-disco en streaming; si no, o si el navegador no tiene la API (Firefox, Safari), acumula en memoria
-y dispara una descarga normal. Con carpetas cada tramo de `path` pasa por `safeName` (que convierte
-`..` en `_`) y `getDirectoryHandle(…, { create: true })`. El picker tiene que pedirse **dentro** del
-click: la activación de usuario se pierde tras un `await`.
+disco en streaming. Sin la API (Firefox, Safari, iOS), un archivo de 32 MB o más, o sin tamaño, se
+sirve como descarga HTTP en streaming a través de un Service Worker (`public/sw.js`): la página lo
+alimenta trozo a trozo con contrapresión por créditos y el navegador escribe a Descargas según
+llega; si el hash no cuadra la respuesta se rompe y la descarga queda marcada como fallida. Lo que
+quede por debajo, o donde no haya worker (contexto no seguro), se acumula en memoria y baja como
+Blob. Nada de esto toca el protocolo: son sumideros distintos para los mismos trozos. Con carpetas
+cada tramo de `path` pasa por `safeName` (que convierte `..` en `_`) y `getDirectoryHandle(…,
+{ create: true })`. El picker tiene que pedirse **dentro** del click: la activación de usuario se
+pierde tras un `await`.
 
 ## 5. Retomar dentro de una sesión
 
@@ -296,13 +301,14 @@ no entra en cadenas, `probePaths` la salta.
 
 Al revés, una pestaña que recibe de `drop send` procesa `cli-manifest`/`cli-start`/`cli-end`/
 `cli-done` traduciéndolos a los `manifest`/`start`/`end`/`done` de §4.3 (`onControl`), y acusa con
-`cli-ack` en vez de `ack`. Con `drop send -` el manifiesto trae `size: null`: la fila no da
-porcentaje ni ETA y el total se sabe al `done`.
+`cli-ack` en vez de `ack`. Con `drop send -` el manifiesto trae `size: null`: la fila pinta el
+archivo como `stream`, sin porcentaje ni ETA, y el total se sabe al `done`.
 
 Los dos casos están descritos, mensaje a mensaje, en `cli/src/transfer.js`, y
-`PROTOCOL_VERSION` ([`public/shared/protocol.js`](../public/shared/protocol.js)) se comprueba en
-la oferta: una pestaña y un CLI de versiones distintas se rechazan con un mensaje, no se entienden
-a medias.
+`PROTOCOL_VERSION` ([`public/shared/protocol.js`](../public/shared/protocol.js), la 4 desde la
+v0.9.0) se comprueba en la oferta: una pestaña y un CLI de versiones distintas se rechazan con un
+mensaje, no se entienden a medias. Esa versión es del protocolo **del CLI**; el de esta página no
+lleva número, porque las dos pestañas sirven siempre el mismo `app.js`.
 
 ## 8. Compatibilidad
 
