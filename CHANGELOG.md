@@ -15,6 +15,8 @@ Las notas de cada release, con los binarios, están en
 - **El cliente web tiene un test de extremo a extremo en la suite** (`test/web.test.mjs`):
   dos pestañas de Chrome, un archivo de 6 MB, la misma huella en las dos y SHA-256 al final.
   Se salta sin Chrome; el CI lo exige en Linux con `DROP_REQUIRE_CHROME=1`.
+- `docs/PROTOCOL.md`: el protocolo web entero (señalización, DataChannel, cadena de reenvío,
+  reparación) en un documento, con lo que se congela en la 1.0 y lo que se puede extender.
 
 ## [0.9.0] — 2026-09-20
 

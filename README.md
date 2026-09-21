@@ -340,7 +340,7 @@ drop --help       # Muestra la ayuda de comandos
   de las palabras: un servidor que la vea pasar no tiene nada barato que atacar offline.
 
 ### 2. Transferencia Web (WebRTC DataChannel)
-* **Protocolo mínimo:** Control en JSON (`manifest`, `accept`, `start`, `ack`, `end`, `done`) y datos en trozos binarios continuos.
+* **Protocolo mínimo:** Control en JSON (`manifest`, `accept`, `start`, `ack`, `end`, `done`) y datos en trozos binarios continuos. Está especificado entero, señalización incluida, en [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 * **Control de flujo reactivo:** Evita desbordar la memoria pausando la lectura al superar 8 MB en el búfer de envío y reanudando al bajar de 1 MB.
 * **Cadena multi-receptor (Fanout Chain):** Cuando varios amigos descargan a la vez, se organizan en cadena (`Emisor → A → B → C`). El emisor sube **una sola copia** de los datos, ahorrando ancho de banda de subida.
 

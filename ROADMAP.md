@@ -13,10 +13,9 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 
 - [ ] **Congelar `PROTOCOL_VERSION`** y escribir la política de compatibilidad: qué versiones
       del CLI se hablan entre sí y con la web, y durante cuánto tiempo.
-- [ ] **Especificar el protocolo del DataChannel en un documento**, como ya está el relay del
-      CLI encima de `receiveFromRelay` en `cli/src/transfer.js`: marcos JSON, trozos binarios,
-      cadena de relay (`relay`/`linked`/`orphaned`/`resume`/`hold`/`go`), qué va en banda y qué
-      por el canal de control. Hoy vive repartido entre `CLAUDE.md` y `app.js`.
+- [x] **Especificar el protocolo del DataChannel en un documento**: [`docs/PROTOCOL.md`](docs/PROTOCOL.md),
+      con la señalización, los marcos JSON y binarios, la cadena de relay, qué va en banda y qué
+      por control, y qué se congela con la 1.0 frente a qué se puede añadir sin versión mayor.
 - [x] **Quitar el camino de la v0.3.5** (`@deprecated` en `server/index.js`, `cli/src/cli.js`,
       `cli/src/crypto.js`). Hecho en la v0.8.0: el servidor contesta `VERSION` a quien no pide
       `v:2`, y `parseCode` ya no reconoce el token largo.
