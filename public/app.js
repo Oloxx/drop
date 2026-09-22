@@ -729,7 +729,12 @@ function onGuestJoined(guestId, name) {
     if (msg.k === 'accept') {
       // La eleccion vale lo que valga el primer `accept`: una vez en marcha,
       // cambiarla dejaria al receptor esperando archivos que no van a llegar.
-      if (!conn.started && !out.ready.includes(conn)) setWant(conn, msg.files);
+      // `resume`: lo que ya tiene en su carpeta, entero; se comprueba al llegar
+      // a cada archivo y, si es el nuestro, no se le manda.
+      if (!conn.started && !out.ready.includes(conn)) {
+        setWant(conn, msg.files);
+        conn.resume = resumeMap(msg.resume);
+      }
       queueForStart(conn);
     }
     else if (msg.k === 'ack') { conn.acked = msg.bytes; row.progress(msg.bytes, bytesFor(conn)); }
@@ -789,7 +794,9 @@ function startBatch() {
   // su propia cadena; con el lote entero (lo normal) sale una sola.
   const groups = new Map();
   for (const conn of batch) {
-    const key = conn.want ? conn.want.join(',') : '*';
+    // Quien retoma se salta archivos: su flujo no es el de nadie mas.
+    const key = conn.resume && conn.resume.size ? 'solo:' + conn.guestId
+      : conn.want ? conn.want.join(',') : '*';
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(conn);
   }
@@ -893,14 +900,26 @@ async function sendAllFiles(conn, fromIndex = 0, fromOffset = 0) {
       if (index < fromIndex) continue;
       if (conn.want && !conn.want.includes(index)) continue;
       if (conn.cancelled || conn.epoch !== epoch) return;
-      row.file(file.name);
-      const from = index === fromIndex ? Math.min(fromOffset, file.size) : 0;
+      let from = index === fromIndex ? Math.min(fromOffset, file.size) : 0;
+      // Lo ofrecido en el `resume` del accept vale una vez: al primer paso por
+      // este archivo. Un `resume` de la misma sesion (se cayo la cadena) va
+      // por `fromOffset` y ese ya sabemos que es bueno.
+      const request = !from && conn.resume && conn.resume.get(index);
+      let accepted = null;
+      if (request) {
+        conn.resume.delete(index);
+        accepted = await verifyPrefixWeb(conn, file, request);
+        if (conn.cancelled || conn.epoch !== epoch) return;
+        if (accepted) from = accepted.offset;
+      }
+      row.file(accepted ? `${file.name} · already there` : file.name);
+      row.state(fromIndex || fromOffset ? 'resuming…' : 'transmitting…');
       dc.send(JSON.stringify({
         k: 'start', index, name: file.name, size: file.size, type: file.type, from, path: relPathOf(file) || undefined,
       }));
 
-      const hasher = new Sha256();
-      if (from > 0 && !file.sha256) {
+      const hasher = (accepted && accepted.hasher) || new Sha256();
+      if (from > 0 && !accepted && !file.sha256) {
         const prefixBuf = await file.slice(0, from).arrayBuffer();
         hasher.update(prefixBuf);
       }
@@ -1093,7 +1112,11 @@ function onCliSignal(from, data) {
     }
     case 'cli-accept':
       // `files` es lo que ha elegido con `drop recv --only`; sin el, todo.
-      if (!conn.started) setWant(conn, data.files);
+      // `resume`, los `.part` que ya tiene: se comprueban antes de fiarse.
+      if (!conn.started) {
+        setWant(conn, data.files);
+        conn.resume = resumeMap(data.resume);
+      }
       streamToCli(conn);
       return;
     case 'cli-ack':
@@ -1143,6 +1166,49 @@ function cliWindow(conn) {
   });
 }
 
+/**
+ * El receptor dice tener los primeros `offset` bytes de `file` con ese SHA-256.
+ * Se comprueba contra el archivo de verdad antes de aceptarlo, como hace el CLI
+ * (`verifyPrefix` en cli/src/transfer.js): es lo unico que garantiza que su
+ * `.part` es el principio de ESTE archivo y no de otro con el mismo nombre.
+ * Devuelve el offset y el hasher con el prefijo ya dentro, para seguir detras;
+ * o null, y entonces se manda entero.
+ *
+ * Aqui el SHA-256 es JS puro (~80 MB/s): un prefijo de varios GB tarda mas que
+ * el reloj de inactividad del receptor (60 s). Mientras dura se le manda un
+ * `cli-wait` cada pocos segundos; lo ignora, pero cualquier mensaje le rearma
+ * el reloj.
+ */
+async function verifyPrefixWeb(conn, file, request, keepAlive = null) {
+  const offset = request && request.offset;
+  if (!Number.isInteger(offset) || offset <= 0 || offset > file.size || typeof request.sha256 !== 'string') return null;
+  // El archivo entero y su hash ya calculado (se lo mandamos a otro antes): no
+  // hay nada que leer. El hasher no hace falta, `file.sha256` manda.
+  if (offset === file.size && file.sha256) return file.sha256 === request.sha256 ? { offset, hasher: null } : null;
+  const hasher = new Sha256();
+  const READ_BLOCK = 2 * 1024 * 1024;
+  let lastWait = Date.now();
+  for (let pos = 0; pos < offset; pos += READ_BLOCK) {
+    if (conn.cancelled) return null;
+    hasher.update(await file.slice(pos, Math.min(pos + READ_BLOCK, offset)).arrayBuffer());
+    conn.row.state('checking partial · ' + Math.floor((pos / offset) * 100) + '%');
+    if (keepAlive && Date.now() - lastWait > 5000) {
+      lastWait = Date.now();
+      await keepAlive();
+    }
+  }
+  return hasher.copy().digest() === request.sha256 ? { offset, hasher } : null;
+}
+
+/** `resume` de un accept -> Map indice -> peticion. */
+function resumeMap(list) {
+  const map = new Map();
+  for (const r of Array.isArray(list) ? list : []) {
+    if (r && Number.isInteger(r.index)) map.set(r.index, r);
+  }
+  return map;
+}
+
 async function streamToCli(conn) {
   if (conn.started || conn.cancelled) return;
   conn.started = true;
@@ -1158,15 +1224,28 @@ async function streamToCli(conn) {
     for (const [index, file] of out.files.entries()) {
       if (conn.want && !conn.want.includes(index)) continue;
       if (conn.cancelled) return;
-      row.file(file.name);
+      // Un `.part` que es de verdad el principio de este archivo: se sigue desde
+      // ahi. Si no lo es, se manda entero y el receptor lo guarda con otro
+      // nombre sin tocar su `.part`.
+      const request = conn.resume && conn.resume.get(index);
+      const accepted = request ? await verifyPrefixWeb(conn, file, request, () => sealedTo(conn, { type: 'cli-wait' })) : null;
+      if (conn.cancelled) return;
+      const startAt = accepted ? accepted.offset : 0;
+      row.file(startAt ? `${file.name} · resuming at ${fmtBytes(startAt)}` : file.name);
+      row.state('transmitting…');
       await sealedTo(conn, {
         type: 'cli-start', index, name: file.name, size: file.size, mime: file.type || 'application/octet-stream',
-        path: relPathOf(file) || undefined,
+        offset: startAt, path: relPathOf(file) || undefined,
       });
+      // El receptor acusa el offset en cuanto abre el archivo: se suma ya a lo
+      // enviado para que la ventana no se quede esperando ese acuse.
+      conn.sent += startAt;
+      // Comprobar un prefijo grande no manda nada: el reloj empieza aqui.
+      conn.lastProgress = Date.now();
 
-      const hasher = new Sha256();
+      const hasher = (accepted && accepted.hasher) || new Sha256();
       const READ_BLOCK = 2 * 1024 * 1024;
-      for (let offset = 0; offset < file.size;) {
+      for (let offset = startAt; offset < file.size;) {
         const blockBuf = await file.slice(offset, Math.min(offset + READ_BLOCK, file.size)).arrayBuffer();
         if (conn.cancelled) return;
         if (!file.sha256) hasher.update(blockBuf);
@@ -1230,6 +1309,7 @@ const rx = {
   accepted: false,
   finished: false,
   recovering: false,  // ya hemos pedido `resume` y esperamos el `start`
+  have: null,         // indice -> { offset, hasher }: archivos que ya estaban en la carpeta
   fileHasher: null,
   hasIntegrityError: false,
 };
@@ -1545,8 +1625,37 @@ function onControl(msg) {
       }
       break;
 
-    case 'start':
+    case 'start': {
       rx.recovering = false;
+      // El archivo ya estaba entero en la carpeta (lo ofrecimos en el `resume`
+      // del accept) y el emisor ha confirmado que es el suyo: no llega ningun
+      // byte y no se reescribe. Cuenta como recibido y se acusa ya, o un emisor
+      // CLI se quedaria esperando ese acuse con la ventana llena.
+      const have = rx.have && rx.have.get(msg.index);
+      if (msg.from > 0 && have && msg.from === have.offset) {
+        rx.have.delete(msg.index);
+        rx.fileIndex = msg.index;
+        rx.fileGot = msg.from;
+        rx.fileHasher = have.hasher;
+        rx.received += msg.from;
+        rx.writes = rx.writes.then(() => {
+          rx.sink = null;
+          if (rx.row) rx.row.file(msg.name + ' · already here');
+        });
+        if (rx.row) rx.row.progress(rx.received, rx.total);
+        rx.lastAck = rx.received;
+        if (rx.isCli) wsSend({ t: 'signal', data: { type: 'cli-ack', bytes: rx.received } });
+        else sendHost({ k: 'ack', bytes: rx.received });
+        break;
+      }
+      // Cualquier otro `from` > 0 es retomar el archivo en curso dentro de la
+      // misma sesion (se cayo el eslabon de arriba). Un emisor que empieza a
+      // mitad de un archivo que no teniamos abierto dejaria un agujero: se corta.
+      if (msg.from > 0 && rx.fileIndex !== msg.index) {
+        if (rx.row) rx.row.fail('sender skipped ahead');
+        rx.finished = true;
+        break;
+      }
       rx.fileIndex = msg.index;
       rx.fileGot = msg.from || 0;
       if (!msg.from || !rx.fileHasher) {
@@ -1559,10 +1668,16 @@ function onControl(msg) {
         if (rx.row) rx.row.file(msg.name);
       });
       break;
+    }
 
-    case 'end':
+    case 'end': {
+      // El hasher se coge AHORA, no dentro de la cola: los trozos se hashean al
+      // llegar, pero la cola va por detras, y si el `start` del siguiente
+      // archivo llega antes de que se vacie, `rx.fileHasher` ya es el de ese y
+      // el hash de este saldria mal.
+      const fileHasher = rx.fileHasher;
       rx.writes = rx.writes.then(async () => {
-        const calculated = rx.fileHasher ? rx.fileHasher.digest() : null;
+        const calculated = fileHasher ? fileHasher.digest() : null;
         const expected = msg.sha256;
         const verified = !expected || (calculated === expected);
 
@@ -1581,6 +1696,7 @@ function onControl(msg) {
         handleFileVerified(msg.index, calculated || expected);
       });
       break;
+    }
 
     case 'done':
       rx.writes = rx.writes.then(() => {
@@ -2012,10 +2128,12 @@ async function acceptTransfer() {
   if (reg) {
     rx.makeSink = (meta) => ((meta.size == null || meta.size >= SW_MIN) ? swSink(reg, meta) : memorySink(meta));
   }
+  let dir = null;
   if (supportsDirectPicker(chosen)) {
     try {
-      const dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'drop' });
-      rx.makeSink = (meta) => diskSink(dir, meta);
+      dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'drop' });
+      const target = dir;
+      rx.makeSink = (meta) => diskSink(target, meta);
     } catch {
       const isHuge = rx.total == null || rx.total > 500 * 1024 * 1024;
       $('#offer-hint').textContent = reg
@@ -2034,16 +2152,67 @@ async function acceptTransfer() {
   rx.row = makeProgressRow($('#recv-progress'), 'inbound');
   rx.row.files(chosen);
   rx.row.state('arming…');
-  // Sin `files` es el lote entero: es lo que entiende cualquier emisor.
+  // Con carpeta elegida, lo que ya este entero en ella se ofrece como hecho:
+  // un lote que se corto a la mitad no vuelve a bajar lo que ya llego.
+  const resume = dir ? await scanExisting(dir) : [];
+  // Sin `files` es el lote entero y sin `resume` no hay nada que retomar: es
+  // lo que entiende cualquier emisor.
   const files = rx.want || undefined;
+  const offer = resume.length ? resume : undefined;
   if (rx.isCli) {
     rx.row.path('CLI stream');
     rx.row.state('downloading…');
-    wsSend({ t: 'signal', data: { type: 'cli-accept', files } });
+    wsSend({ t: 'signal', data: { type: 'cli-accept', files, resume: offer } });
     return;
   }
   watchPaths();
-  sendHost({ k: 'accept', files });
+  sendHost({ k: 'accept', files, resume: offer });
+}
+
+/**
+ * Lo que ya esta en la carpeta elegida, entero, con el mismo nombre y tamano
+ * que un archivo del lote. Se hashea aqui y se le ofrece al emisor como
+ * `resume` con `offset` = tamano; si su SHA-256 cuadra, abre ese archivo desde
+ * el final, no manda nada y aqui no se reescribe.
+ *
+ * Es reanudar POR ARCHIVO, no a mitad de uno: File System Access escribe en un
+ * temporal (`.crswap`) que solo pasa al nombre bueno al cerrar, asi que un
+ * archivo cortado no deja nada en disco que retomar. Uno terminado, si.
+ */
+async function scanExisting(dirHandle) {
+  rx.have = new Map();
+  const indices = rx.want || rx.manifest.map((_, i) => i);
+  const resume = [];
+  for (const [n, index] of indices.entries()) {
+    const meta = rx.manifest[index];
+    if (!Number.isFinite(meta.size) || meta.size <= 0) continue;
+    const file = await existingFile(dirHandle, meta);
+    if (!file || file.size !== meta.size) continue;
+    rx.row.state(`checking files already here · ${n + 1}/${indices.length}`);
+    const hasher = new Sha256();
+    const READ_BLOCK = 2 * 1024 * 1024;
+    for (let pos = 0; pos < file.size; pos += READ_BLOCK) {
+      hasher.update(await file.slice(pos, Math.min(pos + READ_BLOCK, file.size)).arrayBuffer());
+    }
+    const sha256 = hasher.copy().digest();
+    rx.have.set(index, { offset: file.size, hasher });
+    resume.push({ index, offset: file.size, sha256 });
+  }
+  rx.row.state('arming…');
+  return resume;
+}
+
+/** El archivo que ocuparia `meta` en la carpeta, si ya existe; sin crear nada. */
+async function existingFile(dirHandle, meta) {
+  try {
+    let dir = dirHandle;
+    const parts = String(meta.path || '').split('/').filter(Boolean);
+    for (const seg of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(safeName(seg));
+    const leaf = parts.length ? parts[parts.length - 1] : meta.name;
+    return await (await dir.getFileHandle(safeName(leaf))).getFile();
+  } catch {
+    return null;
+  }
 }
 
 // Lado RECEPTOR WEB del protocolo de relay del CLI (los mensajes `cli-*`): el
@@ -2135,7 +2304,10 @@ function routeSignal(from, data) {
     return;
   }
   if (data.type === 'cli-start') {
-    onControl({ k: 'start', index: data.index, name: data.name, size: data.size, type: data.mime || '', from: 0, path: data.path });
+    // `offset` > 0 solo si lo pedimos en el `resume` del cli-accept (un archivo
+    // que ya estaba en la carpeta); `start` lo trata igual que el web.
+    const from = Number.isInteger(data.offset) && data.offset > 0 ? data.offset : 0;
+    onControl({ k: 'start', index: data.index, name: data.name, size: data.size, type: data.mime || '', from, path: data.path });
     return;
   }
   if (data.type === 'cli-end') {

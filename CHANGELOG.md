@@ -26,6 +26,15 @@ Las notas de cada release, con los binarios, están en
   lo mismo.
 - **Rompe compatibilidad:** `PROTOCOL_VERSION` sube a 5. Un emisor v4 ignoraría `files` y
   mandaría el lote entero a quien ha pedido tres archivos.
+- **Reanudar en las combinaciones con navegador** (#58).
+  - **Web → CLI:** la pestaña ya no ignora los `.part` del `drop recv`. Comprueba cada prefijo contra
+    su archivo (SHA-256, como el CLI) y sigue desde ahí; si no es suyo, lo manda entero y el receptor
+    lo guarda con otro nombre sin tocar el `.part`. Mientras hashea un prefijo grande (en JS, ~80 MB/s)
+    le manda `cli-wait` al receptor cada 5 s para que no salte su reloj de 60 s.
+  - **Receptor web con carpeta elegida, desde la web o desde el CLI:** se retoma por archivo. Lo que ya
+    está entero en la carpeta se hashea, se ofrece en el `resume` del `accept`/`cli-accept`, y si el
+    emisor confirma que es el suyo no vuelve a bajar. A mitad de un archivo no se puede: File System
+    Access solo escribe al nombre bueno al cerrar, así que un corte no deja nada. El README lo explica.
 - **Política de compatibilidad** en `docs/COMPATIBILITY.md`: el protocolo 5 es el de toda la
   1.x, qué más se congela (señalización, formato del código, órdenes y flags del CLI, variables
   del servidor) y cómo se añaden cosas sin romper: lo desconocido se ignora, lo nuevo es
@@ -47,6 +56,10 @@ Las notas de cada release, con los binarios, están en
   que ahora dice por qué es una sola instancia a propósito.
 
 ### Corregido
+- **El receptor web podía comprobar un archivo con el hash del siguiente.** El `end` calculaba el
+  SHA-256 dentro de la cola de escrituras, y si el `start` del archivo siguiente llegaba antes de que
+  se vaciara, ya había cambiado el hasher. Con escrituras a disco lentas daba un falso error de
+  integridad. Ahora se coge el hasher al recibir el `end`.
 - **`retry` en la web contra un `drop send` por relay reenviaba con los índices corridos.** El
   emisor mandaba `files.slice(i)` y el `cli-start` del archivo `i` salía como índice 0, así que
   la pestaña marcaba como verificado el archivo equivocado. Ahora reenvía por índice del

@@ -141,6 +141,21 @@ export class Sha256 {
     return hash.map((v) => (v >>> 0).toString(16).padStart(8, '0')).join('');
   }
 
+  /**
+   * Otro hasher en el mismo punto. `digest()` cierra el estado, asi que para
+   * mirar el hash de un prefijo y seguir hasheando detras (reanudar) hace falta
+   * una copia.
+   */
+  copy() {
+    const c = new Sha256();
+    c.h0 = this.h0; c.h1 = this.h1; c.h2 = this.h2; c.h3 = this.h3;
+    c.h4 = this.h4; c.h5 = this.h5; c.h6 = this.h6; c.h7 = this.h7;
+    c.block.set(this.block);
+    c.blockLen = this.blockLen;
+    c.totalLen = this.totalLen;
+    return c;
+  }
+
   /** El mismo digest, en bytes: lo que necesita un HMAC para encadenar hashes. */
   digestBytes() {
     const hex = this.digest();

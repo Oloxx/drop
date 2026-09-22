@@ -155,7 +155,7 @@ baja con los trozos, salto a salto; *control* va siempre directo entre ese recep
 | `challenge` | E→R  | `nonce` (32 hex) | control | Nuevo por receptor. |
 | `proof`     | R→E  | `proof` (64 hex) | control | `sha256Hex("drop-proof-v2\|" + nonce + "\|" + secreto)`; `secreto` son las cuatro palabras con guiones. Misma fórmula en `cli/src/crypto.js`. |
 | `manifest`  | E→R  | `files: [{ name, size, type, path? }]` | control | `path` es la ruta relativa con `/` cuando se envía una carpeta. `size` es `null` cuando el emisor no lo sabe (hoy sólo un CLI leyendo de stdin, §7): el receptor no da porcentaje y cierra el archivo con el `end`, no contando bytes. |
-| `accept`    | R→E  | `files?` | control | `files` son los índices del manifiesto que quiere el receptor (las casillas de la oferta). Sin el campo, el lote entero. El emisor limpia la lista (enteros dentro del manifiesto, sin repetir, en orden: `pickedFiles` en `public/shared/protocol.js`) y manda sólo esos; los demás no tienen `start` ni `end`. Sólo cuenta el primer `accept`. |
+| `accept`    | R→E  | `files?`, `resume?` | control | `resume: [{ index, offset, sha256 }]` son archivos que el receptor ya tiene enteros en su carpeta (`offset` = tamaño): el emisor hashea los suyos y, si cuadra, abre ese archivo con `start {from: offset}` y no manda bytes; si no, lo manda entero. Vale una vez por archivo. `files` son los índices del manifiesto que quiere el receptor (las casillas de la oferta). Sin el campo, el lote entero. El emisor limpia la lista (enteros dentro del manifiesto, sin repetir, en orden: `pickedFiles` en `public/shared/protocol.js`) y manda sólo esos; los demás no tienen `start` ni `end`. Sólo cuenta el primer `accept`. |
 | `start`     | E→R  | `index`, `name`, `size`, `type`, `from`, `path?` | **en banda** | Abre el archivo `index`. `from` > 0 sólo al retomar (§5): el receptor no recrea el destino, sigue escribiendo. |
 | `end`       | E→R  | `index`, `sha256` | **en banda** | SHA-256 del archivo **entero** (prefijo retomado incluido). El receptor compara con el suyo; si no cuadra, aborta el destino y ofrece `retry`. |
 | `done`      | E→R  | — | **en banda** | No quedan archivos. |
@@ -217,8 +217,16 @@ El bucle de envío está guardado por `conn.epoch`: cada `sendAllFiles` lo incre
 si estaba a medio `await`, sale al verlo. Sin esto dos bucles entrelazan dos flujos de bytes por
 el mismo canal.
 
-Esto **no** es reanudar una descarga cortada en otra sesión: al cerrar la pestaña no queda `.part`
-ni offset. Eso es #58, y sólo es posible con receptor en disco.
+Entre sesiones se retoma **por archivo** (#58). Un receptor con carpeta elegida hashea lo que ya
+hay en ella con el mismo nombre y tamaño que un archivo del lote y lo ofrece en el `resume` del
+`accept`. El emisor lo comprueba contra su archivo y, si es el suyo, manda `start` con `from` igual
+al tamaño y el `end` detrás, sin bytes; el receptor no reescribe nada, suma esos bytes a lo recibido
+y acusa en el acto. A mitad de un archivo no se puede: File System Access escribe en un temporal que
+solo se confirma al cerrar, así que un corte no deja nada en disco. Un `start` con `from` > 0 para un
+archivo que ni estaba en curso ni se ofreció es un emisor roto y cierra la fila.
+
+Quien ofrece `resume` no entra en una cadena (§6.1): se salta archivos y su flujo no es el de nadie
+más.
 
 ## 6. La cadena de reenvío
 

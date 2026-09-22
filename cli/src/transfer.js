@@ -1159,8 +1159,8 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 //   cli-accept     receptor -> emisor. "Listo para recibir": abre el envio.
 //                  Lleva `resume: [{ index, offset, sha256 }]` con los `.part`
 //                  que el receptor ya tiene de este manifiesto y el SHA-256 de
-//                  cada prefijo (vacio si no hay nada). Un emisor que no sepa
-//                  de reanudacion (el web) lo ignora y manda desde cero. Y
+//                  cada prefijo (vacio si no hay nada). Los dos emisores (CLI
+//                  y web) comprueban cada prefijo contra su archivo. Y
 //                  `files`, opcional: los indices del manifiesto que quiere
 //                  (`drop recv --only`, o las casillas de la web). Sin el, todo.
 //                  El emisor salta el resto, sin `cli-start` ni `cli-end`, y
@@ -1186,6 +1186,11 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 //                  `sha256`. El receptor compara, borra el `.part` si no cuadra
 //                  y solo entonces renombra al nombre definitivo.
 //   cli-done       emisor -> receptor. No quedan archivos.
+//   cli-wait       emisor -> receptor. No significa nada: el emisor sigue ahi.
+//                  Lo manda el emisor web cada pocos segundos mientras
+//                  comprueba un prefijo grande (SHA-256 en JS, ~80 MB/s), para
+//                  que el reloj de inactividad del receptor no salte. El
+//                  receptor lo ignora; cualquier mensaje le rearma el reloj.
 //   cli-complete   receptor -> emisor. Se manda con TODO ya escrito en disco, no
 //                  al recibir `cli-done`: es lo que permite al emisor dar la
 //                  transferencia por buena y soltar la ventana.

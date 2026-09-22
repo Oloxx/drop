@@ -287,8 +287,8 @@ siguiente `drop recv` con el mismo código sigue desde ahí en vez de empezar de
 por TCP directo como por relay. Antes de aceptarlo, el emisor comprueba que ese prefijo es
 de verdad el principio de su archivo (compara el SHA-256 de los primeros bytes): si el
 `.part` era de otra cosa, el archivo se descarga entero a `nombre (2).ext` y el `.part` no
-se toca. Con `--no-resume` un `.part` cuenta como nombre ocupado y se empieza de cero. Un
-emisor web no sabe reanudar: manda desde el principio.
+se toca. Con `--no-resume` un `.part` cuenta como nombre ocupado y se empieza de cero. Da igual
+que el emisor sea otro `drop` o una pestaña: los dos comprueban el prefijo.
 
 > **Compatibilidad:** desde la versión 0.5.0 el manifiesto lleva un número de versión de
 > protocolo, así que un receptor 0.5.0+ **rechaza** con un mensaje explícito a un emisor
@@ -313,10 +313,17 @@ Cualquiera recibe de cualquiera, en las cuatro combinaciones:
 
 | Emisor → Receptor | Camino | Cifrado | Reanuda un corte |
 |---|---|---|---|
-| Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | No: el receptor web no guarda `.part` (#58) |
+| Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | Por archivo, si el receptor elige carpeta: lo que ya está entero en ella no vuelve a bajar. A mitad de un archivo, no |
 | CLI → CLI | TCP directo (LAN, UPnP, IPv4 o IPv6) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código). No con `drop send -`: una tubería no se rebobina |
-| CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | No (#58) |
-| Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código | No: el emisor web ignora el `offset` y manda desde cero (#58) |
+| CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | Por archivo, como Web → Web |
+| Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código | Sí: el `.part` sigue desde donde se quedó, igual que entre dos CLI |
+
+**Por qué el navegador no reanuda a mitad de un archivo.** File System Access no escribe en el
+archivo según llega: escribe en un temporal (`.crswap` en Chrome) que solo pasa al nombre bueno al
+cerrarse. Si la pestaña se cierra o se corta la conexión, ese temporal se tira y no queda nada que
+retomar. Un archivo terminado sí queda, y por eso se retoma archivo a archivo: al volver a abrir el
+enlace y elegir la misma carpeta, la pestaña hashea lo que ya hay y el emisor solo manda lo que falta
+o no cuadra. Sin carpeta (Firefox, Safari, iOS) no hay nada en disco que mirar y se empieza de cero.
 
 * Si envías con `drop send` y el destinatario **no tiene la terminal**, abre el enlace en **Chrome,
   Edge, Firefox o Safari**, o entra en la web y teclea el código: verá los archivos y el botón

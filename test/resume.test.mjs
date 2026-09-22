@@ -286,7 +286,7 @@ test('relay: el cli-accept pide el prefijo y el cli-start con offset sigue desde
   assert.equal(ws.sent.at(-1).data.type, 'cli-complete');
 });
 
-test('relay: un emisor que ignora el resume (el web) manda desde cero y el .part no se toca', async (t) => {
+test('relay: un emisor que no acepta el prefijo manda desde cero y el .part no se toca', async (t) => {
   const out = scratch(t, 'drop-resume-relay-web-');
   const key = deriveKey('4271-lemon-radar-tiger-orbit');
   const body = Buffer.from('NUEVO CONTENIDO');
@@ -298,7 +298,7 @@ test('relay: un emisor que ignora el resume (el web) manda desde cero y el .part
   const accept = await ws.waitFor('cli-accept');
   assert.equal(accept.resume.length, 1);
 
-  // Sin `offset`: como un emisor web.
+  // Sin `offset`: el emisor no ha aceptado el prefijo.
   ws.emit('message', sealed({ type: 'cli-start', index: 0, name: 'a.bin', size: body.length }));
   ws.emit('message', { data: encryptChunk(body, key) });
   ws.emit('message', sealed({ type: 'cli-end', index: 0, sha256: sha256(body) }));
