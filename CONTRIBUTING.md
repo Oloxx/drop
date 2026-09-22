@@ -115,9 +115,12 @@ no puede comprobar la máquina va en esta lista, en este orden:
 
 1. **`npm test` en verde en las tres plataformas.** Localmente pasa en una; el CI de la PR
    cubre las otras dos. No se etiqueta con la matriz en rojo.
-2. **Si cambia el protocolo**, sube `PROTOCOL_VERSION` en `public/shared/protocol.js` y
-   di en el `CHANGELOG` que rompe compatibilidad y con qué versiones. Un cambio de protocolo
-   sin subir el número deja dos versiones entendiéndose a medias, que es peor que rechazarse.
+2. **Si cambia el protocolo:** dentro de la 1.x `PROTOCOL_VERSION` no se sube. Lo nuevo va
+   como campo opcional, marco que el otro ignora o capacidad anunciada en `features`, con las
+   reglas de [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md). Algo que no quepa ahí es una
+   2.0: se sube el número, se anuncia en el `CHANGELOG` con una versión menor de antelación y
+   se cambia a la vez `test/compat.test.mjs`. Un cambio de protocolo sin subir el número deja
+   dos versiones entendiéndose a medias, que es peor que rechazarse.
 3. **`CHANGELOG.md`:** mueve *Sin publicar* a una sección `[X.Y.Z] — AAAA-MM-DD` y deja
    *Sin publicar* vacía.
 4. **`README.md`:** los enlaces de descarga apuntan a la versión nueva

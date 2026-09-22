@@ -294,8 +294,9 @@ emisor web no sabe reanudar: manda desde el principio.
 > protocolo, así que un receptor 0.5.0+ **rechaza** con un mensaje explícito a un emisor
 > 0.4.2 o anterior en lugar de escribir archivos corruptos. La reanudación de descargas
 > sube el protocolo a la versión 3: un `drop` 0.6.x y uno posterior se rechazan mutuamente. La
-> selección de archivos (`--only`) lo sube a la 5. Si ves un error de versión, actualiza `drop`
-> en los dos equipos con `drop update`.
+> selección de archivos (`--only`) lo sube a la 5, y ahí se queda: a partir de la 1.0 cualquier
+> `drop` 1.x habla con cualquier otro y con la web ([política de compatibilidad](docs/COMPATIBILITY.md)).
+> Si ves un error de versión, actualiza `drop` en los dos equipos con `drop update`.
 
 #### 3. Test de velocidad entre terminales (`drop speed`)
 Mide la latencia (RTT), velocidad simétrica de subida/bajada y ruta de red (TCP directa o Relay) entre dos clientes CLI:

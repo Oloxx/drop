@@ -15,7 +15,8 @@ binario sin firma válida.
 
 Solo la **última release** recibe arreglos. Los binarios instalados se actualizan con
 `drop update`, que comprueba la firma de la release antes de sustituirse a sí mismo. La web se
-despliega desde `main` y siempre está en la última versión.
+despliega desde `main` y siempre está en la última versión. Dentro de la 1.x actualizar no rompe
+nada con quien siga en una anterior: el protocolo no cambia ([COMPATIBILITY.md](docs/COMPATIBILITY.md)).
 
 ## Modelo de amenazas, en corto
 

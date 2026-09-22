@@ -11,8 +11,10 @@ Cada punto enlaza a su issue cuando lo tiene. Lo que no tiene número todavía n
 
 Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versión mayor.
 
-- [ ] **Congelar `PROTOCOL_VERSION`** y escribir la política de compatibilidad: qué versiones
-      del CLI se hablan entre sí y con la web, y durante cuánto tiempo.
+- [x] **Congelar `PROTOCOL_VERSION`** y escribir la política de compatibilidad: qué versiones
+      del CLI se hablan entre sí y con la web, y durante cuánto tiempo. La 5 para toda la 1.x,
+      en [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md), con `features` reservado para
+      capacidades nuevas y `test/compat.test.mjs` como candado.
 - [x] **Especificar el protocolo del DataChannel en un documento**: [`docs/PROTOCOL.md`](docs/PROTOCOL.md),
       con la señalización, los marcos JSON y binarios, la cadena de relay, qué va en banda y qué
       por control, y qué se congela con la 1.0 frente a qué se puede añadir sin versión mayor.

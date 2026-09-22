@@ -325,7 +325,8 @@ lleva número, porque las dos pestañas sirven siempre el mismo `app.js`.
   (ausente es todo, presente es exactamente eso), lo que baja en banda y lo que no,
   `from` en `start`, y que un eslabón pueda re-trocear.
 - **Extensible sin versión mayor:** marcos de control con un `k` nuevo (se ignoran), campos nuevos
-  en marcos existentes (se ignoran), y las constantes (`CHUNK`, `HIGH_WATER`, `LOW_WATER`,
+  en marcos existentes (se ignoran; lo que obliga al otro a actuar se anuncia antes en `features`,
+  ver [COMPATIBILITY.md](COMPATIBILITY.md)), y las constantes (`CHUNK`, `HIGH_WATER`, `LOW_WATER`,
   `ACK_EVERY`, `RELAY_WINDOW`, `RELAY_LINK_TIMEOUT`), que son decisiones de un solo lado.
 - **No es protocolo:** el `name` del `join`, los textos de estado, los mensajes de `/config`.
 

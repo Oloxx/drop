@@ -1,6 +1,12 @@
 // Version del protocolo de transferencia del CLI: la que viaja dentro del
 // manifiesto cifrado por TCP directo y en la oferta (`cli-offer`) del relay.
 //
+// CONGELADA EN LA 5 PARA TODA LA 1.x (docs/COMPATIBILITY.md). Lo nuevo entra
+// como campos opcionales, marcos que el otro ignora o capacidades anunciadas
+// en `features`, nunca subiendo este numero: subirlo deja a cada `drop`
+// instalado sin hablar con la web ni con los nuevos, y eso es una 2.0.
+// test/compat.test.mjs falla si cambia antes.
+//
 // Vive aqui, y no en cli/src/transfer.js, porque el receptor web tambien la
 // comprueba: un `drop send` antiguo que ofrezca otra version no se entiende a
 // medias, se rechaza con un mensaje que dice que actualice.

@@ -26,6 +26,12 @@ Las notas de cada release, con los binarios, están en
   lo mismo.
 - **Rompe compatibilidad:** `PROTOCOL_VERSION` sube a 5. Un emisor v4 ignoraría `files` y
   mandaría el lote entero a quien ha pedido tres archivos.
+- **Política de compatibilidad** en `docs/COMPATIBILITY.md`: el protocolo 5 es el de toda la
+  1.x, qué más se congela (señalización, formato del código, órdenes y flags del CLI, variables
+  del servidor) y cómo se añaden cosas sin romper: lo desconocido se ignora, lo nuevo es
+  opcional y lo que obliga al otro extremo se anuncia en `features`, un campo reservado desde ya.
+  `test/compat.test.mjs` comprueba que los receptores y emisores de hoy ignoran campos, marcos y
+  capacidades que no conocen, y falla si el número cambia antes de la 2.0.
 - **El cliente web tiene un test de extremo a extremo en la suite** (`test/web.test.mjs`):
   dos pestañas de Chrome, un archivo de 6 MB, la misma huella en las dos y SHA-256 al final.
   Se salta sin Chrome; el CI lo exige en Linux con `DROP_REQUIRE_CHROME=1`.
