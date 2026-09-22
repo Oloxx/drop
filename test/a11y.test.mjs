@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { ROOT, startServer, findChrome } from './helpers.mjs';
+import { ROOT, startServer, findChrome, CHROME_ARGS } from './helpers.mjs';
 
 const css = fs.readFileSync(path.join(ROOT, 'public', 'style.css'), 'utf8');
 const html = (name) => fs.readFileSync(path.join(ROOT, 'public', name), 'utf8');
@@ -69,7 +69,7 @@ test('web: con el teclado se llega a elegir archivos y los botones tienen nombre
   const { chromium } = await import('playwright-core');
   const srv = await startServer();
   t.after(() => srv.stop());
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS });
   t.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(srv.http, { waitUntil: 'domcontentloaded' });

@@ -119,6 +119,19 @@ export function open(url, options) {
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Flags de Chrome para que dos pestanas de la misma maquina se conecten por
+ * WebRTC en cualquier runner. Chrome esconde las IPs locales detras de nombres
+ * mDNS (`xxxx.local`), y en el runner de macOS esos nombres no resuelven: las
+ * pestanas no llegaban a conectar nunca. Con las IPs tal cual (y el loopback
+ * permitido) el ICE tiene candidatas que funcionan. Es un ajuste del banco de
+ * pruebas, no de la app: en una red de verdad mDNS es lo que se quiere.
+ */
+export const CHROME_ARGS = [
+  '--disable-features=WebRtcHideLocalIpsWithMdns',
+  '--allow-loopback-in-peer-connection',
+];
+
+/**
  * Ruta a un Chrome instalado, o `null`. playwright-core no descarga navegador:
  * usa el del sistema, y `CHROME_PATH` manda sobre las rutas conocidas.
  */

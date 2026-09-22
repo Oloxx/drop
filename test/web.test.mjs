@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 
-import { startServer, findChrome } from './helpers.mjs';
+import { startServer, findChrome, CHROME_ARGS } from './helpers.mjs';
 
 const CHROME = findChrome();
 const REQUIRED = process.env.DROP_REQUIRE_CHROME === '1';
@@ -29,7 +29,7 @@ test('web -> web: un archivo llega entero y verificado entre dos pestanas', { sk
   const { chromium } = await import('playwright-core');
   const srv = await startServer();
   t.after(() => srv.stop());
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS });
   t.after(() => browser.close());
   const context = await browser.newContext({ acceptDownloads: true });
 
@@ -129,13 +129,15 @@ async function offerReady(t, srv, context, size = 512 * 1024) {
 test('web: los cortes conocidos acaban con un mensaje, no en un handshake eterno', { skip: !CHROME && !REQUIRED && 'sin Chrome (CHROME_PATH)', timeout: 120_000 }, async (t) => {
   assert.ok(CHROME, 'DROP_REQUIRE_CHROME=1 pero no hay Chrome: indicalo con CHROME_PATH');
   const { chromium } = await import('playwright-core');
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS });
   t.after(() => browser.close());
 
   // 1. El emisor cierra la pestana antes de que el receptor acepte: la oferta
   //    se retira y se explica, con el cuadro para teclear otro codigo.
   {
     const srv = await startServer();
+    // Aunque el caso falle: un servidor hijo vivo deja `node --test` esperando.
+    t.after(() => srv.stop());
     const context = await browser.newContext({ acceptDownloads: true });
     const { sender, receiver } = await offerReady(t, srv, context);
     await sender.close();
@@ -152,6 +154,7 @@ test('web: los cortes conocidos acaban con un mensaje, no en un handshake eterno
   //    empareja", puesta a prueba.
   {
     const srv = await startServer();
+    t.after(() => srv.stop());
     const context = await browser.newContext({ acceptDownloads: true });
     const { sender, receiver, body } = await offerReady(t, srv, context);
     const downloaded = new Promise((resolve) => receiver.on('download', resolve));
@@ -175,7 +178,7 @@ test('web -> web: el receptor elige que archivos baja', { skip: !CHROME && !REQU
   const { chromium } = await import('playwright-core');
   const srv = await startServer();
   t.after(() => srv.stop());
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS });
   t.after(() => browser.close());
   const context = await browser.newContext({ acceptDownloads: true });
 
@@ -258,7 +261,7 @@ test('web -> CLI: un drop recv cortado sigue desde su .part', { skip: !CHROME &&
 
   const srv = await startServer();
   t.after(() => srv.stop());
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS });
   t.after(() => browser.close());
   const context = await browser.newContext();
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-web-resume-'));
@@ -328,7 +331,7 @@ test('web: lo que ya esta en la carpeta no vuelve a bajar (web y CLI)', { skip: 
 
   const srv = await startServer();
   t.after(() => srv.stop());
-  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS });
   t.after(() => browser.close());
   const context = await browser.newContext();
   await context.addInitScript(() => {

@@ -14,6 +14,7 @@
  * para prometerle velocidad a nadie.
  */
 import { chromium } from 'playwright-core';
+import { CHROME_ARGS } from './helpers.mjs';
 import { existsSync } from 'node:fs';
 
 const URL_BASE = process.env.DROP_URL || 'http://localhost:3000';
@@ -42,7 +43,7 @@ const fmt = (n, d = 1) => n.toFixed(d).padStart(6);
 
 async function main() {
   const bytes = SIZE_MB * 1024 * 1024;
-  const browser = await chromium.launch({ executablePath: findChrome(), headless: HEADLESS });
+  const browser = await chromium.launch({ executablePath: findChrome(), headless: HEADLESS, args: CHROME_ARGS });
   const context = await browser.newContext({ acceptDownloads: true });
 
   // La descarga final no forma parte de la medida; la tiramos segun llega.

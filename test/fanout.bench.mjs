@@ -13,6 +13,7 @@
  * equipo va limitado por CPU y no dice nada del ancho de banda de nadie.
  */
 import { chromium } from 'playwright-core';
+import { CHROME_ARGS } from './helpers.mjs';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
@@ -76,7 +77,7 @@ async function main() {
     wantHash.push(h.digest('hex'));
   }
 
-  const browser = await chromium.launch({ executablePath: findChrome(), headless: HEADLESS });
+  const browser = await chromium.launch({ executablePath: findChrome(), headless: HEADLESS, args: CHROME_ARGS });
   const context = await browser.newContext({ acceptDownloads: true });
 
   try {

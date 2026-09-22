@@ -25,7 +25,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { startServer, ROOT } from './helpers.mjs';
+import { startServer, ROOT, CHROME_ARGS } from './helpers.mjs';
 
 const SIZE_MB = Number(process.env.SIZE_MB || 12);
 const HEADLESS = process.env.HEADED !== '1';
@@ -182,7 +182,7 @@ async function main() {
   const outDir = path.join(work, 'recv');
   fs.mkdirSync(outDir);
 
-  const browser = await chromium.launch({ executablePath: findChrome(), headless: HEADLESS });
+  const browser = await chromium.launch({ executablePath: findChrome(), headless: HEADLESS, args: CHROME_ARGS });
   const context = await browser.newContext({ acceptDownloads: true });
   try {
     await cliToChrome(srv, context, body, src);
