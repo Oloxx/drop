@@ -103,8 +103,10 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [x] **Selección de archivos en el receptor** (#10): con un lote de 15 fotos, poder bajar
       tres. Casillas en la oferta web y `drop recv --only <patrones>`; la elección viaja como
       `files` (índices del manifiesto) en `accept`, `ready` y `cli-accept`, protocolo 5.
-- [ ] **Accesibilidad básica**: foco visible, `aria-live` en la fila de progreso, contraste
-      del tema Tokyo Night verificado, todo operable con teclado.
+- [x] **Accesibilidad básica**: foco visible (también en la zona de soltar), avisos
+      `aria-live` del final de cada transferencia, barras `progressbar`, contraste AA
+      comprobado en `test/a11y.test.mjs` (el gris de texto era 2,8:1 y ahora 4,7:1) y el
+      selector de archivos alcanzable con Tab.
 - [x] **Página de error para navegadores sin WebRTC** en vez de un fallo silencioso. Desde la
       v0.8.0: vista `unsupported`, con el código del enlace a la vista para abrirlo en otro sitio.
 

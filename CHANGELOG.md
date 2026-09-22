@@ -35,6 +35,16 @@ Las notas de cada release, con los binarios, están en
     está entero en la carpeta se hashea, se ofrece en el `resume` del `accept`/`cli-accept`, y si el
     emisor confirma que es el suyo no vuelve a bajar. A mitad de un archivo no se puede: File System
     Access solo escribe al nombre bueno al cerrar, así que un corte no deja nada. El README lo explica.
+- **Accesibilidad básica en la web.**
+  - El gris de texto secundario (`--muted`) pasa de `#565f89` (2,8:1 sobre el fondo) a `#828bb8`
+    (4,7:1 o más), de la misma familia Tokyo Night. `test/a11y.test.mjs` calcula el contraste de
+    todos los colores de texto sobre los tres fondos y falla por debajo de 4,5:1.
+  - La zona de soltar se alcanza con Tab: el selector de archivos estaba `hidden` y ahora está
+    oculto solo a la vista, con el foco pintado en la zona entera.
+  - Un lector de pantalla oye lo importante aunque el foco esté en otra parte: la llegada de una
+    oferta y el final o el fallo de cada transferencia (`aria-live`), sin los porcentajes. Las
+    barras son `progressbar` con su valor, los errores `role="alert"` y cada × dice qué quita.
+  - `prefers-reduced-motion` también para la animación de la barra de tamaño desconocido.
 - **Política de compatibilidad** en `docs/COMPATIBILITY.md`: el protocolo 5 es el de toda la
   1.x, qué más se congela (señalización, formato del código, órdenes y flags del CLI, variables
   del servidor) y cómo se añaden cosas sin romper: lo desconocido se ignora, lo nuevo es

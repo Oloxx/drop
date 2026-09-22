@@ -88,6 +88,10 @@ test('web -> web: un archivo llega entero y verificado entre dos pestanas', { sk
     () => /received/.test(document.querySelector('.peer .state')?.textContent || ''),
     null, { timeout: 60_000 });
   assert.match(await receiver.textContent('.peer .state'), /verified/);
+  // Accesible: la barra dice su valor y el final se anuncia aunque nadie mire.
+  assert.equal(await receiver.getAttribute('.peer .bar', 'role'), 'progressbar');
+  assert.equal(await receiver.getAttribute('.peer .bar', 'aria-valuenow'), '100');
+  await receiver.waitForFunction(() => /inbound: received/.test(document.getElementById('announce').textContent), null, { timeout: 5_000 });
 
   const dl = await downloaded;
   assert.equal(dl.suggestedFilename(), 'carga.bin');

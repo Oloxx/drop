@@ -15,8 +15,12 @@
   <a class="nav" href="speed">speed test</a>
   <button class="nav" id="alerts-toggle" type="button"
           title="Chime and desktop notification when a transfer finishes">alerts on</button>
-  <span id="status" class="status">·</span>
+  <span id="status" class="status" role="status">·</span>
 </header>
+
+<!-- Lo que un lector de pantalla tiene que oir aunque el foco este en otra
+     parte: llega una oferta, termina o falla una transferencia. -->
+<p class="sr-only" id="announce" role="status" aria-live="polite"></p>
 
 <main>
 
@@ -27,7 +31,8 @@
       no copy left on a server.</p>
 
     <label class="drop" id="drop">
-      <input type="file" id="file-input" multiple hidden>
+      <!-- Oculto a la vista pero no a Tab: es lo que abre el selector con el teclado. -->
+      <input type="file" id="file-input" class="sr-only" multiple aria-label="Choose files to send">
       <input type="file" id="folder-input" webkitdirectory hidden>
       <span class="drop-glyph">[ + ]</span>
       <strong>drop payload here</strong>
@@ -70,7 +75,7 @@
                aria-label="Code to receive">
         <button class="primary" type="submit">connect</button>
       </form>
-      <p class="error" id="code-error" hidden></p>
+      <p class="error" id="code-error" role="alert" hidden></p>
     </div>
 
     <div class="peers" id="peers"></div>
@@ -91,7 +96,7 @@
   <!-- ---------- Recibir (solo se llega abriendo un enlace) ---------- -->
   <section class="view" data-name="recv">
     <h1><span class="prompt">❯</span> <span id="recv-title">handshake…</span></h1>
-    <p class="error" id="join-error" hidden></p>
+    <p class="error" id="join-error" role="alert" hidden></p>
 
     <div class="ticket" id="retry-box" hidden>
       <p class="label">type the code again</p>
@@ -118,7 +123,7 @@
 
     <div class="ticket" id="verify-alert" hidden>
       <p class="label bad">integrity discrepancy</p>
-      <p class="error" id="verify-error-msg"></p>
+      <p class="error" id="verify-error-msg" role="alert"></p>
       <div class="row">
         <button class="primary" id="retry-transfer">retry transfer</button>
       </div>

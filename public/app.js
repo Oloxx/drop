@@ -106,6 +106,20 @@ function setStatus(text, kind = '') {
   el.className = 'status ' + kind;
 }
 
+/**
+ * Aviso para lectores de pantalla (#announce, `aria-live`). Solo para lo que
+ * importa aunque el foco este en otra parte: llega una oferta, termina o falla
+ * una transferencia. El porcentaje no: repetido cada segundo es ruido.
+ */
+function announce(text) {
+  const el = $('#announce');
+  if (!el) return;
+  // Vaciar y reescribir en otro tick: dos avisos con el mismo texto seguidos
+  // no cambian el nodo y el lector no diria nada.
+  el.textContent = '';
+  setTimeout(() => { el.textContent = text; }, 50);
+}
+
 function showView(name) {
   document.body.dataset.view = name;
 }
@@ -308,7 +322,7 @@ function makeProgressRow(container, title) {
   el.className = 'peer';
   el.innerHTML =
     '<div class="peer-head"><span class="who"></span><span class="state"></span></div>' +
-    '<div class="bar"><i></i></div>' +
+    '<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i></i></div>' +
     '<div class="peer-file"><span class="grow"></span><span class="rate"></span></div>' +
     '<div class="peer-sas" hidden></div>';
 
@@ -320,6 +334,8 @@ function makeProgressRow(container, title) {
   const elRate = el.querySelector('.rate');
   const elWho = el.querySelector('.who');
   const elSas = el.querySelector('.peer-sas');
+  const elMeter = el.querySelector('.bar');
+  elMeter.setAttribute('aria-label', title);
   elWho.textContent = title;
   container.appendChild(el);
 
@@ -364,12 +380,14 @@ function makeProgressRow(container, title) {
     if (total == null) {
       elBar.style.width = '100%';
       elBar.classList.add('unknown');
+      elMeter.removeAttribute('aria-valuenow');   // indeterminada
       elState.textContent = fmtBytes(done) + ' · size unknown';
       elRate.textContent = rate > 0 ? fmtBytes(rate) + '/s' : '';
       return;
     }
     const pct = total ? (done / total) * 100 : 0;
     elBar.style.width = pct.toFixed(1) + '%';
+    elMeter.setAttribute('aria-valuenow', String(Math.floor(pct)));
     elState.textContent =
       Math.floor(pct) + '% · ' + fmtBytes(done) + ' / ' + fmtBytes(total);
     elRate.textContent =
@@ -415,20 +433,25 @@ function makeProgressRow(container, title) {
       if (!frame) frame = requestAnimationFrame(paint);
     },
     finish(text) {
+      const wasClosed = api.closed;
       stopPainting();
       api.closed = true;
       el.classList.add('done');
       elBar.classList.remove('unknown');
       elBar.style.width = '100%';
+      elMeter.setAttribute('aria-valuenow', '100');
       elState.textContent = text;
       elRate.textContent = '';
+      if (!wasClosed) announce(title + ': ' + text);
     },
     fail(text) {
+      const wasClosed = api.closed;
       stopPainting();
       api.closed = true;
       el.classList.add('failed');
       elState.textContent = text;
       elRate.textContent = '';
+      if (!wasClosed) announce(title + ': ' + text);
     },
   };
   return api;
@@ -545,6 +568,8 @@ function renderFileList() {
       '<span class="name"></span><span class="size"></span><span class="badge" hidden></span>' +
       (out.code ? '' : '<button class="drop-one" title="Remove">×</button>');
     li.querySelector('.name').textContent = relPathOf(file) || file.name;
+    const remove = li.querySelector('.drop-one');
+    if (remove) remove.setAttribute('aria-label', 'Remove ' + (relPathOf(file) || file.name));
     li.querySelector('.size').textContent = fmtBytes(file.size);
     if (file.sha256) {
       const badge = li.querySelector('.badge');
@@ -1789,6 +1814,7 @@ function showOffer(files) {
   $('#pick-all').hidden = !pickable;
   paintPick();
   setStatus('channel up', 'live');
+  announce('incoming payload: ' + $('#offer-title').textContent);
 }
 
 /** Relee las casillas y repinta todo lo que depende de la eleccion. */

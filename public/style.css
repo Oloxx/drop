@@ -61,7 +61,10 @@
   --border:  #2f334d;
   --fg:      #c0caf5;
   --fg-dim:  #a9b1d6;
-  --muted:   #565f89;
+  /* No es el `comment` de Tokyo Night (#565f89): ese da 2,8:1 sobre el fondo y
+     aqui se usa para texto. Este es el `fg_dark` de Tokyo Night Moon, 4,7:1 o
+     mas sobre --bg, --raised y --sunken. test/a11y.test.mjs lo comprueba. */
+  --muted:   #828bb8;
   --blue:    #7aa2f7;
   --cyan:    #7dcfff;
   --green:   #9ece6a;
@@ -92,6 +95,20 @@ body {
 
 ::selection { background: var(--blue); color: var(--sunken); }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* Fuera de la vista pero dentro del arbol de accesibilidad y del orden de Tab:
+   `hidden` o `display:none` lo sacarian de los dos. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* ------------------------------------------------------------- cabecera */
 
@@ -257,6 +274,9 @@ button {
   transition: border-color .12s, background .12s;
 }
 .drop:hover, .drop.over { border-color: var(--blue); background: var(--hl); }
+/* El input de archivos esta dentro, oculto: su foco se pinta en la zona entera. */
+.drop:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+.drop:hover small, .drop.over small { color: var(--fg-dim); }
 .drop-glyph { color: var(--blue); letter-spacing: .15em; }
 .drop strong { font-weight: 500; }
 .drop small { color: var(--muted); font-size: .78rem; }
@@ -471,5 +491,5 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
+  * { transition: none !important; animation: none !important; }
 }
