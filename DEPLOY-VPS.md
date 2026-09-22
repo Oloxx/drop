@@ -8,6 +8,13 @@ tienes, [DuckDNS](https://www.duckdns.org) da subdominios gratis (`mi-drop.duckd
 perfectamente para Let's Encrypt. Sin dominio no hay certificado, y sin HTTPS la app pierde el
 portapapeles y la escritura directa a disco.
 
+**Una sola instancia, a propósito.** Las salas viven en la memoria del proceso (un `Map` en
+`server/index.js`): emisor y receptor tienen que llegar al mismo proceso o el código sale como
+caducado. No pongas dos réplicas de `drop` detrás de un balanceador. No hace falta: una sala es
+poco más que dos WebSockets, los bytes de WebRTC no pasan por el servidor y el relay del CLI se
+puede acotar con `DROP_RELAY_LIMIT`. Repartir las salas entre procesos (Redis con pub/sub) no
+entra en la 1.x.
+
 ## 1. Abrir los puertos (en Oracle son DOS sitios)
 
 Esta es la trampa clásica de Oracle Cloud, y donde se atasca todo el mundo: abrir los puertos en

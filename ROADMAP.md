@@ -60,9 +60,9 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       `DROP_RELAY_LIMIT_TOTAL` por proceso desde la v0.8.0. Pausa el socket, no corta.
 - [x] **Métricas mínimas** en `/healthz`: salas, invitados, bytes y frames relayed, pausas
       por cuota y rechazos por motivo. Desde la v0.8.0.
-- [ ] **Decidir la escala**: las salas viven en un `Map` y una sola instancia es una
-      restricción documentada. Para la 1.0 o se acepta explícitamente (y se quita `fly.toml`
-      y la alternativa Fly del README, que no se prueba) o se mueven las salas a Redis.
+- [x] **Decidir la escala**: una sola instancia, aceptado. Una sala es poco más que dos
+      WebSockets y los bytes de WebRTC no pasan por el servidor, así que un proceso sobra; está
+      escrito en `DEPLOY-VPS.md`. `fly.toml`, que nunca se probó, se ha quitado.
 - [ ] **Copia de seguridad y rotación** del `.env` de valhalla (`TURN_SECRET`,
       `DROP_SIGNING_KEY`), con el procedimiento escrito en `DEPLOY-VPS.md`.
 - [x] **`npm audit` y actualización de dependencias en CI**: job `audit` en `ci.yml`, solo

@@ -21,8 +21,7 @@ USER node
 
 EXPOSE 3000
 
-# `/healthz` ya existia y solo lo miraba fly.toml. Aqui hace que Docker sepa si
-# el proceso sigue sirviendo, no solo si sigue vivo: un servidor colgado con el
+# `/healthz` hace que Docker sepa si el proceso sigue sirviendo, no solo si sigue vivo: un servidor colgado con el
 # bucle de eventos bloqueado no responde y el contenedor pasa a `unhealthy`.
 # Sin curl en la imagen, se pregunta con el propio Node.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

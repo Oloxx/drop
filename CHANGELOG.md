@@ -42,6 +42,10 @@ Las notas de cada release, con los binarios, están en
 - `docs/PROTOCOL.md`: el protocolo web entero (señalización, DataChannel, cadena de reenvío,
   reparación) en un documento, con lo que se congela en la 1.0 y lo que se puede extender.
 
+### Eliminado
+- `fly.toml`. Nunca se probó y ningún workflow lo usaba; el despliegue es el de `DEPLOY-VPS.md`,
+  que ahora dice por qué es una sola instancia a propósito.
+
 ### Corregido
 - **`retry` en la web contra un `drop send` por relay reenviaba con los índices corridos.** El
   emisor mandaba `files.slice(i)` y el `cli-start` del archivo `i` salía como índice 0, así que
