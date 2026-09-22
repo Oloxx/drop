@@ -120,7 +120,7 @@ lado: se pierde sin error.
    │  ── challenge {nonce} ───────────────────▶  │   canal abierto
    │  ◀── proof {proof} ───────────────────────  │   sha256("drop-proof-v2|nonce|secreto")
    │  ── manifest {files} ─────────────────────▶  │   (sólo si la prueba cuadra)
-   │  ◀── accept ──────────────────────────────  │   el humano ha pulsado
+   │  ◀── accept {files?} ─────────────────────  │   el humano ha pulsado
    │  ── start {index:0, …} ───────────────────▶  │
    │  ── trozos ───────────────────────────────▶  │
    │  ◀── ack {bytes} ─────────────────────────  │   cada 2 MB (ACK_EVERY)
@@ -135,6 +135,9 @@ lado: se pierde sin error.
   verificador offline del secreto: se acepta porque va dentro de DTLS y el código es de un uso.
   Un `proof` malo cierra el canal y avisa al servidor (`bad-guest`). Cualquier otro marco
   recibido antes de una prueba buena se ignora.
+- **El receptor puede elegir.** Con `files` en el `accept` el emisor salta lo que no se ha
+  pedido, y todo lo que se mide contra el total — `ack`, la barra, `delivered` — se mide contra
+  lo pedido: quien baja tres fotos de quince termina al 100 % con las tres.
 - **`accept` no arranca al instante:** el emisor puede esperar hasta 1,5 s a más receptores para
   encadenarlos (§6.1). Con un solo receptor conectado arranca en el acto.
 - **El progreso del emisor sale de los `ack`**, no de `bufferedAmount`, que sólo dice lo que se ha
@@ -152,7 +155,7 @@ baja con los trozos, salto a salto; *control* va siempre directo entre ese recep
 | `challenge` | E→R  | `nonce` (32 hex) | control | Nuevo por receptor. |
 | `proof`     | R→E  | `proof` (64 hex) | control | `sha256Hex("drop-proof-v2\|" + nonce + "\|" + secreto)`; `secreto` son las cuatro palabras con guiones. Misma fórmula en `cli/src/crypto.js`. |
 | `manifest`  | E→R  | `files: [{ name, size, type, path? }]` | control | `path` es la ruta relativa con `/` cuando se envía una carpeta. `size` es `null` cuando el emisor no lo sabe (hoy sólo un CLI leyendo de stdin, §7): el receptor no da porcentaje y cierra el archivo con el `end`, no contando bytes. |
-| `accept`    | R→E  | — | control | |
+| `accept`    | R→E  | `files?` | control | `files` son los índices del manifiesto que quiere el receptor (las casillas de la oferta). Sin el campo, el lote entero. El emisor limpia la lista (enteros dentro del manifiesto, sin repetir, en orden: `pickedFiles` en `public/shared/protocol.js`) y manda sólo esos; los demás no tienen `start` ni `end`. Sólo cuenta el primer `accept`. |
 | `start`     | E→R  | `index`, `name`, `size`, `type`, `from`, `path?` | **en banda** | Abre el archivo `index`. `from` > 0 sólo al retomar (§5): el receptor no recrea el destino, sigue escribiendo. |
 | `end`       | E→R  | `index`, `sha256` | **en banda** | SHA-256 del archivo **entero** (prefijo retomado incluido). El receptor compara con el suyo; si no cuadra, aborta el destino y ofrece `retry`. |
 | `done`      | E→R  | — | **en banda** | No quedan archivos. |
@@ -233,6 +236,10 @@ cuanto **todos los receptores conectados** han aceptado (un receptor solo no esp
 acepta después se sirve directo, como siempre. **Un rezagado no se encadena nunca**; hacerlo
 necesitaría que los pares guardasen y resirviesen trozos, que es otro protocolo.
 
+Y sólo con quien ha **elegido los mismos archivos**: un eslabón reenvía lo que le llega y nada
+más. El emisor agrupa el lote de `accept` por selección y monta una cadena por grupo; con todos
+bajando el lote entero, que es lo normal, sale una sola.
+
 Orden de la cadena: el de aceptación. No se sabe nada de los uplinks como para afinar más.
 
 ### 6.2 Montaje
@@ -301,19 +308,21 @@ no entra en cadenas, `probePaths` la salta.
 
 Al revés, una pestaña que recibe de `drop send` procesa `cli-manifest`/`cli-start`/`cli-end`/
 `cli-done` traduciéndolos a los `manifest`/`start`/`end`/`done` de §4.3 (`onControl`), y acusa con
-`cli-ack` en vez de `ack`. Con `drop send -` el manifiesto trae `size: null`: la fila pinta el
+`cli-ack` en vez de `ack`. La elección de la oferta viaja igual, como `files` dentro de
+`cli-accept`, y es lo mismo que manda `drop recv --only`. Con `drop send -` el manifiesto trae `size: null`: la fila pinta el
 archivo como `stream`, sin porcentaje ni ETA, y el total se sabe al `done`.
 
 Los dos casos están descritos, mensaje a mensaje, en `cli/src/transfer.js`, y
-`PROTOCOL_VERSION` ([`public/shared/protocol.js`](../public/shared/protocol.js), la 4 desde la
-v0.9.0) se comprueba en la oferta: una pestaña y un CLI de versiones distintas se rechazan con un
+`PROTOCOL_VERSION` ([`public/shared/protocol.js`](../public/shared/protocol.js), la 5 desde la
+selección de archivos) se comprueba en la oferta: una pestaña y un CLI de versiones distintas se rechazan con un
 mensaje, no se entienden a medias. Esa versión es del protocolo **del CLI**; el de esta página no
 lleva número, porque las dos pestañas sirven siempre el mismo `app.js`.
 
 ## 8. Compatibilidad
 
 - **Congelado con la 1.0:** la forma de cada mensaje de §3 y §4.3, el orden de §4.2, la fórmula
-  de `proof`, la semántica de `ack` (acumulado, monótono), lo que baja en banda y lo que no,
+  de `proof`, la semántica de `ack` (acumulado, monótono, de lo pedido), `files` en `accept`
+  (ausente es todo, presente es exactamente eso), lo que baja en banda y lo que no,
   `from` en `start`, y que un eslabón pueda re-trocear.
 - **Extensible sin versión mayor:** marcos de control con un `k` nuevo (se ignoran), campos nuevos
   en marcos existentes (se ignoran), y las constantes (`CHUNK`, `HIGH_WATER`, `LOW_WATER`,

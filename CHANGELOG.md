@@ -11,7 +11,21 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+> **Rompe compatibilidad con la v0.9.x:** el protocolo pasa a la versión 5 (selección de
+> archivos). Un `drop` viejo y uno nuevo se rechazan con un mensaje que pide `drop update`.
+
 ### Añadido
+- **Bajar solo parte del envío** (#10). En la web cada archivo de la oferta tiene su casilla,
+  todas marcadas, con `select none`/`select all`; **receive** baja lo marcado y lo demás queda
+  tachado. En el CLI, `drop recv <código> --only "*.jpg,fotos/**"`: un patrón sin `/` casa con
+  el nombre en cualquier carpeta, con `/` con el final de la ruta, con `/` delante desde la raíz;
+  `*` no cruza carpetas y `**` sí. Si no casa nada no se descarga y se enseña qué trae el envío.
+  La elección viaja como índices del manifiesto (`files` en `accept`, `ready` y `cli-accept`), el
+  emisor solo manda eso, y el progreso, los acuses y "entregado" cuentan lo pedido. Un `.part` de
+  un archivo no pedido no se toca. En la cadena de reenvío solo se encadena a quien ha elegido
+  lo mismo.
+- **Rompe compatibilidad:** `PROTOCOL_VERSION` sube a 5. Un emisor v4 ignoraría `files` y
+  mandaría el lote entero a quien ha pedido tres archivos.
 - **El cliente web tiene un test de extremo a extremo en la suite** (`test/web.test.mjs`):
   dos pestañas de Chrome, un archivo de 6 MB, la misma huella en las dos y SHA-256 al final.
   Se salta sin Chrome; el CI lo exige en Linux con `DROP_REQUIRE_CHROME=1`.
@@ -23,6 +37,10 @@ Las notas de cada release, con los binarios, están en
   reparación) en un documento, con lo que se congela en la 1.0 y lo que se puede extender.
 
 ### Corregido
+- **`retry` en la web contra un `drop send` por relay reenviaba con los índices corridos.** El
+  emisor mandaba `files.slice(i)` y el `cli-start` del archivo `i` salía como índice 0, así que
+  la pestaña marcaba como verificado el archivo equivocado. Ahora reenvía por índice del
+  manifiesto, y solo lo que el receptor había pedido.
 - **El receptor web ya no se queda en `handshake…` para siempre.** Si el emisor cierra la
   pestaña antes de que se acepte, si ICE falla sin ruta ni TURN, o si el servidor cae antes de
   que abra el DataChannel, se retira la oferta y se explica qué ha pasado, con el cuadro para

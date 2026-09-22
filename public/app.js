@@ -47,7 +47,7 @@
 import { parseCode, randomSecretWords, formatCode, CodeError } from './shared/codes.js';
 import { sasInput, sasWords, formatSas, dtlsFingerprints } from './shared/sas.js';
 import { Sha256, sha256Hex } from './shared/sha256.js';
-import { PROTOCOL_VERSION } from './shared/protocol.js';
+import { PROTOCOL_VERSION, pickedFiles } from './shared/protocol.js';
 import { encodeQr, qrToSvg, ECL } from './shared/qr.js';
 import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame, sealBox, sealFrame } from './shared/e2ee.js';
 
@@ -515,8 +515,25 @@ const out = {
   keyPromise: null,
 };
 
-function totalBytes() {
-  return out.files.reduce((sum, f) => sum + f.size, 0);
+/**
+ * Lo que se le manda a un receptor: el lote entero o lo que eligio al aceptar
+ * (`conn.want`, indices del manifiesto). El progreso, los acuses y "entregado"
+ * se miden contra esto, no contra el lote: quien pidio tres fotos de quince
+ * termina al 100% con las tres.
+ */
+function filesFor(conn) {
+  return conn.want ? conn.want.map((i) => out.files[i]) : out.files;
+}
+
+function bytesFor(conn) {
+  return filesFor(conn).reduce((sum, f) => sum + f.size, 0);
+}
+
+/** Guarda la eleccion del receptor. Pedir el lote entero es lo mismo que no elegir. */
+function setWant(conn, files) {
+  const want = pickedFiles(files, out.files.length);
+  conn.want = want && want.length < out.files.length ? want : null;
+  conn.row.files(filesFor(conn));
 }
 
 function renderFileList() {
@@ -648,6 +665,7 @@ function onGuestJoined(guestId, name) {
     row,
     onSas: (words) => row.sas(words),
     acked: 0,
+    want: null,         // indices que ha pedido; null es el lote entero
     cancelled: false,
     started: false,     // ya le estamos sirviendo (directo o por cadena)
     relayed: false,     // recibe los bytes de otro receptor, no de nosotros
@@ -708,10 +726,15 @@ function onGuestJoined(guestId, name) {
       return;
     }
     if (conn.nonce) return;      // nada de protocolo antes de la prueba
-    if (msg.k === 'accept') queueForStart(conn);
-    else if (msg.k === 'ack') { conn.acked = msg.bytes; row.progress(msg.bytes, totalBytes()); }
+    if (msg.k === 'accept') {
+      // La eleccion vale lo que valga el primer `accept`: una vez en marcha,
+      // cambiarla dejaria al receptor esperando archivos que no van a llegar.
+      if (!conn.started && !out.ready.includes(conn)) setWant(conn, msg.files);
+      queueForStart(conn);
+    }
+    else if (msg.k === 'ack') { conn.acked = msg.bytes; row.progress(msg.bytes, bytesFor(conn)); }
     else if (msg.k === 'complete') {
-      conn.acked = totalBytes(); row.file(''); row.finish('delivered');
+      conn.acked = bytesFor(conn); row.file(''); row.finish('delivered');
       alertFinished(label + ' received the payload');
     }
     else if (msg.k === 'bye') { conn.cancelled = true; resumePeer(conn); row.fail('aborted by peer'); }
@@ -760,6 +783,20 @@ function startBatch() {
     .filter((c) => !c.cancelled && c.dc && c.dc.readyState === 'open');
   if (!batch.length) return;
   for (const conn of batch) conn.started = true;
+
+  // Un eslabon reenvia lo que le llega y nada mas, asi que solo se encadena a
+  // quien ha pedido exactamente los mismos archivos. Cada eleccion distinta es
+  // su propia cadena; con el lote entero (lo normal) sale una sola.
+  const groups = new Map();
+  for (const conn of batch) {
+    const key = conn.want ? conn.want.join(',') : '*';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(conn);
+  }
+  for (const group of groups.values()) startChain(group);
+}
+
+function startChain(batch) {
   if (batch.length === 1) return sendAllFiles(batch[0]);
 
   // La cadena: cada uno reenvia al siguiente y solo el primero come de nosotros.
@@ -844,7 +881,7 @@ function waitForDrain(dc) {
  */
 async function sendAllFiles(conn, fromIndex = 0, fromOffset = 0) {
   const { dc, row } = conn;
-  const total = totalBytes();
+  const total = bytesFor(conn);
   const chunk = chunkFor(conn.pc);
   conn.epoch = (conn.epoch || 0) + 1;
   const epoch = conn.epoch;              // un `resume` tardio invalida este bucle
@@ -854,6 +891,7 @@ async function sendAllFiles(conn, fromIndex = 0, fromOffset = 0) {
   try {
     for (const [index, file] of out.files.entries()) {
       if (index < fromIndex) continue;
+      if (conn.want && !conn.want.includes(index)) continue;
       if (conn.cancelled || conn.epoch !== epoch) return;
       row.file(file.name);
       const from = index === fromIndex ? Math.min(fromOffset, file.size) : 0;
@@ -911,7 +949,7 @@ function dropPeer(guestId, why) {
   resumePeer(conn);
   const queued = out.ready.indexOf(conn);
   if (queued !== -1) out.ready.splice(queued, 1);
-  if (conn.acked >= totalBytes() && totalBytes() > 0) conn.row.finish('delivered');
+  if (conn.acked >= bytesFor(conn) && bytesFor(conn) > 0) conn.row.finish('delivered');
   // A quien echamos por no saber el codigo ya le hemos puesto su motivo: si lo
   // pisamos con 'gone' el emisor no llega a ver por que se fue.
   else if (!conn.rejected) conn.row.fail(why);
@@ -982,6 +1020,7 @@ function onCliGuest(guestId) {
     label,
     cli: true,
     row,
+    want: null,
     acked: 0,
     sent: 0,
     total: 0,
@@ -1053,6 +1092,8 @@ function onCliSignal(from, data) {
       return;
     }
     case 'cli-accept':
+      // `files` es lo que ha elegido con `drop recv --only`; sin el, todo.
+      if (!conn.started) setWant(conn, data.files);
       streamToCli(conn);
       return;
     case 'cli-ack':
@@ -1106,7 +1147,7 @@ async function streamToCli(conn) {
   if (conn.started || conn.cancelled) return;
   conn.started = true;
   const { row } = conn;
-  conn.total = totalBytes();
+  conn.total = bytesFor(conn);
   conn.lastProgress = Date.now();
   row.state('transmitting…');
 
@@ -1115,6 +1156,7 @@ async function streamToCli(conn) {
 
   try {
     for (const [index, file] of out.files.entries()) {
+      if (conn.want && !conn.want.includes(index)) continue;
       if (conn.cancelled) return;
       row.file(file.name);
       await sealedTo(conn, {
@@ -1175,7 +1217,8 @@ const rx = {
   up: null,           // conn por la que nos entran los bytes (emisor u otro receptor)
   down: null,         // conn a la que se los reenviamos, si somos eslabon
   manifest: null,
-  total: 0,
+  want: null,         // indices marcados en la oferta; null es el lote entero
+  total: 0,           // de lo elegido, no del lote
   received: 0,
   lastAck: 0,
   fileIndex: -1,      // archivo en curso y cuanto suyo llevamos: hace falta para
@@ -1480,7 +1523,6 @@ function onControl(msg) {
 
     case 'manifest':
       rx.manifest = msg.files;
-      rx.total = totalOf(msg.files);
       showOffer(msg.files);
       break;
 
@@ -1595,33 +1637,92 @@ function showSas(words) {
   el.hidden = false;
 }
 
+/** Lo que se va a bajar: el manifiesto entero o lo que se ha marcado en la oferta. */
+function rxPicked() {
+  if (!rx.manifest) return [];
+  return rx.want ? rx.want.map((i) => rx.manifest[i]) : rx.manifest;
+}
+
+// Con varios archivos cada uno lleva su casilla, todas marcadas: quien quiere el
+// lote entero pulsa `receive` como siempre, y quien quiere tres fotos de quince
+// desmarca el resto (o `select none` y marca las tres). La eleccion viaja en el
+// `accept` como indices del manifiesto y el emisor solo manda esos.
 function showOffer(files) {
   $('#recv-title').textContent = 'incoming payload';
   $('#offer').hidden = false;
-  $('#offer-title').textContent =
-    files.length + (files.length === 1 ? ' file' : ' files') + ' · ' + (rx.total == null ? 'size unknown' : fmtBytes(rx.total));
+  rx.want = null;
+  const pickable = files.length > 1;
   const list = $('#offer-list');
   list.innerHTML = '';
-  for (const file of files) {
+  for (const [i, file] of files.entries()) {
     const li = document.createElement('li');
-    li.innerHTML = '<span class="name"></span><span class="size"></span><span class="badge" hidden></span>';
+    li.innerHTML = (pickable ? '<input type="checkbox" class="pick" checked>' : '') +
+      (pickable ? '<label class="name"></label>' : '<span class="name"></span>') +
+      '<span class="size"></span><span class="badge" hidden></span>';
     li.querySelector('.name').textContent = file.path || file.name;
     li.querySelector('.size').textContent = Number.isFinite(file.size) ? fmtBytes(file.size) : 'stream';
+    if (pickable) {
+      const box = li.querySelector('.pick');
+      box.id = 'pick-' + i;
+      box.dataset.index = String(i);
+      box.onchange = paintPick;
+      li.querySelector('.name').htmlFor = box.id;
+    }
     list.appendChild(li);
   }
-  $('#offer-hint').textContent = supportsDirectPicker(files)
+  $('#pick-all').hidden = !pickable;
+  paintPick();
+  setStatus('channel up', 'live');
+}
+
+/** Relee las casillas y repinta todo lo que depende de la eleccion. */
+function paintPick() {
+  const files = rx.manifest || [];
+  const boxes = [...document.querySelectorAll('#offer-list .pick')];
+  const picked = boxes.filter((b) => b.checked).map((b) => Number(b.dataset.index));
+  rx.want = boxes.length && picked.length < files.length ? picked : null;
+  const chosen = rxPicked();
+  rx.total = totalOf(chosen);
+
+  const count = rx.want
+    ? chosen.length + ' of ' + files.length + ' files'
+    : files.length + (files.length === 1 ? ' file' : ' files');
+  $('#offer-title').textContent = count + ' · ' + (rx.total == null ? 'size unknown' : fmtBytes(rx.total));
+  const accept = $('#accept');
+  accept.disabled = chosen.length === 0;
+  accept.textContent = rx.want ? 'receive ' + chosen.length : 'receive';
+  const all = $('#pick-all');
+  all.textContent = picked.length === boxes.length ? 'select none' : 'select all';
+
+  const hint = $('#offer-hint');
+  if (!chosen.length) {
+    hint.textContent = 'Nothing selected.';
+    return;
+  }
+  hint.textContent = supportsDirectPicker(chosen)
     ? 'You will be asked for a folder. Written straight to disk, no buffering.'
     : 'Downloads start on their own once complete.';
   // Si el worker esta, lo grande no se acumula en memoria: se dice, porque es
   // lo que decide si alguien se atreve con un video en el movil.
-  if (!supportsDirectPicker(files)) {
+  const seq = ++pickSeq;
+  if (!supportsDirectPicker(chosen)) {
     swReady.then((reg) => {
-      if (reg && files.some((f) => f.size == null || f.size >= SW_MIN)) {
-        $('#offer-hint').textContent = 'Streamed to your downloads folder as it arrives.';
+      // La eleccion puede haber cambiado mientras se esperaba al worker.
+      if (!reg || seq !== pickSeq) return;
+      if (chosen.some((f) => f.size == null || f.size >= SW_MIN)) {
+        hint.textContent = 'Streamed to your downloads folder as it arrives.';
       }
     });
   }
-  setStatus('channel up', 'live');
+}
+let pickSeq = 0;
+
+/** `select all` / `select none`: con quince fotos, desmarcar doce a mano cansa. */
+function togglePickAll() {
+  const boxes = [...document.querySelectorAll('#offer-list .pick')];
+  const every = boxes.every((b) => b.checked);
+  for (const b of boxes) b.checked = !every;
+  paintPick();
 }
 
 function handleFileVerified(index, hash) {
@@ -1893,7 +1994,15 @@ async function diskSink(dirHandle, meta) {
 }
 
 async function acceptTransfer() {
+  const chosen = rxPicked();
+  if (!chosen.length) return;
   $('#accept').disabled = true;
+  // La eleccion queda fijada: lo que no se ha marcado se queda tachado en la
+  // lista y las casillas dejan de responder.
+  for (const box of document.querySelectorAll('#offer-list .pick')) {
+    box.disabled = true;
+    if (!box.checked) box.closest('li').classList.add('skipped');
+  }
   armAlerts();
 
   rx.makeSink = (meta) => memorySink(meta);
@@ -1903,7 +2012,7 @@ async function acceptTransfer() {
   if (reg) {
     rx.makeSink = (meta) => ((meta.size == null || meta.size >= SW_MIN) ? swSink(reg, meta) : memorySink(meta));
   }
-  if (supportsDirectPicker(rx.manifest)) {
+  if (supportsDirectPicker(chosen)) {
     try {
       const dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'drop' });
       rx.makeSink = (meta) => diskSink(dir, meta);
@@ -1923,16 +2032,18 @@ async function acceptTransfer() {
   if (hint) hint.hidden = true;
   rx.accepted = true;
   rx.row = makeProgressRow($('#recv-progress'), 'inbound');
-  rx.row.files(rx.manifest);
+  rx.row.files(chosen);
   rx.row.state('arming…');
+  // Sin `files` es el lote entero: es lo que entiende cualquier emisor.
+  const files = rx.want || undefined;
   if (rx.isCli) {
     rx.row.path('CLI stream');
     rx.row.state('downloading…');
-    wsSend({ t: 'signal', data: { type: 'cli-accept' } });
+    wsSend({ t: 'signal', data: { type: 'cli-accept', files } });
     return;
   }
   watchPaths();
-  sendHost({ k: 'accept' });
+  sendHost({ k: 'accept', files });
 }
 
 // Lado RECEPTOR WEB del protocolo de relay del CLI (los mensajes `cli-*`): el
@@ -2015,7 +2126,6 @@ function routeSignal(from, data) {
   }
   if (data.type === 'cli-manifest') {
     rx.manifest = data.manifest || [];
-    rx.total = totalOf(rx.manifest);
     showOffer(rx.manifest);
     // La huella sale de la clave, y ahora por relay se cifra con esa misma
     // clave: significa lo mismo que por TCP directo entre dos CLI.
@@ -2114,6 +2224,7 @@ $('#show-qr').onclick = (e) => {
 $('#link-out').onclick = (e) => e.currentTarget.select();
 $('#restart').onclick = () => location.reload();
 $('#accept').onclick = acceptTransfer;
+$('#pick-all').onclick = togglePickAll;
 
 // ------------------------------------------------------- entrada del codigo
 
@@ -2210,7 +2321,7 @@ window.__drop = { out, rx };
 
 // Aviso si se cierra la pestaña con una transferencia a medias.
 window.addEventListener('beforeunload', (e) => {
-  const sending = [...out.peers.values()].some((c) => !c.cancelled && c.acked < totalBytes());
+  const sending = [...out.peers.values()].some((c) => !c.cancelled && c.acked < bytesFor(c));
   const receiving = rx.row && rx.received > 0 && rxIncomplete();
   // Aunque ya hayamos terminado podemos seguir siendo el eslabon de alguien.
   const relaying = rx.down && rx.down.dc && rx.down.dc.readyState === 'open';

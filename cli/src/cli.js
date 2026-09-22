@@ -11,6 +11,8 @@ import { c, fmtBytes, fmtDuration, renderProgressBar, renderProgressBarComplete,
 import { getCandidateIPs, startBroadcasting, listenForLAN, probeCandidateIPs, rankCandidates, isLocalAddress, plainAddress } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest } from './signaling.js';
 import { attachSender, receiveFiles, receiveFromRelay, verifyPrefix, openSource, totalOf, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
+import { pickedFiles } from '../../public/shared/protocol.js';
+import { parsePatterns } from './select.js';
 import { listenAnyFamily, watchServerErrors } from './listen.js';
 import { proofFromKey, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
@@ -490,6 +492,9 @@ ${c.bold}OPCIONES:${c.reset}
   --no-resume            No reanuda un .part que hubiera de una descarga
                          cortada: empieza de cero (por defecto se sigue donde
                          se quedó si el emisor confirma que es el mismo archivo)
+  --only <patrones>      Recibe solo los archivos que casen, separados por comas:
+                         "*.jpg" (por nombre, en cualquier carpeta), "fotos/*.jpg"
+                         o "fotos/**" (por ruta). Sin distinguir mayúsculas
   --limit <tasa>         Límite de ancho de banda: 500K, 10M, 1.5G (bytes/s).
                          Vale para enviar y para recibir
   --no-qr                No pinta el código QR del enlace (se omite solo si la
@@ -522,6 +527,7 @@ ${c.bold}EJEMPLOS:${c.reset}
   tar czf - proyecto/ | drop send - --name proyecto.tgz
   drop recv 4271-lemon-radar-tiger-orbit -o - | tar xzf -
   drop recv 4271-lemon-radar-tiger-orbit
+  drop recv 4271-lemon-radar-tiger-orbit --only "*.jpg,*.png"
   drop recv https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
   drop speed
   drop speed 4271-lemon-radar-tiger-orbit
@@ -835,10 +841,11 @@ async function runSend(args, options) {
     (current, total, speed, list) => {
       renderProgressBar(current, total, speed, 30, list);
     },
-    ({ totalBytes, totalTimeSec, avgSpeed, socket, resumedBytes }) => {
+    ({ totalBytes, totalTimeSec, avgSpeed, socket, resumedBytes, files: sentFiles }) => {
       renderProgressBarComplete(totalBytes, totalTimeSec, avgSpeed);
       delivered++;
       console.log(`\n  ${c.green}✔ ¡Transferencia completada con éxito para el receptor (${plainAddress(socket.remoteAddress)})!${c.reset}`);
+      if (sentFiles < files.length) console.log(`  ${c.dim}Había pedido ${sentFiles} de ${files.length} archivos.${c.reset}`);
       if (resumedBytes > 0) console.log(`  ${c.dim}${fmtBytes(resumedBytes)} ya estaban en el receptor: no se han vuelto a mandar.${c.reset}`);
       if (acceptingPeers()) console.log(`  ${c.dim}Canal abierto para más descargas. Presiona Ctrl + C para cerrarlo.${c.reset}\n`);
     },
@@ -894,6 +901,8 @@ const guestAcks = new Map();
 const pendingProofs = new Map();
 // IP con la que cada receptor entró en la sala, para poder decir a quién se sirve.
 const guestIps = new Map();
+// Archivos que ha pedido cada receptor por relay (indices), o null si todos.
+const guestPicks = new Map();
 
 // Lado EMISOR del protocolo de relay del CLI: manda cli-start, los trozos
 // binarios, cli-end y cli-done, y avanza la ventana con los cli-ack que le
@@ -911,12 +920,16 @@ function sendSealed(ws, guestId, obj) {
   ws.send(JSON.stringify({ t: 'signal', to: guestId, data: sealFrame(obj, key) }));
 }
 
-async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests = []) {
+async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests = [], picked = null) {
   const CHUNK = 64 * 1024;
   const MAX_IN_FLIGHT = 8 * 1024 * 1024; // Ventana deslizante de 8 MB máximo sin confirmar
-  // `null` con stdin: no hay total hasta que se acaba de leer.
-  const totalBytes = totalOf(files);
   const manifest = files.map((f) => ({ name: f.name ?? path.basename(f.path), size: f.size, ...(f.rel ? { path: f.rel } : {}) }));
+  // `picked`: los indices que ha pedido el receptor (`files` del cli-accept);
+  // `null` es el lote entero. El total, los acuses y la barra son de eso.
+  const wanted = picked ? new Set(picked) : null;
+  const shown = picked ? picked.map((i) => manifest[i]) : manifest;
+  // `null` con stdin: no hay total hasta que se acaba de leer.
+  const totalBytes = totalOf(picked ? picked.map((i) => files[i]) : files);
   // Lo que el receptor dice tener ya (`resume` del cli-accept), por indice.
   const requests = new Map();
   for (const r of Array.isArray(resumeRequests) ? resumeRequests : []) {
@@ -946,6 +959,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
 
   try {
     for (const [index, file] of files.entries()) {
+      if (wanted && !wanted.has(index)) continue;
       if (!activeStreams.has(guestId)) throw new Error('Receptor desconectado.');
 
       // El prefijo que dice tener el receptor se comprueba contra el archivo
@@ -1029,7 +1043,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
             speed = speed ? speed * 0.7 + inst * 0.3 : inst;
             lastBytes = progressBytes;
             lastReport = now;
-            if (onProgress) onProgress(progressBytes, totalBytes, speed, manifest);
+            if (onProgress) onProgress(progressBytes, totalBytes, speed, shown);
           }
         }
       } finally {
@@ -1060,7 +1074,7 @@ async function streamToWebGuest(guestId, files, ws, onProgress, resumeRequests =
         setTimeout(resolve, 50);
       });
       if (onProgress) {
-        onProgress(Math.min(sentBytes, ackInfo.acked), totalBytes, speed, manifest);
+        onProgress(Math.min(sentBytes, ackInfo.acked), totalBytes, speed, shown);
       }
     }
     // El bucle tambien sale si el receptor se ha ido (`guest-gone`, `cli-error`)
@@ -1195,11 +1209,16 @@ function printSenderResume({ name, size, requested, offset, address }) {
             if (!acceptingPeers()) return;
             console.log(`\n  ${c.bold}Receptor conectado (${guest}):${c.reset} ${c.cyan}[MODO STREAMING RELAY]${c.reset}\n`);
             if (fromStdin) stdinSpent = true;
+            // Lo que ha elegido (`--only` o las casillas de la web). Se guarda
+            // para que un `cli-retry` no le reenvie lo que no pidio.
+            const picked = pickedFiles(msg.data.files, files.length);
+            guestPicks.set(guest, picked);
+            if (picked) console.log(`  ${c.dim}Ha pedido ${picked.length} de ${files.length} archivos.${c.reset}`);
             inFlight++;
             try {
               const stats = await streamToWebGuest(guest, files, ws, (sent, total, speed, list) => {
                 renderProgressBar(sent, total, speed, 30, list);
-              }, msg.data.resume);
+              }, msg.data.resume, picked);
               renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
               // `cli-complete` solo llega con todo escrito y verificado en el
               // receptor: por relay "entregado" quiere decir eso.
@@ -1247,10 +1266,14 @@ function printSenderResume({ name, size, requested, offset, address }) {
             console.log(`\n  ${c.yellow}Reintentando envío para archivo #${retryIdx} a petición de (${guest})...${c.reset}\n`);
             inFlight++;
             try {
-              const filesToRetry = files.slice(retryIdx);
-              const stats = await streamToWebGuest(guest, filesToRetry, ws, (sent, total, speed, list) => {
+              // Desde ese archivo (inclusive) y solo lo que habia pedido. Con
+              // los indices del manifiesto, no con un trozo de la lista: antes
+              // se mandaba `files.slice(i)` y el `cli-start` del reintento
+              // decia indice 0 para el archivo i.
+              const base = guestPicks.get(guest) ?? files.map((_, i) => i);
+              const stats = await streamToWebGuest(guest, files, ws, (sent, total, speed, list) => {
                 renderProgressBar(sent, total, speed, 30, list);
-              });
+              }, [], base.filter((i) => i >= retryIdx));
               renderProgressBarComplete(stats.totalBytes, stats.totalTimeSec, stats.avgSpeed);
               delivered++;
               console.log(`\n  ${c.green}✔ ¡Reintento completado con éxito para (${guest})!${c.reset}\n`);
@@ -1273,6 +1296,7 @@ function printSenderResume({ name, size, requested, offset, address }) {
           activeStreams.delete(msg.guestId);
           pendingProofs.delete(msg.guestId);
           guestIps.delete(msg.guestId);
+          guestPicks.delete(msg.guestId);
           const ackInfo = guestAcks.get(msg.guestId);
           if (ackInfo?.notify) {
             const cb = ackInfo.notify;
@@ -1522,6 +1546,19 @@ function printReceiverResume({ phase, name, size, offset, requested, path: dest 
 }
 
 /**
+ * `--only` no ha cogido nada. Casi siempre es el patron mal escrito, asi que se
+ * ensena lo que trae el envio para poder corregirlo sin preguntar al emisor.
+ */
+function printNothingSelected(err) {
+  const available = err.available || [];
+  console.error(`\n${c.red}${err.message}${c.reset}`);
+  console.error(`  ${c.dim}El envío trae:${c.reset}`);
+  for (const name of available.slice(0, 20)) console.error(`    · ${name}`);
+  if (available.length > 20) console.error(`    ${c.dim}… y ${available.length - 20} más${c.reset}`);
+  console.error('');
+}
+
+/**
  * Tras un corte: si se ha conservado un `.part`, decir como seguir. El mismo
  * comando vale porque el codigo es el mismo mientras el emisor siga abierto.
  */
@@ -1607,6 +1644,10 @@ async function runRecv(args, options) {
   // confirma que es el mismo archivo. Con --stdout no hay nada que retomar (se
   // recibe en un temporal nuevo) y con --no-resume se empieza de cero.
   const resumeOpts = { resume: !options.noResume && !options.stdout, onResume: printReceiverResume };
+  // --only: lo que case se le pide al emisor (`files` en `ready`/`cli-accept`);
+  // el resto no se reserva, no se reanuda y no viaja.
+  const recvOpts = { ...resumeOpts, only: options.only.length ? options.only : null };
+  if (recvOpts.only) console.log(`  ${c.dim}Solo lo que case con: ${recvOpts.only.join(', ')} (--only)${c.reset}`);
 
   // `--relay` (o DROP_FORCE_RELAY) salta los caminos directos y va derecho al
   // servidor: es la forma de probar ese modo sin montar una NAT de verdad.
@@ -1625,7 +1666,7 @@ async function runRecv(args, options) {
     try {
       const received = await receiveFiles(target.host, target.port, code, outputDir, (current, total, speed, list) => {
         renderProgressBar(current, total, speed, 30, list);
-      }, 0, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle, ...resumeOpts });
+      }, 0, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle, ...recvOpts });
       if (received.stats) {
         renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
       }
@@ -1634,6 +1675,10 @@ async function runRecv(args, options) {
     } catch (err) {
       if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
         return askRetry(err, () => runRecv(args, options));
+      }
+      if (err.code === 'NOTHING_SELECTED') {
+        printNothingSelected(err);
+        process.exit(1);
       }
       console.error(`\n${c.red}Error durante la transferencia LAN: ${err.message}${c.reset}`);
       printResumeHint(err, input);
@@ -1716,7 +1761,7 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
       try {
         const received = await receiveFiles(probe.ip, port, code, outputDir, (current, total, speed, list) => {
           renderProgressBar(current, total, speed, 30, list);
-        }, 3000, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle, ...resumeOpts });
+        }, 3000, { overwrite: options.overwrite, onConnected: printSasAndWait, throttle, ...recvOpts });
         if (ws) ws.close();
         if (received.stats) {
           renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1731,6 +1776,11 @@ ${c.red}El emisor usa la versión ${offer.v ?? '0 (drop anterior a la 0.5.0)'} d
         // Cambiar de camino no arregla ninguno de estos: cortar aqui y decirlo.
         // Antes se tragaban y se reintentaba por relay, donde volvian a fallar
         // igual pero sesenta segundos mas tarde.
+        if (err.code === 'NOTHING_SELECTED') {
+          if (ws) ws.close();
+          printNothingSelected(err);
+          process.exit(1);
+        }
         if (['PROTOCOL_VERSION', 'PROTOCOL_FRAME', 'PROTOCOL_ERROR', 'BAD_CODE', 'UNSAFE_NAME'].includes(err.code)) {
           if (ws) ws.close();
           console.error(`
@@ -1831,7 +1881,7 @@ ${c.red}${err.message}${c.reset}
   try {
     const received = await receiveFromRelay(ws, manifest, outputDir, (current, total, speed, list) => {
       renderProgressBar(current, total, speed, 30, list);
-    }, { overwrite: options.overwrite, key, throttle, ...resumeOpts });
+    }, { overwrite: options.overwrite, key, throttle, ...recvOpts });
     if (ws) ws.close();
     if (received.stats) {
       renderProgressBarComplete(received.stats.totalBytes, received.stats.totalTimeSec, received.stats.avgSpeed);
@@ -1842,6 +1892,10 @@ ${c.red}${err.message}${c.reset}
     if (ws) ws.close();
     if (err.code === 'INTEGRITY_MISMATCH' || err.message?.includes('SHA-256')) {
       return askRetry(err, () => runRecv(args, options));
+    }
+    if (err.code === 'NOTHING_SELECTED') {
+      printNothingSelected(err);
+      process.exit(1);
     }
     console.error(`\n${c.red}Error durante la transferencia Relay: ${err.message}${c.reset}`);
     printResumeHint(err, input);
@@ -1927,6 +1981,7 @@ async function main() {
     clipboard: false,
     name: null,
     limit: 0,
+    only: [],
   };
 
   const cleanArgs = [];
@@ -1965,6 +2020,14 @@ async function main() {
       options.overwrite = true;
     } else if (argv[i] === '--no-resume') {
       options.noResume = true;
+    } else if (argv[i] === '--only') {
+      // Se puede repetir: `--only "*.jpg" --only "*.png"` suma, igual que comas.
+      const patterns = parsePatterns(argv[++i]);
+      if (!patterns.length) {
+        console.error(`\n${c.red}--only necesita al menos un patrón, como "*.jpg" o "fotos/**".${c.reset}\n`);
+        process.exit(1);
+      }
+      options.only.push(...patterns);
     } else if (argv[i] === '--once') {
       options.once = true;
     } else if (argv[i] === '--no-qr') {

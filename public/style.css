@@ -315,6 +315,21 @@ button {
   background: rgba(247, 118, 142, 0.08);
 }
 
+/* Eleccion de archivos en la oferta: una casilla por archivo, y el nombre es su
+   <label>, asi que pulsar en cualquier parte del nombre tambien la marca. */
+.files .pick {
+  margin: 0;
+  flex: none;
+  accent-color: var(--blue);
+}
+.files label.name { cursor: pointer; }
+.files .pick:disabled + label.name { cursor: default; }
+.files li.skipped .name,
+.files li.skipped .size {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
 
 /* ----------------------------------------------------------- recepcion */
 

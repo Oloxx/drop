@@ -25,6 +25,7 @@ export const FLAGS = [
   ['--stdout', ['recv'], 'Vuelca lo recibido a stdout', null],
   ['--overwrite', ['recv'], 'Sobrescribe lo que ya exista', null],
   ['--no-resume', ['recv'], 'No reanuda un .part', null],
+  ['--only', ['recv'], 'Solo los archivos que casen (*.jpg,fotos/**)', 'text'],
   ['--text', ['send'], 'Envía ese texto como message.txt', 'text'],
   ['--clipboard', ['send'], 'Envía el portapapeles', null],
   ['--name', ['send'], 'Nombre para lo que viene de stdin', 'text'],
@@ -74,7 +75,7 @@ _drop() {
   done
   case "$prev" in
     -o|--out) COMPREPLY=( $(compgen -d -- "$cur") ); return ;;
-    -s|--server|--text|--name|--expire|--limit|-p|--port|-t|--time) return ;;
+    -s|--server|--text|--name|--expire|--limit|--only|-p|--port|-t|--time) return ;;
     completion) COMPREPLY=( $(compgen -W "${SHELLS.join(' ')}" -- "$cur") ); return ;;
   esac
   if [[ -z "$cmd" ]]; then

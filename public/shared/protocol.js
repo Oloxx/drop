@@ -19,4 +19,26 @@
 //      diga su `end`, no en un byte contado. Un receptor v3 se creia el total
 //      (NaN en la barra, acuses que no salen) y "funcionaba" a medias, que es
 //      peor que rechazarse.
-export const PROTOCOL_VERSION = 4;
+//   5  seleccion de archivos: el receptor puede pedir solo parte del lote con
+//      `files` (indices del manifiesto) en `ready` por TCP y en `cli-accept`
+//      por relay. Un emisor v4 lo ignoraria y mandaria el lote entero a quien
+//      ha pedido tres fotos de quince.
+export const PROTOCOL_VERSION = 5;
+
+/**
+ * Los archivos que ha pedido el receptor, como indices del manifiesto.
+ *
+ * `null` es "todos": el campo no venia, que es lo que manda quien no elige.
+ * Una lista se limpia -- enteros dentro del manifiesto, sin repetir, en orden
+ * -- y se respeta tal cual, vacia incluida: un receptor que no quiere nada
+ * recibe solo el `done`. Mandarle el lote entero por un indice mal formado
+ * seria darle justo lo que no ha pedido.
+ *
+ * La usan los tres emisores (web, `drop send` por TCP y por relay), asi que
+ * los tres entienden lo mismo por la misma lista.
+ */
+export function pickedFiles(files, count) {
+  if (!Array.isArray(files)) return null;
+  const valid = files.filter((i) => Number.isInteger(i) && i >= 0 && i < count);
+  return [...new Set(valid)].sort((a, b) => a - b);
+}

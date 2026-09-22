@@ -163,3 +163,69 @@ test('web: los cortes conocidos acaban con un mensaje, no en un handshake eterno
     await context.close();
   }
 });
+
+// Seleccion en la oferta (#10): de tres archivos se desmarca uno, llegan los
+// otros dos y el emisor da por entregado lo pedido, no el lote.
+test('web -> web: el receptor elige que archivos baja', { skip: !CHROME && !REQUIRED && 'sin Chrome (CHROME_PATH)', timeout: 120_000 }, async (t) => {
+  assert.ok(CHROME, 'DROP_REQUIRE_CHROME=1 pero no hay Chrome: indicalo con CHROME_PATH');
+  const { chromium } = await import('playwright-core');
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+  t.after(() => browser.close());
+  const context = await browser.newContext({ acceptDownloads: true });
+
+  const bodies = {
+    'uno.bin': crypto.randomBytes(300 * 1024),
+    'dos.bin': crypto.randomBytes(200 * 1024),
+    'tres.bin': crypto.randomBytes(100 * 1024),
+  };
+  const sender = await context.newPage();
+  await sender.goto(srv.http, { waitUntil: 'domcontentloaded' });
+  await sender.evaluate((list) => {
+    const dt = new DataTransfer();
+    for (const [name, b64] of list) {
+      const bin = atob(b64);
+      dt.items.add(new File([Uint8Array.from(bin, (ch) => ch.charCodeAt(0))], name));
+    }
+    const input = document.getElementById('file-input');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, Object.entries(bodies).map(([name, body]) => [name, body.toString('base64')]));
+  await sender.click('#create-link');
+  await sender.waitForFunction(() => document.getElementById('link-out').value.includes('#'), null, { timeout: 15_000 });
+  const link = await sender.inputValue('#link-out');
+
+  const receiver = await context.newPage();
+  await receiver.addInitScript(() => { delete window.showDirectoryPicker; });
+  const downloads = [];
+  receiver.on('download', (d) => downloads.push(d));
+  await receiver.goto(link, { waitUntil: 'domcontentloaded' });
+  await receiver.waitForSelector('#accept:visible', { timeout: 20_000 });
+  assert.match(await receiver.textContent('#offer-title'), /^3 files/);
+
+  // `select none` y marcar dos, pulsando en el nombre (es el <label>).
+  await receiver.click('#pick-all');
+  assert.equal(await receiver.isDisabled('#accept'), true, 'sin nada marcado no se puede aceptar');
+  await receiver.click('#offer-list label:text("uno.bin")');
+  await receiver.click('#offer-list label:text("tres.bin")');
+  assert.match(await receiver.textContent('#offer-title'), /^2 of 3 files · 400 KB/);
+  assert.equal((await receiver.textContent('#accept')).trim(), 'receive 2');
+
+  await receiver.click('#accept');
+  await sender.waitForFunction(
+    () => /delivered/.test(document.querySelector('.peer .state')?.textContent || ''),
+    null, { timeout: 60_000 });
+  await receiver.waitForFunction(
+    () => /received/.test(document.querySelector('.peer .state')?.textContent || ''),
+    null, { timeout: 60_000 });
+  // El no elegido queda tachado en la lista.
+  assert.equal(await receiver.getAttribute('#offer-list li:nth-child(2)', 'class'), 'skipped');
+
+  const deadline = Date.now() + 10_000;
+  while (downloads.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  const got = Object.fromEntries(await Promise.all(downloads.map(async (d) => [d.suggestedFilename(), fs.readFileSync(await d.path())])));
+  assert.deepEqual(Object.keys(got).sort(), ['tres.bin', 'uno.bin']);
+  assert.equal(sha256(got['uno.bin']), sha256(bodies['uno.bin']));
+  assert.equal(sha256(got['tres.bin']), sha256(bodies['tres.bin']));
+});

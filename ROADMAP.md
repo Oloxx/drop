@@ -97,8 +97,9 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 
 ## Web
 
-- [ ] **Selección de archivos en el receptor** (#10): con un lote de 15 fotos, poder bajar
-      tres. El `accept` con índices es un cambio de protocolo, así que va antes de congelar.
+- [x] **Selección de archivos en el receptor** (#10): con un lote de 15 fotos, poder bajar
+      tres. Casillas en la oferta web y `drop recv --only <patrones>`; la elección viaja como
+      `files` (índices del manifiesto) en `accept`, `ready` y `cli-accept`, protocolo 5.
 - [ ] **Accesibilidad básica**: foco visible, `aria-live` en la fila de progreso, contraste
       del tema Tokyo Night verificado, todo operable con teclado.
 - [x] **Página de error para navegadores sin WebRTC** en vez de un fallo silencioso. Desde la

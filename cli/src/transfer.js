@@ -4,8 +4,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { deriveKey, encryptChunk, decryptChunk, sasFromKey, unsealFrame } from './crypto.js';
 import { splitForKey } from '../../public/shared/codes.js';
-import { PROTOCOL_VERSION } from '../../public/shared/protocol.js';
+import { PROTOCOL_VERSION, pickedFiles } from '../../public/shared/protocol.js';
 import { makeThrottle } from './throttle.js';
+import { selectFiles } from './select.js';
 
 const CHUNK_SIZE = 512 * 1024; // 512 KB por bloque para equilibrar streaming y memoria
 
@@ -500,9 +501,11 @@ function readControlFrame(socket, key) {
 //                `size` es `null` si el emisor lee de stdin (`drop send -`):
 //                no hay total, y el archivo acaba donde diga su `end`.
 //   ready        receptor -> emisor. `{ k:'ready', resume: [{ index, offset,
-//                sha256 }] }`: los `.part` que tiene y el hash de cada prefijo.
-//                Va aunque no haya nada que reanudar (`resume: []`): el emisor
-//                no manda un byte hasta recibirlo.
+//                sha256 }], files? }`: los `.part` que tiene y el hash de cada
+//                prefijo. Va aunque no haya nada que reanudar (`resume: []`):
+//                el emisor no manda un byte hasta recibirlo. `files` son los
+//                indices del manifiesto que quiere (`drop recv --only`); sin
+//                el, todos. El emisor salta los demas: ni `start` ni `end`.
 //   start        emisor -> receptor. `{ k:'start', index, offset }`. Abre el
 //                archivo `index`; `offset` es desde donde vienen los datos: el
 //                pedido si el hash del prefijo cuadraba, 0 si no.
@@ -570,6 +573,12 @@ export function attachSender(server, files, code, onProgress, onComplete, option
         for (const r of Array.isArray(answer.resume) ? answer.resume : []) {
           if (r && Number.isInteger(r.index)) requests.set(r.index, r);
         }
+        // Lo que ha pedido este receptor. El total y la barra son de eso, no
+        // del lote: quien pide tres fotos de quince termina al 100% con tres.
+        const picked = pickedFiles(answer.files, files.length);
+        const wanted = picked ? new Set(picked) : null;
+        const shown = picked ? picked.map((i) => manifest.files[i]) : manifest.files;
+        const connTotal = picked ? totalOf(picked.map((i) => files[i])) : totalBytes;
 
         let sentTotal = 0;
         // Lo que no ha hecho falta mandar porque el receptor ya lo tenia. La
@@ -583,6 +592,7 @@ export function attachSender(server, files, code, onProgress, onComplete, option
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
           if (socket.destroyed) break;
+          if (wanted && !wanted.has(i)) continue;
 
           // Si el receptor tiene un prefijo, se comprueba contra el archivo de
           // verdad antes de aceptarlo: cuesta leer esos bytes, que es mucho menos
@@ -651,7 +661,7 @@ export function attachSender(server, files, code, onProgress, onComplete, option
                 speed = speed ? speed * 0.7 + inst * 0.3 : inst;
                 lastBytes = sentTotal;
                 lastReport = now;
-                if (onProgress) onProgress(sentTotal, totalBytes, speed, manifest.files);
+                if (onProgress) onProgress(sentTotal, connTotal, speed, shown);
               }
             }
           } finally {
@@ -672,13 +682,13 @@ export function attachSender(server, files, code, onProgress, onComplete, option
 
         const totalTimeSec = Math.max(0.001, (performance.now() - startTime) / 1000);
         // Con stdin el total es lo que se ha acabado mandando.
-        const sentBytes = totalBytes ?? sentTotal;
+        const sentBytes = connTotal ?? sentTotal;
         const avgSpeed = (sentBytes - resumedTotal) / totalTimeSec;
 
         if (onComplete) {
-          onComplete({ totalBytes: sentBytes, totalTimeSec, avgSpeed, socket, resumedBytes: resumedTotal });
+          onComplete({ totalBytes: sentBytes, totalTimeSec, avgSpeed, socket, resumedBytes: resumedTotal, files: picked ? picked.length : files.length });
         } else if (onProgress) {
-          onProgress(sentBytes, sentBytes, avgSpeed, manifest.files);
+          onProgress(sentBytes, sentBytes, avgSpeed, shown);
         }
         socket.end();
       } catch (err) {
@@ -705,13 +715,17 @@ export function createSenderServer(files, code, onProgress, onComplete, options 
  * `.part` con pinta de servir, hashea el prefijo. Devuelve los destinos, los
  * planes de reanudacion por indice y la lista `resume` que viaja al emisor.
  */
-async function planResume(outputDir, entries, reserved, { overwrite, resume, onResume }) {
-  const destPaths = entries.map((f) => reserveOutputPath(outputDir, f.name, reserved, {
+async function planResume(outputDir, entries, reserved, { overwrite, resume, onResume, picked = null }) {
+  // Solo lo que se va a bajar: un archivo que no se ha pedido no reserva
+  // nombre, ni se busca su `.part`, ni se le pide al emisor que lo retome.
+  const wanted = picked ? new Set(picked) : null;
+  const destPaths = entries.map((f, i) => (wanted && !wanted.has(i) ? null : reserveOutputPath(outputDir, f.name, reserved, {
     overwrite, subpath: f.path ?? null, resume, size: Number.isFinite(f.size) ? f.size : null,
-  }));
+  })));
   const plans = new Map();
   const requests = [];
   for (let i = 0; i < destPaths.length; i++) {
+    if (!destPaths[i]) continue;
     const { partPath, resumeFrom } = destPaths[i];
     if (resumeFrom == null) continue;
     // Un `.part` vacio se reutiliza igual (abrirlo con 'wx' fallaria), pero
@@ -753,6 +767,41 @@ async function openSinkAt(outputDir, entry, index, offset, destPaths, plans, res
   return openFileSink({ ...paths, name: entry.name, index, overwrite, resume });
 }
 
+/**
+ * Lo que va a pedir un receptor CLI: los indices que casan con `--only`, o
+ * `null` (todo) sin patrones. Que no case nada es un error y no una descarga
+ * vacia: casi siempre es un patron mal escrito, y el error lleva la lista de lo
+ * que hay para poder corregirlo sin preguntarle al emisor.
+ */
+function pickForReceiver(entries, only) {
+  const picked = selectFiles(entries, only);
+  if (picked && !picked.length) {
+    const err = new Error(`Ningún archivo del envío coincide con --only ${only.join(',')}.`);
+    err.code = 'NOTHING_SELECTED';
+    err.available = entries.map((f) => f.path || f.name);
+    throw err;
+  }
+  return picked;
+}
+
+/**
+ * Lo recibido, en orden y sin huecos. Por dentro se lleva por indice del
+ * manifiesto, y con `--only` los que no se piden son huecos: quien recorre la
+ * lista (el resumen final, `--stdout`) no tiene por que saltarlos.
+ */
+function listReceived(receivedFiles) {
+  const list = receivedFiles.filter(Boolean);
+  list.stats = receivedFiles.stats;
+  return list;
+}
+
+/** Un `start` de un archivo que no se ha pedido: el emisor no respeta `files`. */
+function notPicked(name) {
+  const err = new Error(`El emisor manda ${JSON.stringify(name)}, que no se ha pedido.`);
+  err.code = 'PROTOCOL_ERROR';
+  return err;
+}
+
 /** Al reventar una descarga a medias: el `.part` se queda y el error lo dice. */
 async function keepPartial(sink, err) {
   const kept = await sink.detach().catch(() => 0);
@@ -767,7 +816,7 @@ async function keepPartial(sink, err) {
  * Cliente TCP del receptor que se conecta al emisor y guarda los archivos
  */
 export function receiveFiles(host, port, code, outputDir, onProgress, connectTimeoutMs = 0, options = {}) {
-  const { overwrite = false, onConnected, resume = true, onResume } = options;
+  const { overwrite = false, onConnected, resume = true, onResume, only = null } = options;
   // Del lado receptor el limite frena la LECTURA: el socket esta en pausa
   // mientras se procesa la cola, asi que dormir aqui llena el buffer TCP y el
   // emisor se frena solo por la contrapresion de siempre.
@@ -801,6 +850,8 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 
     let buffer = Buffer.alloc(0);
     let manifest = null;
+    let picked = null;    // indices pedidos con --only; null es todo
+    let shown = [];       // los archivos que se van a recibir, en orden
     let destPaths = [];
     let plans = new Map();
     let sink = null;
@@ -888,20 +939,24 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
             }
 
             manifest = msg;
-            totalBytes = totalOf(manifest.files);
+            picked = pickForReceiver(manifest.files, only);
+            shown = picked ? picked.map((i) => manifest.files[i]) : manifest.files;
+            totalBytes = totalOf(shown);
             // Los nombres se validan y se RESERVAN todos aqui, antes de abrir el
             // primer descriptor: si el manifiesto trae una ruta que se sale del
             // destino, la transferencia se corta sin haber escrito ni un byte, y
             // dos archivos con el mismo nombre reciben ya destinos distintos.
             // De paso se mira que `.part` hay para reanudar y se hashea cada
             // prefijo: eso es lo que va en el `ready`.
-            const planned = await planResume(outputDir, manifest.files, reserved, { overwrite, resume, onResume });
+            const planned = await planResume(outputDir, manifest.files, reserved, { overwrite, resume, onResume, picked });
             destPaths = planned.destPaths;
             plans = planned.plans;
             startTime = performance.now();
-            // El emisor no manda un byte hasta recibir esto.
+            // El emisor no manda un byte hasta recibir esto. Sin `files` (no
+            // hay --only) es el lote entero.
+            const ready = { k: 'ready', resume: planned.requests, ...(picked ? { files: picked } : {}) };
             socket.write(frame(encryptChunk(
-              Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify({ k: 'ready', resume: planned.requests }))]),
+              Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(ready))]),
               key,
             )));
             continue;
@@ -919,6 +974,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
               err.code = 'PROTOCOL_ERROR';
               throw err;
             }
+            if (!destPaths[index]) throw notPicked(manifest.files[index].name);
             const offset = Number.isInteger(msg.offset) && msg.offset > 0 ? msg.offset : 0;
             sink = await openSinkAt(outputDir, manifest.files[index], index, offset, destPaths, plans, reserved, { overwrite, onResume });
             receivedFiles[index] = { path: sink.finalPath, name: path.basename(sink.finalPath), verified: false, resumedFrom: sink.resumedFrom };
@@ -974,7 +1030,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
           speed = speed ? speed * 0.7 + inst * 0.3 : inst;
           lastBytes = totalReceived;
           lastReport = now;
-          if (onProgress) onProgress(totalReceived, totalBytes, speed, manifest.files);
+          if (onProgress) onProgress(totalReceived, totalBytes, speed, shown);
         }
       }
     }
@@ -1024,7 +1080,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
         // Antes esto resolvia pasara lo que pasara: un emisor que se moria a
         // media transferencia dejaba archivos cortos con su nombre bueno y la
         // promesa daba la descarga por buena.
-        if (!manifest || committed < manifest.files.length) {
+        if (!manifest || committed < shown.length) {
           const err = new Error('El emisor ha cerrado la conexión antes de terminar la transferencia.');
           err.code = 'TRUNCATED';
           await finish(err);
@@ -1042,7 +1098,7 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
         // El emisor ya ha cerrado su mitad: cerrar la nuestra o la conexion se queda
         // a medias y mantiene vivo el proceso de quien use esto como libreria.
         socket.end();
-        resolve(receivedFiles);
+        resolve(listReceived(receivedFiles));
       } catch (err) {
         finish(err);
       }
@@ -1104,7 +1160,11 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
 //                  Lleva `resume: [{ index, offset, sha256 }]` con los `.part`
 //                  que el receptor ya tiene de este manifiesto y el SHA-256 de
 //                  cada prefijo (vacio si no hay nada). Un emisor que no sepa
-//                  de reanudacion (el web) lo ignora y manda desde cero.
+//                  de reanudacion (el web) lo ignora y manda desde cero. Y
+//                  `files`, opcional: los indices del manifiesto que quiere
+//                  (`drop recv --only`, o las casillas de la web). Sin el, todo.
+//                  El emisor salta el resto, sin `cli-start` ni `cli-end`, y
+//                  los acuses cuentan solo lo pedido.
 //
 //   cli-start      emisor -> receptor. Empieza el archivo `index`, con nombre,
 //                  tamano, mime y `offset`: el byte desde el que vienen los
@@ -1157,20 +1217,28 @@ export function receiveFiles(host, port, code, outputDir, onProgress, connectTim
  * senializacion. La descripcion del protocolo esta justo arriba.
  */
 export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = {}) {
-  const { overwrite = false, key, resume = true, onResume } = options;
+  const { overwrite = false, key, resume = true, onResume, only = null } = options;
   // Por relay no hay contrapresion TCP con el emisor: lo que le frena es que
   // los acuses lleguen tarde, y los acuses salen de esta misma cola, detras de
   // la espera. Con la ventana de 8 MB el emisor se para en cuanto el receptor
   // se retrasa, y la media queda en el limite.
   const throttle = options.throttle || makeThrottle(0);
   if (!key) throw new Error('receiveFromRelay necesita la clave de la sala: el relay va cifrado');
+  let picked;
+  try {
+    picked = pickForReceiver(manifest, only);
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  const shown = picked ? picked.map((i) => manifest[i]) : manifest;
   return new Promise((resolve, reject) => {
     let sink = null;
     const reserved = new Set();
     let destPaths = [];
     let plans = new Map();
-    // `null` con un emisor de stdin: el final lo dice `cli-done`, no la cuenta.
-    const totalBytes = totalOf(manifest);
+    // De lo pedido, no del lote. `null` con un emisor de stdin: el final lo
+    // dice `cli-done`, no la cuenta.
+    const totalBytes = totalOf(shown);
     let totalReceived = 0;
     let resumedTotal = 0;
     let lastReport = performance.now();
@@ -1256,7 +1324,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
               speed = speed ? speed * 0.7 + inst * 0.3 : inst;
               lastBytes = totalReceived;
               lastReport = now;
-              if (onProgress) onProgress(totalReceived, totalBytes, speed, manifest);
+              if (onProgress) onProgress(totalReceived, totalBytes, speed, shown);
             }
 
             // Acuse de recibo: sin esto el emisor se para a los 8 MB y los dos
@@ -1302,6 +1370,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
               sink = null;
             }
             const idx = data.index || 0;
+            if (picked && !picked.includes(idx)) throw notPicked(data.name);
             const offset = Number.isInteger(data.offset) && data.offset > 0 ? data.offset : 0;
             // Los destinos se reservaron al aceptar, a partir del manifiesto.
             // Un `cli-start` que no cuadra con el (indice fuera de rango, o un
@@ -1366,7 +1435,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
             receivedFiles.stats = { totalBytes: gotBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
             settled = true;
             await cleanup();
-            resolve(receivedFiles);
+            resolve(listReceived(receivedFiles));
           }).catch(failWithError);
         }
       }
@@ -1387,7 +1456,7 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
             const avgSpeed = (totalBytes - resumedTotal) / totalTimeSec;
             receivedFiles.stats = { totalBytes, totalTimeSec, avgSpeed, resumedBytes: resumedTotal };
           }
-          resolve(receivedFiles);
+          resolve(listReceived(receivedFiles));
         });
       } else {
         const err = new Error('Conexión cerrada por el servidor antes de completar la descarga');
@@ -1400,12 +1469,12 @@ export function receiveFromRelay(ws, manifest, outputDir, onProgress, options = 
     // servir se hashean. El emisor comprueba cada prefijo contra su archivo y
     // contesta en cada `cli-start` desde donde manda de verdad.
     armIdleTimer();
-    planResume(outputDir, manifest, reserved, { overwrite, resume, onResume }).then(({ destPaths: d, plans: p, requests }) => {
+    planResume(outputDir, manifest, reserved, { overwrite, resume, onResume, picked }).then(({ destPaths: d, plans: p, requests }) => {
       if (settled) return;
       destPaths = d;
       plans = p;
       armIdleTimer();
-      sendSignal({ type: 'cli-accept', resume: requests });
+      sendSignal({ type: 'cli-accept', resume: requests, ...(picked ? { files: picked } : {}) });
     }).catch(failWithError);
   });
 }

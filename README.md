@@ -263,7 +263,18 @@ drop recv 4271-lemon-radar-tiger-orbit --overwrite
 
 # Opcional: no reanudar una descarga cortada, empezar de cero
 drop recv 4271-lemon-radar-tiger-orbit --no-resume
+
+# Opcional: bajar solo parte del envío (patrones separados por comas)
+drop recv 4271-lemon-radar-tiger-orbit --only "*.jpg,*.png"
+drop recv 4271-lemon-radar-tiger-orbit --only "fotos/**"
 ```
+
+**Solo parte del envío.** Con `--only` se piden al emisor únicamente los archivos que casen, y
+el resto ni viaja. Un patrón sin `/` se compara con el nombre, esté en la carpeta que esté
+(`*.jpg`); con `/`, con el final de la ruta (`fotos/*.jpg` coge `viaje/fotos/a.jpg`); con `/`
+delante, desde la raíz del envío (`/fotos/**`). `*` no cruza carpetas y `**` sí. No distingue
+mayúsculas. Si no casa nada, `drop recv` no descarga y enseña qué trae el envío. En la web es lo
+mismo con casillas: cada archivo de la oferta tiene la suya y **receive** baja lo marcado.
 
 **Qué pasa si el archivo ya existe:** por defecto no se pisa nada. Cada archivo se
 escribe primero como `nombre.ext.part` y solo pasa a llamarse `nombre.ext` cuando su
@@ -282,8 +293,9 @@ emisor web no sabe reanudar: manda desde el principio.
 > **Compatibilidad:** desde la versión 0.5.0 el manifiesto lleva un número de versión de
 > protocolo, así que un receptor 0.5.0+ **rechaza** con un mensaje explícito a un emisor
 > 0.4.2 o anterior en lugar de escribir archivos corruptos. La reanudación de descargas
-> sube el protocolo a la versión 3: un `drop` 0.6.x y uno posterior se rechazan mutuamente. Si ves
-> un error de versión, actualiza `drop` en los dos equipos con `drop update`.
+> sube el protocolo a la versión 3: un `drop` 0.6.x y uno posterior se rechazan mutuamente. La
+> selección de archivos (`--only`) lo sube a la 5. Si ves un error de versión, actualiza `drop`
+> en los dos equipos con `drop update`.
 
 #### 3. Test de velocidad entre terminales (`drop speed`)
 Mide la latencia (RTT), velocidad simétrica de subida/bajada y ruta de red (TCP directa o Relay) entre dos clientes CLI:
