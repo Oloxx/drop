@@ -45,6 +45,11 @@ Las notas de cada release, con los binarios, están en
     oferta y el final o el fallo de cada transferencia (`aria-live`), sin los porcentajes. Las
     barras son `progressbar` con su valor, los errores `role="alert"` y cada × dice qué quita.
   - `prefers-reduced-motion` también para la animación de la barra de tamaño desconocido.
+- **`drop verify-web [url]`: comprobar que una web de drop sirve el código del repositorio.** El
+  servidor dice qué commit sirve en `/version` (lo pasa el despliegue como `DROP_COMMIT`), la API de
+  GitHub da el hash de cada archivo de `public/` en ese commit y se compara con lo que se descarga
+  del servidor. Sale con error si algo no cuadra o si el commit no está en el repositorio público.
+  Solo prueba lo que el servidor te ha servido a ti, y lo dice.
 - **Política de compatibilidad** en `docs/COMPATIBILITY.md`: el protocolo 5 es el de toda la
   1.x, qué más se congela (señalización, formato del código, órdenes y flags del CLI, variables
   del servidor) y cómo se añaden cosas sin romper: lo desconocido se ignora, lo nuevo es

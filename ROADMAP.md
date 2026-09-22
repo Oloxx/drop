@@ -95,8 +95,10 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       las promete.
 - [x] **`SECURITY.md`** con cómo reportar, qué versiones tienen soporte y el modelo de
       amenazas en corto. Desde la v0.8.0; el documento largo del punto de arriba sigue pendiente.
-- [ ] **Subresource integrity o hash publicado de `app.js`** por release, para que quien
-      quiera pueda comprobar que el servidor sirve el código del repositorio.
+- [x] **Comprobar que el servidor sirve el código del repositorio.** No por release sino por
+      commit, porque la web se despliega desde `main`: `/version` dice el commit (lo pone el
+      despliegue) y `drop verify-web` compara cada archivo servido con el árbol de `public/` de
+      ese commit en GitHub. SRI no servía: el HTML con los `integrity` lo sirve el mismo servidor.
 
 ## Web
 

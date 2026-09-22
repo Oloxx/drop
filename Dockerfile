@@ -12,6 +12,12 @@ RUN npm ci --omit=dev
 COPY server ./server
 COPY public ./public
 
+# El commit del que sale esta imagen, para `/version` y `drop verify-web`. Lo
+# pasa el despliegue (`DROP_COMMIT=$(git rev-parse HEAD)`); sin el, `/version`
+# dice `commit: null` y no hay nada que comprobar.
+ARG DROP_COMMIT=
+ENV DROP_COMMIT=$DROP_COMMIT
+
 # La imagen trae un usuario `node` sin privilegios que no se estaba usando: el
 # proceso corria como root, asi que cualquier ejecucion de codigo dentro del
 # contenedor empezaba con todo. Los ficheros se copian antes y quedan de root,

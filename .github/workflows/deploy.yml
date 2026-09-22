@@ -60,6 +60,9 @@ jobs:
             CADDY_DESPUES=$(sha256sum Caddyfile | cut -d" " -f1)
 
             echo "==> Reconstruyendo contenedor Docker..."
+            # El commit entra en la imagen: `/version` lo dice y `drop verify-web`
+            # compara lo servido con ese commit del repositorio.
+            export DROP_COMMIT=$(git rev-parse HEAD)
             docker compose up -d --build drop
             # coturn tambien: sus credenciales y sus flags salen del compose y del
             # .env, asi que un cambio ahi no llega a produccion si no se recrea.

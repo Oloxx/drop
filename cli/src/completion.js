@@ -14,6 +14,7 @@ export const COMMANDS = [
   ['install', 'Instala drop en el sistema'],
   ['uninstall', 'Desinstala drop'],
   ['completion', 'Imprime el autocompletado de un shell'],
+  ['verify-web', 'Comprueba que la web sirve el código del repositorio'],
 ];
 
 // [flag, para que ordenes (vacio = todas), descripcion, que completa detras]

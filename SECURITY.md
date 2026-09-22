@@ -51,8 +51,9 @@ firma o con firma que no cuadra con la clave pública embebida en el binario.
 **Lo que NO está cubierto:**
 
 - Un servidor malicioso que sirva **otro `app.js`**. La web confía en el código que descarga,
-  como toda web. Está en el [ROADMAP](ROADMAP.md) publicar un hash de `app.js` por release
-  para quien quiera comprobarlo.
+  como toda web. `drop verify-web` compara lo que sirve un servidor con el commit del repositorio
+  público que dice servir, archivo a archivo, pero solo prueba lo que te ha servido a ti: un
+  servidor malicioso puede dar el código bueno a quien pregunta y el malo a un navegador concreto.
 - **PAKE.** No hay SPAKE2/CPace: el código de cuatro palabras protege por entropía y coste de
   derivación, no por un intercambio autenticado. Implementarlo a mano sin auditar sería peor.
 - **Auditoría externa.** `crypto.js`, `e2ee.js`, `scrypt.js`, `sas.js` y la derivación de

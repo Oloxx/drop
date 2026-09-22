@@ -7,7 +7,11 @@
 
 services:
   drop:
-    build: .
+    build:
+      context: .
+      # El commit que se esta desplegando, para `/version` (ver Dockerfile).
+      args:
+        DROP_COMMIT: "${DROP_COMMIT:-}"
     restart: unless-stopped
     expose:
       - "3000"

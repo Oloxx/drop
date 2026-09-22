@@ -429,14 +429,31 @@ en voz alta no regale un verificador offline de 44 bits. El diseño completo est
 El diseño completo, con el razonamiento y los límites, está comentado en la cabecera de
 [`public/shared/codes.js`](public/shared/codes.js).
 
+### Comprobar que la web sirve el código del repositorio
+
+La web confía en el `app.js` que descarga, como toda web: un servidor malicioso podría servir
+otro. `drop verify-web` lo comprueba sin fiarse del servidor:
+
+```bash
+drop verify-web                          # https://drop.oloxx.dev
+drop verify-web https://mi-drop.example  # cualquier otra instancia
+```
+
+El servidor dice qué commit sirve (`/version`), la API de GitHub da el hash de cada archivo de
+`public/` en ese commit del repositorio público, y se compara con lo que el servidor entrega de
+verdad, archivo a archivo. Si algo no cuadra, o el commit no existe en el repositorio, sale con
+error. Lo que no puede decir es que el servidor sirva lo mismo a todo el mundo: comprueba lo que
+te ha servido a ti. Con `GITHUB_TOKEN` en el entorno usa tu cuota de la API en vez de la anónima.
+
 ### Versiones que se hablan entre sí
 
 Mientras la versión mayor sea `0`, una versión menor puede romper el protocolo, y cuando lo hace
-se dice en el [CHANGELOG](CHANGELOG.md). Hoy:
+se dice en el [CHANGELOG](CHANGELOG.md). Desde la 1.0 manda la
+[política de compatibilidad](docs/COMPATIBILITY.md). Hoy:
 
-* Dos `drop` tienen que compartir `PROTOCOL_VERSION` (la 4 desde la v0.9.0); si no, se rechazan
-  con un mensaje que pide `drop update` en vez de entenderse a medias. La web comprueba lo
-  mismo al recibir de un CLI.
+* Dos `drop` tienen que compartir `PROTOCOL_VERSION` (la 5, la de toda la 1.x); si no, se
+  rechazan con un mensaje que pide `drop update` en vez de entenderse a medias. La web comprueba
+  lo mismo al recibir de un CLI.
 * Los tokens de la v0.3.5 (`T_9q_4uzB9iJAf8x`, 96 bits que además eran la clave de cifrado)
   dejaron de aceptarse en la v0.8.0: el servidor contesta `VERSION` a un cliente que no pide
   códigos memorizables, y ni el CLI ni la web los reconocen ya como código.

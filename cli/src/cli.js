@@ -13,6 +13,7 @@ import { connectSignaling, createRoom, joinRoom, getSignalingUrl, reportBadGuest
 import { attachSender, receiveFiles, receiveFromRelay, verifyPrefix, openSource, totalOf, RELAY_IDLE_TIMEOUT_MS, PROTOCOL_VERSION } from './transfer.js';
 import { pickedFiles } from '../../public/shared/protocol.js';
 import { parsePatterns } from './select.js';
+import { verifyWeb, REPO as VERIFY_REPO } from './verifyweb.js';
 import { listenAnyFamily, watchServerErrors } from './listen.js';
 import { proofFromKey, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
@@ -469,6 +470,7 @@ ${c.bold}USO:${c.reset}
   drop recv <código-o-enlace>           Recibe los archivos
   drop recv <código> --stdout           Escribe lo recibido en la salida estándar
   drop speed [código-o-enlace]          Mide la velocidad de transferencia entre 2 clientes CLI
+  drop verify-web [url]                 Comprueba que una web de drop sirve el código del repositorio
   drop update                           Busca e instala la última versión disponible
   drop install                          Instala drop en el sistema y lo añade al PATH
   drop uninstall                        Desinstala drop del sistema
@@ -533,6 +535,7 @@ ${c.bold}EJEMPLOS:${c.reset}
   drop speed 4271-lemon-radar-tiger-orbit
   drop speed 4271-lemon-radar-tiger-orbit -t 10
   drop update
+  drop verify-web https://drop.oloxx.dev
   eval "$(drop completion bash)"        # o zsh; fish y powershell en la ayuda del script
 `);
 }
@@ -1903,6 +1906,38 @@ ${c.red}${err.message}${c.reset}
   }
 }
 
+/**
+ * Compara lo que sirve una web de drop con el commit del repositorio que dice
+ * servir (cli/src/verifyweb.js explica el como y el alcance). Sale con 1 si
+ * algo no cuadra o no se puede comprobar.
+ */
+async function runVerifyWeb(base) {
+  const headers = {};
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  console.log(`\n${c.bold}Comprobando${c.reset} ${c.cyan}${base}${c.reset} contra github.com/${VERIFY_REPO}...`);
+  let report;
+  try {
+    report = await verifyWeb(base, { headers });
+  } catch (err) {
+    console.error(`\n  ${c.red}✖ ${err.message}${c.reset}\n`);
+    process.exit(1);
+  }
+  const short = report.commit.slice(0, 12);
+  console.log(`  ${c.dim}Dice servir la v${report.version}, commit ${short}${c.reset}\n`);
+  for (const f of report.files) {
+    console.log(f.ok ? `  ${c.green}✔${c.reset} ${f.path}` : `  ${c.red}✖ ${f.path}${c.reset} ${c.dim}(${f.reason})${c.reset}`);
+  }
+  const bad = report.files.filter((f) => !f.ok);
+  if (bad.length) {
+    console.log(`\n  ${c.red}✖ ${bad.length} de ${report.files.length} archivos no son los del commit ${short}.${c.reset}`);
+    console.log(`  ${c.dim}No uses esa web para nada sensible hasta saber por qué.${c.reset}\n`);
+    process.exit(1);
+  }
+  console.log(`\n  ${c.green}✔ Los ${report.files.length} archivos son idénticos a public/ del commit ${short}.${c.reset}`);
+  console.log(`  ${c.dim}Es lo que el servidor te ha servido a ti, ahora: no prueba que sirva lo mismo a todo el mundo.${c.reset}\n`);
+}
+
 async function main() {
   const argv = process.argv.slice(2);
 
@@ -1937,6 +1972,12 @@ async function main() {
       console.error(`\n${c.red}${err.message}${c.reset}\n  Uso: drop completion <${SHELLS.join('|')}>\n`);
       process.exit(1);
     }
+    return;
+  }
+
+  // `drop verify-web [url]`: lo que sirve la web contra el repositorio publico.
+  if (argv[0] === 'verify-web') {
+    await runVerifyWeb(argv[1] && !argv[1].startsWith('-') ? argv[1] : DEFAULT_SERVER);
     return;
   }
 

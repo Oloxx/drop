@@ -2,11 +2,14 @@ import http from 'node:http';
 import path from 'node:path';
 import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { randomRoomId, ROOM_ID_DIGITS } from '../public/shared/codes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Leido una vez: la imagen copia package.json para `npm ci`, asi que esta.
+const PKG_VERSION = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
 const PORT = process.env.PORT || 3000;
 
 // El servidor SOLO reparte identificadores publicos de sala (4 digitos). La parte
@@ -428,6 +431,15 @@ app.get('/healthz', (_req, res) => {
     },
     rejected: metrics.rejected,
   });
+});
+
+// Que codigo sirve este proceso. `commit` lo pone el despliegue (build arg
+// DROP_COMMIT, ver Dockerfile y deploy.yml); sin el es `null`. Es lo que usa
+// `drop verify-web` para comparar lo servido con ese commit del repositorio
+// publico: la confianza esta en el repositorio, no en lo que diga el servidor.
+app.get('/version', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ version: PKG_VERSION, commit: /^[0-9a-f]{40}$/.test(process.env.DROP_COMMIT || '') ? process.env.DROP_COMMIT : null });
 });
 
 app.use(express.static(path.join(__dirname, '..', 'public'), { extensions: ['html'] }));

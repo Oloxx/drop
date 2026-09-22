@@ -13,7 +13,7 @@ sección 1 cambia de forma incompatible. Lo que no está en la lista no es prome
   1.x. Cubre el TCP directo (marcos `[longitud][IV][tag][cifrado]`, `manifest` → `ready` →
   `start`/datos/`end` → `done`), el relay cifrado (`cli-offer`, `cli-proof`, `cli-manifest`,
   `cli-accept`, `cli-start`, `cli-ack`, `cli-end`, `cli-done`, `cli-complete`, `cli-retry`,
-  `cli-error`, `cli-denied`), la derivación de la clave con scrypt, la fórmula de la prueba y de
+  `cli-error`, `cli-denied`, `cli-wait`), la derivación de la clave con scrypt, la fórmula de la prueba y de
   la huella, y `files` para elegir archivos. La descripción canónica está encima de
   `receiveFromRelay` en [`cli/src/transfer.js`](../cli/src/transfer.js).
 - **El protocolo web** (señalización y DataChannel): lo que marca como congelado la sección 8 de
@@ -25,12 +25,12 @@ sección 1 cambia de forma incompatible. Lo que no está en la lista no es prome
   teclearlo (mayúsculas, espacios, prefijos de cuatro letras). Un código que vale en una 1.x vale
   en todas.
 - **La interfaz del CLI:** las órdenes (`send`, `recv`, `speed`, `update`, `install`,
-  `uninstall`, `completion`) y los flags que salen en `drop --help` siguen existiendo y
+  `uninstall`, `completion`, `verify-web`) y los flags que salen en `drop --help` siguen existiendo y
   significando lo mismo; el código de salida es `0` cuando todo ha ido bien y distinto de `0` si
   no; con `--stdout` (o `-o -`) por la salida estándar solo sale el contenido de los archivos.
 - **El servidor autoalojado:** los nombres de las variables de entorno documentadas (`DROP_*`,
-  `TURN_SECRET`, `TURN_TTL_SECONDS`) y las rutas `/config` y `/healthz`. `/healthz` puede ganar
-  campos, no perderlos.
+  `TURN_SECRET`, `TURN_TTL_SECONDS`, `DROP_COMMIT`) y las rutas `/config`, `/healthz` y
+  `/version`. Pueden ganar campos, no perderlos.
 
 **No** es promesa: los textos que se enseñan (mensajes, barra de progreso, colores, idioma), el
 aspecto de la web, los valores por defecto de los límites del servidor, las constantes de
