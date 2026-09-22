@@ -66,6 +66,13 @@ Las notas de cada release, con los binarios, están en
 - `docs/PROTOCOL.md`: el protocolo web entero (señalización, DataChannel, cadena de reenvío,
   reparación) en un documento, con lo que se congela en la 1.0 y lo que se puede extender.
 
+### Documentación
+- **Avisos de macOS y Windows al descargar con el navegador** (#24, #57). Los binarios llevan la
+  firma minisign del proyecto pero no un certificado de Apple o Microsoft, que cuestan dinero cada
+  año; el README explica cómo pasar Gatekeeper (`xattr -d com.apple.quarantine`, *Abrir
+  igualmente*) y SmartScreen (*Ejecutar de todas formas*, `Unblock-File`), y recomienda descargar
+  con `curl`, que no marca el archivo y no provoca ningún aviso.
+
 ### Eliminado
 - `fly.toml`. Nunca se probó y ningún workflow lo usaba; el despliegue es el de `DEPLOY-VPS.md`,
   que ahora dice por qué es una sola instancia a propósito.

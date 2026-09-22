@@ -72,9 +72,13 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 
 ## Distribución del CLI
 
-- [ ] **macOS firmado y notarizado** (#24): en arm64 la inyección SEA invalida la firma y el
-      sistema mata el binario; Gatekeeper bloquea el resto. Además falta `build:macos-x64`.
-- [ ] **Windows con Authenticode** (#57) para que SmartScreen deje de asustar.
+- [x] **macOS firmado** (#24): el build quita la firma, inyecta el blob SEA y vuelve a firmar
+      ad hoc, así que el binario arranca en arm64; `build:macos-x64` existe. **Sin notarizar, a
+      propósito:** el Apple Developer Program cuesta dinero cada año. El README explica cómo
+      pasar Gatekeeper y recomienda descargar con `curl`, que no marca el archivo.
+- [x] **Windows sin Authenticode, a propósito** (#57): un certificado cuesta dinero cada año. El
+      README explica el aviso de SmartScreen, `Unblock-File` y la descarga con `curl.exe`. La firma
+      minisign del `SHA256SUMS` sigue siendo la que dice quién publicó el binario.
 - [ ] **Gestores de paquetes** (#40): Homebrew, Scoop o winget, npm. `install.ps1` y el
       `curl | sh` valen para probar, no para pedir a alguien que lo instale en el trabajo.
 - [ ] **`drop update` probado contra una release real** en las tres plataformas antes de cada

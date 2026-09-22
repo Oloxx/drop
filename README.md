@@ -88,6 +88,47 @@ tar -xzf drop-v0.9.0-linux-x64.tar.gz
 ```
 *(O muévelo manualmente a tu ruta del sistema: `sudo mv drop-linux-x64 /usr/local/bin/drop && chmod +x /usr/local/bin/drop`)*
 
+### Avisos de macOS y Windows
+
+Los binarios van firmados con la clave del proyecto (ver [Verificar la descarga](#verificar-la-descarga)),
+pero **no** con un certificado de Apple ni de Microsoft: esos cuestan dinero cada año y drop no los
+paga. Por eso, si descargas el binario **con el navegador**, el sistema avisa la primera vez. No
+es que esté dañado: es que no lo firmó alguien que el sistema conozca. Comprueba la firma y el
+hash como dice arriba y sigue así:
+
+**Lo más cómodo: descárgalo desde la terminal.** Ni `curl` ni `drop update` marcan el archivo como
+"bajado de Internet", así que no sale ningún aviso:
+
+```bash
+# macOS (Apple Silicon; cambia arm64 por x64 en un Mac Intel)
+curl -LO https://github.com/Oloxx/drop/releases/download/v0.9.0/drop-v0.9.0-macos-arm64.tar.gz
+tar -xzf drop-v0.9.0-macos-arm64.tar.gz && ./drop-v0.9.0-macos-arm64 install
+```
+
+```powershell
+# Windows (curl.exe viene con Windows 10 y 11)
+curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.9.0/drop-v0.9.0-windows-x64.exe
+.\drop-v0.9.0-windows-x64.exe
+```
+
+**Si ya lo bajaste con el navegador:**
+
+* **macOS** dice que *no se puede verificar el desarrollador* y no lo abre. Quítale la marca de
+  descarga y ya arranca:
+  ```bash
+  xattr -d com.apple.quarantine ./drop-v0.9.0-macos-arm64
+  ```
+  O sin terminal: ábrelo una vez, cierra el aviso y ve a *Ajustes del Sistema → Privacidad y
+  seguridad → Abrir igualmente*.
+* **Windows** enseña *"Windows protegió su PC"* (SmartScreen). Pulsa *Más información →
+  Ejecutar de todas formas*. O desde PowerShell, antes de abrirlo:
+  ```powershell
+  Unblock-File .\drop-v0.9.0-windows-x64.exe
+  ```
+
+Solo pasa la primera vez: una vez instalado, `drop update` se actualiza solo, comprobando la
+firma, y no vuelve a salir ningún aviso.
+
 ---
 
 ## 📖 Guía de Uso
