@@ -50,6 +50,14 @@ Las notas de cada release, con los binarios, están en
   GitHub da el hash de cada archivo de `public/` en ese commit y se compara con lo que se descarga
   del servidor. Sale con error si algo no cuadra o si el commit no está en el repositorio público.
   Solo prueba lo que el servidor te ha servido a ti, y lo dice.
+- **Homebrew y Scoop** (#40, primera mitad): `brew install oloxx/tap/drop` y `scoop install
+  oloxx/drop`, desde `Oloxx/homebrew-tap` y `Oloxx/scoop-bucket`. Sus manifiestos se regeneran
+  solos con cada release, solo después de verificar la firma minisign del `SHA256SUMS`, y se
+  prueban instalando de verdad en macOS, Linux y Windows. Instalado así no hay avisos de
+  Gatekeeper ni SmartScreen.
+- **`drop` sabe si lo ha instalado Homebrew o Scoop** (`cli/src/pkgmgr.js`). Entonces no se
+  autoinstala al ejecutarlo sin argumentos, y `drop update`, `drop install` y `drop uninstall`
+  dicen qué orden del gestor usar en vez de dejar dos copias.
 - **Política de compatibilidad** en `docs/COMPATIBILITY.md`: el protocolo 5 es el de toda la
   1.x, qué más se congela (señalización, formato del código, órdenes y flags del CLI, variables
   del servidor) y cómo se añaden cosas sin romper: lo desconocido se ignora, lo nuevo es

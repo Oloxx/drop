@@ -74,6 +74,25 @@ Get-FileHash drop-v0.9.0-windows-x64.exe -Algorithm SHA256
 
 ## 🛠️ Instalación en el Sistema
 
+### Con un gestor de paquetes (recomendado)
+
+```bash
+# macOS y Linux, con Homebrew
+brew install oloxx/tap/drop
+```
+
+```powershell
+# Windows, con Scoop
+scoop bucket add oloxx https://github.com/Oloxx/scoop-bucket
+scoop install oloxx/drop
+```
+
+Se actualizan con `brew upgrade drop` y `scoop update drop`, no con `drop update`: el binario es
+del gestor, y desde la versión siguiente a la 0.9.0 `drop` lo detecta y te dice qué orden usar.
+Ninguno de los dos provoca avisos de Gatekeeper o SmartScreen, y los dos manifiestos se generan
+solo después de comprobar la firma minisign del `SHA256SUMS` de la release
+([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket)).
+
 ### Windows
 Simplemente **descarga [`drop-v0.9.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.9.0/drop-v0.9.0-windows-x64.exe) y haz doble clic sobre él**.
 1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).

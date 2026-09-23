@@ -14,6 +14,7 @@ import { attachSender, receiveFiles, receiveFromRelay, verifyPrefix, openSource,
 import { pickedFiles } from '../../public/shared/protocol.js';
 import { parsePatterns } from './select.js';
 import { verifyWeb, REPO as VERIFY_REPO } from './verifyweb.js';
+import { packageManagerOf } from './pkgmgr.js';
 import { listenAnyFamily, watchServerErrors } from './listen.js';
 import { proofFromKey, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
@@ -1953,12 +1954,26 @@ async function main() {
     return;
   }
 
+  // Instalado con Homebrew o Scoop, instalar, desinstalar y actualizar son cosa
+  // del gestor: hacerlo aqui dejaria dos copias (cli/src/pkgmgr.js).
+  const manager = packageManagerOf(process.execPath);
+  const managed = (what, command) => {
+    console.log(`\n  ${c.yellow}Este drop lo instaló ${manager.name}:${c.reset} para ${what}, usa ${c.cyan}${command}${c.reset}\n`);
+  };
+
   if (argv.includes('install')) {
+    if (manager) {
+      console.log(`
+  ${c.green}✔ Ya está instalado con ${manager.name}.${c.reset}
+`);
+      return;
+    }
     await installSelf();
     return;
   }
 
   if (argv.includes('uninstall')) {
+    if (manager) return managed('desinstalarlo', manager.uninstall);
     await uninstallSelf();
     return;
   }
@@ -1982,6 +1997,7 @@ async function main() {
   }
 
   if (argv.includes('update') || argv.includes('--update')) {
+    if (manager) return managed('actualizarlo', manager.upgrade);
     const force = argv.includes('--force');
     const skipVerify = argv.includes('--skip-verify');
     const allowUnsigned = argv.includes('--allow-unsigned');
@@ -1991,7 +2007,7 @@ async function main() {
 
   if (!argv.length) {
     const isExe = path.basename(process.execPath).toLowerCase().startsWith('drop');
-    if (isExe && !isInstalled()) {
+    if (isExe && !isInstalled() && !manager) {
       await installSelf();
       return;
     }

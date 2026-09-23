@@ -141,6 +141,12 @@ no puede comprobar la máquina va en esta lista, en este orden:
    también vale como comprobación independiente.
 8. Abre la web en producción y haz una transferencia entre dos pestañas. El deploy es
    automático con el push a `main`, pero nadie lo ha mirado hasta que alguien lo mira.
+9. **Homebrew y Scoop** se ponen al día solos en menos de seis horas: los workflows de
+   [`Oloxx/homebrew-tap`](https://github.com/Oloxx/homebrew-tap) y
+   [`Oloxx/scoop-bucket`](https://github.com/Oloxx/scoop-bucket) comprueban la firma del
+   `SHA256SUMS`, regeneran el manifiesto e instalan de verdad. Para no esperar:
+   `gh workflow run update.yml -R Oloxx/homebrew-tap` (y lo mismo con `scoop-bucket`). Si uno se
+   pone en rojo, la release no llega a ese gestor hasta arreglarlo.
 
 ## Seguridad
 

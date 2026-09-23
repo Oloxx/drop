@@ -79,8 +79,11 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [x] **Windows sin Authenticode, a propósito** (#57): un certificado cuesta dinero cada año. El
       README explica el aviso de SmartScreen, `Unblock-File` y la descarga con `curl.exe`. La firma
       minisign del `SHA256SUMS` sigue siendo la que dice quién publicó el binario.
-- [ ] **Gestores de paquetes** (#40): Homebrew, Scoop o winget, npm. `install.ps1` y el
-      `curl | sh` valen para probar, no para pedir a alguien que lo instale en el trabajo.
+- [ ] **Gestores de paquetes** (#40). Hechos **Homebrew** (`Oloxx/homebrew-tap`) y **Scoop**
+      (`Oloxx/scoop-bucket`): se regeneran solos tras comprobar la firma del `SHA256SUMS` y
+      se prueban instalando en macOS, Linux y Windows. Y `drop` instalado por un gestor ya no
+      se autoinstala ni se autoactualiza. Quedan **winget** (un pull request a
+      `microsoft/winget-pkgs` por versión) y **npm**.
 - [ ] **`drop update` probado contra una release real** en las tres plataformas antes de cada
       release (hoy está cubierto por tests unitarios de `minisign.js` y `shasums.js`, no por un
       flujo de extremo a extremo).
