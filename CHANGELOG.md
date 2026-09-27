@@ -11,6 +11,11 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.10.1] — 2026-09-27
+
+### Cambiado
+- **Aceptar la descarga con Enter en el CLI**: el mensaje de confirmación `¿Le dejas descargar?` pasa a mostrar `(S/n): ` y se puede aceptar pulsando directamente Enter sin necesidad de escribir `s`.
+
 ## [0.10.0] — 2026-09-23
 
 > **Rompe compatibilidad con la v0.9.x:** el protocolo pasa a la versión 5 (selección de
@@ -390,7 +395,8 @@ Primera release con binarios autónomos.
   navegador.
 - Descubrimiento en la red local por broadcast UDP.
 
-[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.10.0...HEAD
+[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/Oloxx/drop/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Oloxx/drop/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Oloxx/drop/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Oloxx/drop/compare/v0.7.1...v0.8.0
