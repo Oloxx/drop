@@ -237,12 +237,13 @@ Cuando alguien se conecta, `drop` pregunta antes de servir nada:
 ```text
   Alguien quiere descargar: 192.168.1.42 (TCP directo)
   Huella de la sesión: beef-grit-two (tiene que coincidir con la que ve el receptor)
-  ¿Le dejas descargar? (s/N):
+  ¿Le dejas descargar? (S/n):
 ```
 
-Hasta que respondas que sí no sale del equipo ni el nombre de los archivos. Con
-`--yes` (o `-y`) no pregunta, y en un script sin terminal interactiva se autoriza
-solo: bloquear ahí sería colgar el proceso esperando una tecla que no va a llegar.
+Hasta que respondas que sí (basta con pulsar Enter) no sale del equipo ni el nombre
+de los archivos. Con `--yes` (o `-y`) no pregunta, y en un script sin terminal
+interactiva se autoriza solo: bloquear ahí sería colgar el proceso esperando una
+tecla que no va a llegar.
 Qué es la huella y qué detecta, en
 [Modelo de seguridad del código](#-modelo-de-seguridad-del-código).
 

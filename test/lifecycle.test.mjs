@@ -13,10 +13,10 @@ import { startServer, ROOT } from './helpers.mjs';
 const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
-function runCli(args) {
+function runCli(args, { env = {}, stdin = 'ignore' } = {}) {
   const proc = spawn(process.execPath, [CLI, ...args], {
-    env: { ...process.env, DROP_NO_UPNP: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, DROP_NO_UPNP: '1', ...env },
+    stdio: [stdin, 'pipe', 'pipe'],
   });
   proc.output = '';
   proc.stdout.on('data', (d) => { proc.output += stripAnsi(d.toString()); });
@@ -133,3 +133,70 @@ test('--text envía un fragmento y --stdout lo vuelca limpio por la tubería', {
     server.stop();
   }
 });
+
+// ------------------------------------------------- puerta de confirmación (askPeer)
+
+test('la confirmación "¿Le dejas descargar?" se acepta simplemente con Enter', { timeout: 60_000 }, async () => {
+  const server = await startServer();
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-gate-enter-'));
+  const outDir = path.join(work, 'destino');
+  fs.mkdirSync(outDir);
+  const src = path.join(work, 'uno.bin');
+  fs.writeFileSync(src, crypto.randomBytes(64 * 1024));
+
+  const sender = runCli(['send', src, '--server', server.http, '--relay', '--once'], {
+    env: { DROP_FORCE_PROMPT: '1' },
+    stdin: 'pipe',
+  });
+  let receiver = null;
+  try {
+    const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
+    receiver = runCli(['recv', code, '--server', server.http, '--relay', '-o', outDir]);
+
+    await sender.waitFor(/¿Le dejas descargar\? \(S\/n\):/, 15_000);
+    sender.stdin.write('\n');
+
+    await sender.waitFor(/Autorizado/, 5_000);
+    assert.equal(await receiver.exited, 0, receiver.output);
+    assert.equal(await sender.exited, 0, sender.output);
+    assert.deepEqual(fs.readFileSync(path.join(outDir, 'uno.bin')), fs.readFileSync(src));
+  } finally {
+    receiver?.kill('SIGKILL');
+    sender.kill('SIGKILL');
+    server.stop();
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test('la confirmación "¿Le dejas descargar?" se rechaza con "n"', { timeout: 60_000 }, async () => {
+  const server = await startServer();
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-gate-reject-'));
+  const outDir = path.join(work, 'destino');
+  fs.mkdirSync(outDir);
+  const src = path.join(work, 'uno.bin');
+  fs.writeFileSync(src, crypto.randomBytes(64 * 1024));
+
+  const sender = runCli(['send', src, '--server', server.http, '--relay', '--once'], {
+    env: { DROP_FORCE_PROMPT: '1' },
+    stdin: 'pipe',
+  });
+  let receiver = null;
+  try {
+    const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
+    receiver = runCli(['recv', code, '--server', server.http, '--relay', '-o', outDir]);
+
+    await sender.waitFor(/¿Le dejas descargar\? \(S\/n\):/, 15_000);
+    sender.stdin.write('n\n');
+
+    await sender.waitFor(/Rechazado/, 5_000);
+    await withTimeout(receiver.exited, 10_000, 'el receptor');
+    assert.notEqual(await receiver.exited, 0);
+    assert.ok(!fs.existsSync(path.join(outDir, 'uno.bin')));
+  } finally {
+    receiver?.kill('SIGKILL');
+    sender.kill('SIGKILL');
+    server.stop();
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+});
+

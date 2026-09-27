@@ -831,7 +831,7 @@ async function runSend(args, options) {
   // Sin terminal interactiva no hay a quién preguntar: se aprueba solo, igual que
   // con --yes, y se dice en el aviso de cada receptor.
   const askPeer = makePeerGate({
-    auto: options.yes || !process.stdin.isTTY,
+    auto: options.yes || (!process.stdin.isTTY && !process.env.DROP_FORCE_PROMPT),
     motivo: options.yes ? '--yes' : 'sin terminal interactiva',
   });
 
@@ -1482,7 +1482,7 @@ async function finishRecv(received, outputDir, options) {
  * dice por que. Bloquear ahi seria colgar el proceso esperando una tecla que no va
  * a llegar nunca.
  */
-function makePeerGate({ auto, motivo }) {
+function makePeerGate({ auto, motivo, input = process.stdin, output = process.stdout }) {
   let cola = Promise.resolve();
 
   return function askPeer({ who, sas, path: via }) {
@@ -1499,10 +1499,11 @@ function makePeerGate({ auto, motivo }) {
         return true;
       }
 
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const respuesta = await new Promise((r) => rl.question(`  ¿Le dejas descargar? (s/N): `, r));
+      const rl = readline.createInterface({ input, output });
+      const respuesta = await new Promise((r) => rl.question(`  ¿Le dejas descargar? (S/n): `, r));
       rl.close();
-      const ok = ['s', 'si', 'sí', 'y', 'yes'].includes(respuesta.trim().toLowerCase());
+      const res = respuesta.trim().toLowerCase();
+      const ok = res === '' || ['s', 'si', 'sí', 'y', 'yes'].includes(res);
       console.log(ok
         ? `  ${c.green}✔ Autorizado.${c.reset}\n`
         : `  ${c.yellow}✖ Rechazado.${c.reset} ${c.dim}El canal sigue abierto para otros receptores.${c.reset}\n`);
