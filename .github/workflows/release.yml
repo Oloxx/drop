@@ -46,8 +46,11 @@ jobs:
       - run: npm ci
 
       # La suite levanta su propio servidor de senializacion (issue #23): aqui no
-      # hay que preparar nada.
+      # hay que preparar nada. Exigimos Chrome igual que en ci.yml para que
+      # test/web.test.mjs no se salte en silencio al etiquetar una release.
       - run: npm test
+        env:
+          DROP_REQUIRE_CHROME: '1'
 
   # ------------------------------------------------------------------- macOS
   # Un runner por arquitectura, para poder EJECUTAR lo que se compila. macOS
@@ -92,10 +95,21 @@ jobs:
           retention-days: 1
 
   # ------------------------------------------------------------------- Linux
+  # Un runner por arquitectura, igual que en macOS, para poder EJECUTAR ambos
+  # binarios antes de publicarlos (antes linux-arm64 se compilaba en x64 y se
+  # subia sin haber arrancado nunca).
   linux:
-    name: Linux (x64 y arm64)
+    name: Linux ${{ matrix.target }}
     needs: verificar
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -104,21 +118,18 @@ jobs:
           cache: npm
       - run: npm ci
 
-      - run: npm run build:linux
-      - run: npm run build:arm
+      - run: node scripts/build-cross.mjs ${{ matrix.target }}
 
-      # El de arm64 no se puede ejecutar en un runner x64 sin emulacion, asi que
-      # queda sin probar. Es la unica plataforma que se publica a ciegas.
-      - name: Ejecutar el binario de x64
+      - name: Ejecutar el binario
         run: |
-          BIN=$(ls dist/drop-v*-linux-x64 | grep -v '\.tar\.gz$')
+          BIN=$(ls dist/drop-v*-${{ matrix.target }} | grep -v '\.tar\.gz$')
           chmod +x "$BIN"
           "$BIN" --version
           "$BIN" --help > /dev/null
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bin-linux
+          name: bin-${{ matrix.target }}
           path: dist/drop-v*.tar.gz
           retention-days: 1
 
