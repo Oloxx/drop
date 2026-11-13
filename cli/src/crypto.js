@@ -125,6 +125,16 @@ export function proofFromKey(key, nonce) {
 }
 
 /**
+ * Compara `candidate` contra `proofFromKey(key, nonce)` en tiempo constante.
+ */
+export function verifyProof(key, nonce, candidate) {
+  if (typeof candidate !== 'string' || !/^[0-9a-f]{64}$/i.test(candidate)) return false;
+  const expected = Buffer.from(proofFromKey(key, nonce), 'hex');
+  const actual = Buffer.from(candidate, 'hex');
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+/**
  * Marco de control del relay cifrado: `{ type: 'cli-sealed', box }`, con el JSON
  * del marco original dentro del AEAD. El servidor reenvia `data` sin mirarlo, asi
  * que para el es un objeto opaco mas; el receptor lo abre con `unsealFrame` y

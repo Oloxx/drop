@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import { ROOT } from './helpers.mjs';
 import { FLAGS, COMMANDS, SHELLS, completionScript } from '../cli/src/completion.js';
@@ -47,12 +47,14 @@ test('cli.js no tiene una version escrita a mano', () => {
 // la que se publica: las menciones en prosa ("a partir de la v0.5.2") hablan de
 // una version concreta a proposito y no se tocan.
 test('los enlaces de descarga del README apuntan a la version actual', () => {
-  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-  const links = [...readme.matchAll(/releases\/download\/v([0-9][^/]*)\//g)].map((m) => m[1]);
+  for (const file of ['README.md', 'README.en.md']) {
+    const readme = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    const links = [...readme.matchAll(/releases\/download\/v([0-9][^/]*)\//g)].map((m) => m[1]);
 
-  assert.ok(links.length > 0, 'el README deberia tener enlaces de descarga');
-  for (const version of new Set(links)) {
-    assert.equal(version, pkg.version, `el README enlaza a la v${version} y el package.json dice ${pkg.version}`);
+    assert.ok(links.length > 0, `${file} deberia tener enlaces de descarga`);
+    for (const version of new Set(links)) {
+      assert.equal(version, pkg.version, `${file} enlaza a la v${version} y el package.json dice ${pkg.version}`);
+    }
   }
 });
 
@@ -87,4 +89,53 @@ test('drop completion imprime un script por shell, sin colores', () => {
     assert.ok(out.includes('no-resume'), `${shell}: faltan los flags`);
   }
   assert.throws(() => completionScript('nope'), (err) => err.code === 'UNKNOWN_SHELL');
+});
+
+function runCli(args) {
+  return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+}
+
+test('--help funciona también detrás de cualquier suborden', () => {
+  for (const cmd of ['verify-web', 'update', 'completion', 'install', 'uninstall']) {
+    const res = runCli([cmd, '--help']);
+    assert.equal(res.status, 0, `${cmd} --help debería salir con 0`);
+    assert.match(res.stdout, /USO:/);
+  }
+});
+
+test('rechaza opciones desconocidas, valores faltantes y puertos o tiempos inválidos', () => {
+  for (const args of [
+    ['--no-existe'],
+    ['send', 'algo.txt', '--no-existe'],
+    ['update', '--no-existe'],
+    ['--once'],
+  ]) {
+    const res = runCli(args);
+    assert.equal(res.status, 1, `${args.join(' ')} debería fallar`);
+    assert.doesNotMatch(res.stderr, /TypeError/, 'no debe lanzar errores internos');
+  }
+
+  for (const flag of ['-s', '--server', '-o', '--out', '-p', '--port', '-t', '--time', '--only', '--limit', '--expire']) {
+    const res = runCli(['send', flag]);
+    assert.equal(res.status, 1, `${flag} sin valor debería fallar`);
+    assert.match(res.stderr, /necesita un valor/);
+  }
+
+  for (const badPort of ['abc', '70000']) {
+    const res = runCli(['send', '-p', badPort, 'a.txt']);
+    assert.equal(res.status, 1, `-p ${badPort} debería fallar`);
+    assert.match(res.stderr, /Puerto no válido/);
+  }
+
+  for (const badTime of ['0', 'abc']) {
+    const res = runCli(['speed', '-t', badTime]);
+    assert.equal(res.status, 1, `-t ${badTime} debería fallar`);
+    assert.match(res.stderr, /Duración no válida/);
+  }
+});
+
+test('`drop send install` no activa la suborden install', () => {
+  const res = runCli(['send', 'install']);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /El archivo no existe/);
 });

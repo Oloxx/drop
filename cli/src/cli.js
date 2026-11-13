@@ -16,9 +16,10 @@ import { parsePatterns } from './select.js';
 import { verifyWeb, REPO as VERIFY_REPO } from './verifyweb.js';
 import { packageManagerOf } from './pkgmgr.js';
 import { listenAnyFamily, watchServerErrors } from './listen.js';
-import { proofFromKey, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
+import { proofFromKey, verifyProof, sasFromKey, deriveKey, encryptChunk, sealFrame, unsealFrame } from './crypto.js';
 import { runSpeedHost, runSpeedGuest } from './speed.js';
 import { mapPort } from './upnp.js';
+import { discoverPublicIp, resolveOfferCandidates } from './stun.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 import { verifySignature } from './minisign.js';
 import { encodeQr, qrToBlocks, ECL } from '../../public/shared/qr.js';
@@ -778,7 +779,7 @@ async function runSend(args, options) {
   // usa el test de regresión del relay, que si no acabaría yéndose por TCP directo.
   const forceRelay = options.relay || Boolean(process.env.DROP_FORCE_RELAY);
 
-  // Iniciar mapeo UPnP en el router en segundo plano
+  // Iniciar mapeo UPnP y sondeo STUN en segundo plano (en paralelo a la señalización)
   let upnpPromise = null;
   if (!forceRelay && !process.env.DROP_NO_UPNP) {
     upnpPromise = mapPort(tcpPort, options.port || tcpPort, 'drop-send', 7200, {
@@ -793,6 +794,14 @@ async function runSend(args, options) {
         }
         return res;
       })
+      .catch(() => null);
+  }
+
+  let stunResult = null;
+  let stunPromise = null;
+  if (!forceRelay && !process.env.DROP_NO_STUN) {
+    stunPromise = discoverPublicIp()
+      .then((res) => { stunResult = res; return res; })
       .catch(() => null);
   }
 
@@ -1124,21 +1133,15 @@ function printSenderResume({ name, size, requested, offset, address }) {
           // ya no sirve a nadie mas.
           if (!acceptingPeers()) return;
           if (msg.ip) guestIps.set(msg.guestId, msg.ip);
-          let upnp = upnpResult;
-          if (!upnp && upnpPromise) {
-            upnp = await Promise.race([
-              upnpPromise,
-              new Promise((r) => setTimeout(r, 2000))
-            ]);
-          }
-
-          const candidateIps = forceRelay ? [] : [...localIPs];
-          if (upnp?.publicIp && !candidateIps.includes(upnp.publicIp)) {
-            candidateIps.push(upnp.publicIp);
-          }
-          if (ws.publicIp && !candidateIps.includes(ws.publicIp)) {
-            candidateIps.push(ws.publicIp);
-          }
+          const { candidateIps, upnp } = await resolveOfferCandidates({
+            localIPs,
+            upnpResult,
+            upnpPromise,
+            stunResult,
+            stunPromise,
+            wsPublicIp: ws.publicIp,
+            forceRelay,
+          });
 
           // La oferta va SIN manifiesto. Acertar el identificador de sala son 4
           // dígitos, y los nombres de los archivos ya son información: primero
@@ -1176,7 +1179,7 @@ function printSenderResume({ name, size, requested, offset, address }) {
               ws.send(JSON.stringify({ t: 'signal', to: msg.from, data: { type: 'cli-denied', reason: 'VERSION', v: PROTOCOL_VERSION } }));
               return;
             }
-            if (msg.data.proof !== proofFromKey(key, nonce)) {
+            if (!verifyProof(key, nonce, msg.data.proof)) {
               console.log(`\n  ${c.yellow}Receptor (${msg.from}) rechazado: el código no coincide.${c.reset}\n`);
               reportBadGuest(ws, msg.from);
               return;
@@ -1955,6 +1958,11 @@ async function main() {
     return;
   }
 
+  if (argv.includes('-h') || argv.includes('--help')) {
+    printHelp();
+    return;
+  }
+
   // Instalado con Homebrew o Scoop, instalar, desinstalar y actualizar son cosa
   // del gestor: hacerlo aqui dejaria dos copias (cli/src/pkgmgr.js).
   const manager = packageManagerOf(process.execPath);
@@ -1962,7 +1970,7 @@ async function main() {
     console.log(`\n  ${c.yellow}Este drop lo instaló ${manager.name}:${c.reset} para ${what}, usa ${c.cyan}${command}${c.reset}\n`);
   };
 
-  if (argv.includes('install')) {
+  if (argv[0] === 'install') {
     if (manager) {
       console.log(`
   ${c.green}✔ Ya está instalado con ${manager.name}.${c.reset}
@@ -1973,7 +1981,7 @@ async function main() {
     return;
   }
 
-  if (argv.includes('uninstall')) {
+  if (argv[0] === 'uninstall') {
     if (manager) return managed('desinstalarlo', manager.uninstall);
     await uninstallSelf();
     return;
@@ -1997,7 +2005,14 @@ async function main() {
     return;
   }
 
-  if (argv.includes('update') || argv.includes('--update')) {
+  if (argv[0] === 'update' || argv.includes('--update')) {
+    const updateFlags = new Set(['--update', '--force', '--skip-verify', '--allow-unsigned']);
+    for (const arg of argv) {
+      if (arg.startsWith('-') && !updateFlags.has(arg)) {
+        console.error(`\n${c.red}Opción desconocida para update: ${arg}${c.reset}\n  Usa ${c.cyan}drop --help${c.reset} para ver las opciones disponibles.\n`);
+        process.exit(1);
+      }
+    }
     if (manager) return managed('actualizarlo', manager.upgrade);
     const force = argv.includes('--force');
     const skipVerify = argv.includes('--skip-verify');
@@ -2016,10 +2031,13 @@ async function main() {
     return;
   }
 
-  if (argv.includes('-h') || argv.includes('--help')) {
-    printHelp();
-    return;
-  }
+  const requireFlagValue = (index, flag) => {
+    if (index >= argv.length) {
+      console.error(`\n${c.red}${flag} necesita un valor.${c.reset}\n`);
+      process.exit(1);
+    }
+    return argv[index];
+  };
 
   const options = {
     server: DEFAULT_SERVER,
@@ -2044,32 +2062,49 @@ async function main() {
 
   const cleanArgs = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '-s' || argv[i] === '--server') {
-      options.server = argv[++i];
+    if (argv[i] === '--') {
+      cleanArgs.push(...argv.slice(i + 1));
+      break;
+    } else if (argv[i] === '-s' || argv[i] === '--server') {
+      options.server = requireFlagValue(i + 1, argv[i]);
+      i++;
     } else if (argv[i] === '-o' || argv[i] === '--out') {
-      options.out = argv[++i];
+      options.out = requireFlagValue(i + 1, argv[i]);
+      i++;
       // `-o -` es la forma de toda la vida de decir "a stdout".
       if (options.out === '-') { options.out = null; options.stdout = true; }
     } else if (argv[i] === '--stdout') {
       options.stdout = true;
     } else if (argv[i] === '--text') {
-      options.text = argv[++i];
-      if (options.text == null) {
-        console.error(`\n${c.red}--text necesita el texto a enviar.${c.reset}\n`);
-        process.exit(1);
-      }
+      options.text = requireFlagValue(i + 1, argv[i]);
+      i++;
     } else if (argv[i] === '--clipboard') {
       options.clipboard = true;
     } else if (argv[i] === '--name') {
-      options.name = argv[++i];
+      options.name = requireFlagValue(i + 1, argv[i]);
+      i++;
       if (!options.name) {
         console.error(`\n${c.red}--name necesita el nombre del archivo.${c.reset}\n`);
         process.exit(1);
       }
     } else if (argv[i] === '-p' || argv[i] === '--port') {
-      options.port = parseInt(argv[++i], 10) || 0;
+      const raw = requireFlagValue(i + 1, argv[i]);
+      i++;
+      const port = Number(raw);
+      if (!/^\d+$/.test(raw) || port < 0 || port > 65535) {
+        console.error(`\n${c.red}Puerto no válido: "${raw}". Debe ser un entero entre 0 y 65535.${c.reset}\n`);
+        process.exit(1);
+      }
+      options.port = port;
     } else if (argv[i] === '-t' || argv[i] === '--time') {
-      options.time = parseInt(argv[++i], 10) || 5;
+      const raw = requireFlagValue(i + 1, argv[i]);
+      i++;
+      const secs = Number(raw);
+      if (!/^\d+$/.test(raw) || secs <= 0) {
+        console.error(`\n${c.red}Duración no válida para -t/--time: "${raw}". Debe ser un entero positivo en segundos.${c.reset}\n`);
+        process.exit(1);
+      }
+      options.time = secs;
     } else if (argv[i] === '--direct-only') {
       options.directOnly = true;
     } else if (argv[i] === '--relay') {
@@ -2079,8 +2114,10 @@ async function main() {
     } else if (argv[i] === '--no-resume') {
       options.noResume = true;
     } else if (argv[i] === '--only') {
+      const raw = requireFlagValue(i + 1, argv[i]);
+      i++;
       // Se puede repetir: `--only "*.jpg" --only "*.png"` suma, igual que comas.
-      const patterns = parsePatterns(argv[++i]);
+      const patterns = parsePatterns(raw);
       if (!patterns.length) {
         console.error(`\n${c.red}--only necesita al menos un patrón, como "*.jpg" o "fotos/**".${c.reset}\n`);
         process.exit(1);
@@ -2091,14 +2128,17 @@ async function main() {
     } else if (argv[i] === '--no-qr') {
       options.noQr = true;
     } else if (argv[i] === '--limit') {
+      const raw = requireFlagValue(i + 1, argv[i]);
+      i++;
       try {
-        options.limit = parseRate(argv[++i]);
+        options.limit = parseRate(raw);
       } catch (err) {
         console.error(`\n${c.red}${err.message}${c.reset}\n`);
         process.exit(1);
       }
     } else if (argv[i] === '--expire') {
-      options.expire = argv[++i];
+      options.expire = requireFlagValue(i + 1, argv[i]);
+      i++;
       // Se valida aqui, antes de abrir nada: un canal que se abre y muere al
       // instante por una duracion mal escrita es peor que no abrirse.
       try {
@@ -2109,6 +2149,9 @@ async function main() {
       }
     } else if (argv[i] === '-y' || argv[i] === '--yes') {
       options.yes = true;
+    } else if (argv[i].startsWith('-') && argv[i] !== '-') {
+      console.error(`\n${c.red}Opción desconocida: ${argv[i]}${c.reset}\n  Usa ${c.cyan}drop --help${c.reset} para ver las opciones disponibles.\n`);
+      process.exit(1);
     } else {
       cleanArgs.push(argv[i]);
     }
@@ -2121,6 +2164,11 @@ async function main() {
   if (!command && (options.text != null || options.clipboard)) {
     await runSend([], options);
     return;
+  }
+
+  if (!command) {
+    console.error(`\n${c.red}Falta la orden, archivo o código.${c.reset}\n  Usa ${c.cyan}drop --help${c.reset} para ver las opciones disponibles.\n`);
+    process.exit(1);
   }
 
   if (command === 'send') {

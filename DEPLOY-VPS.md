@@ -173,3 +173,70 @@ Requiere tarjeta, así que compruébalo en tu consola antes de decidir.
 
 Y pase lo que pase, no guardes nada importante ahí: esta app no tiene estado, así que si un día
 te reclaman la máquina solo pierdes el rato de volver a levantarla.
+
+## 6. Copia de seguridad y rotación de secretos
+
+Aunque **drop** no tiene base de datos ni guarda archivos en disco, hay dos secretos que conviene
+respaldar y saber rotar: **`TURN_SECRET`** (en el `.env` del VPS) y **`DROP_SIGNING_KEY`** (la
+clave privada Ed25519 con la que GitHub Actions firma las releases).
+
+### Copia de seguridad
+
+- **`.env` del VPS:** contiene `DROP_DOMAIN`, `PUBLIC_IP`, `PRIVATE_IP` y `TURN_SECRET`. Déjalo con
+  permisos solo de lectura para el propietario (`chmod 600 .env`), nunca dentro de Git, y guarda una
+  copia cifrada fuera del VPS (por ejemplo, en un gestor de contraseñas o cifrada con `gpg -c .env`
+  antes de copiarla).
+- **`DROP_SIGNING_KEY`:** vive fuera del VPS (en el secret del repositorio de GitHub y en tu copia
+  local generada por [`scripts/keygen.mjs`](scripts/keygen.mjs), por defecto `~/.drop-signing-key`
+  con modo `0600`). Guarda una copia cifrada offline: si se pierde no se pueden publicar releases
+  verificables por los binarios ya instalados.
+
+### Rotar `TURN_SECRET`
+
+1. Genera un secreto nuevo y sustituye la línea `TURN_SECRET=` en `.env`:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. Recrea los contenedores que lo leen (`drop` y `coturn`):
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. Comprueba que `/config` devuelve credenciales nuevas (`curl -s https://TU_DOMINIO/config`).
+
+**Impacto:** las credenciales que `drop` ya había repartido antes del reinicio (válidas durante
+`TURN_TTL_SECONDS`, 12 h por defecto) dejan de ser aceptadas por `coturn` al instante. Los canales
+nuevos reciben credenciales firmadas con el secreto nuevo; los receptores que estuvieran rebotando
+por TURN en ese momento pueden necesitar reintentar si renuevan ICE, así que conviene rotarlo en
+una franja de poco tráfico.
+
+### Rotar `DROP_SIGNING_KEY` (releases del CLI)
+
+La clave pública (`PUBLIC_KEY`) va **empotrada dentro de cada binario** en
+[`cli/src/cli.js`](cli/src/cli.js), así que rotar la clave privada es una operación deliberada:
+
+1. Respalda y aparta `~/.drop-signing-key` y genera un par nuevo:
+
+   ```bash
+   mv ~/.drop-signing-key ~/.drop-signing-key.old
+   node scripts/keygen.mjs
+   ```
+
+2. Sube la privada nueva al secret del repositorio sin pasarla por pantalla:
+
+   ```bash
+   gh secret set DROP_SIGNING_KEY < ~/.drop-signing-key
+   ```
+
+3. Actualiza `PUBLIC_KEY` en [`cli/src/cli.js`](cli/src/cli.js) y la clave pública de verificación
+   en [`README.md`](README.md) y [`README.en.md`](README.en.md).
+4. Ejecuta `npm test` (incluye `test/minisign.test.mjs`) y publica una release nueva.
+
+**Aviso importante:** los binarios antiguos ya instalados llevan dentro la clave pública anterior,
+así que su `drop update` rechazará la primera release firmada con la clave nueva. Si rotas por
+compromiso o mantenimiento, indícalo en las notas de la release para que quienes ya tenían `drop`
+actualicen reinstalando por su gestor (`brew upgrade drop`, `scoop update drop`) o descargando el
+binario verificando la nueva clave pública.

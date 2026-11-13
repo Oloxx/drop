@@ -5,6 +5,7 @@ import { deriveKey, encryptChunk, decryptChunk } from './crypto.js';
 import { getCandidateIPs, startBroadcasting, listenForLAN, probeCandidateIPs, rankCandidates, isLocalAddress, plainAddress } from './discovery.js';
 import { connectSignaling, createRoom, joinRoom } from './signaling.js';
 import { mapPort } from './upnp.js';
+import { discoverPublicIp, resolveOfferCandidates } from './stun.js';
 import { listenAnyFamily, watchServerErrors } from './listen.js';
 import { newCode, parseCode, randomRoomId, CodeError } from '../../public/shared/codes.js';
 
@@ -629,6 +630,14 @@ export async function runSpeedHost(options = {}) {
       .catch(() => null);
   }
 
+  let stunPromise = null;
+  let stunResult = null;
+  if (!options.relay && !process.env.DROP_NO_STUN) {
+    stunPromise = discoverPublicIp()
+      .then((res) => { stunResult = res; return res; })
+      .catch(() => null);
+  }
+
   try {
     ws = await connectSignaling(serverUrl);
     roomId = await createRoom(ws);
@@ -702,21 +711,15 @@ export async function runSpeedHost(options = {}) {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.t === 'guest') {
-            let upnp = upnpResult;
-            if (!upnp && upnpPromise) {
-              upnp = await Promise.race([
-                upnpPromise,
-                new Promise((r) => setTimeout(r, 2000))
-              ]);
-            }
-
-            const candidateIps = [...localIPs];
-            if (upnp?.publicIp && !candidateIps.includes(upnp.publicIp)) {
-              candidateIps.push(upnp.publicIp);
-            }
-            if (ws.publicIp && !candidateIps.includes(ws.publicIp)) {
-              candidateIps.push(ws.publicIp);
-            }
+            const { candidateIps, upnp } = await resolveOfferCandidates({
+              localIPs,
+              upnpResult,
+              upnpPromise,
+              stunResult,
+              stunPromise,
+              wsPublicIp: ws.publicIp,
+              forceRelay: Boolean(options.relay),
+            });
 
             ws.send(JSON.stringify({
               t: 'signal',

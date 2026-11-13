@@ -123,7 +123,7 @@ no puede comprobar la máquina va en esta lista, en este orden:
    dos versiones entendiéndose a medias, que es peor que rechazarse.
 3. **`CHANGELOG.md`:** mueve *Sin publicar* a una sección `[X.Y.Z] — AAAA-MM-DD` y deja
    *Sin publicar* vacía.
-4. **`README.md`:** los enlaces de descarga apuntan a la versión nueva
+4. **`README.md` y `README.en.md`:** los enlaces de descarga apuntan a la versión nueva
    (`test/version.test.mjs` lo comprueba). La prosa que nombra versiones concretas ("a partir de
    la v0.5.2") se deja como está.
 5. **`ROADMAP.md`:** marca lo que entra y quita lo que ya no aplica.

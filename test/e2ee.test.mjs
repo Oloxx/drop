@@ -8,13 +8,14 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 
 import { scrypt, hmacSha256, pbkdf2Sha256 } from '../public/shared/scrypt.js';
+import { Sha256 } from '../public/shared/sha256.js';
 import {
   deriveRoomKey, proofFromKey, sasFromKeyBytes, sealBox, openBox, openerFor, unsealFrame, SCRYPT_PARAMS,
 } from '../public/shared/e2ee.js';
 import { PROTOCOL_VERSION } from '../public/shared/protocol.js';
 import {
   deriveKey, encryptChunk, decryptChunk, sasFromKey, sealFrame,
-  proofFromKey as cliProofFromKey, unsealFrame as cliUnsealFrame,
+  proofFromKey as cliProofFromKey, verifyProof, unsealFrame as cliUnsealFrame,
 } from '../cli/src/crypto.js';
 
 const CODE = '4271-lemon-radar-tiger-orbit';
@@ -92,4 +93,65 @@ test('la version del protocolo es la 2: relay cifrado', () => {
   // Bajarla dejaria a un receptor nuevo aceptando ofertas de emisores que mandan
   // los archivos en claro y una prueba de conocimiento que es un hash del secreto.
   assert.ok(PROTOCOL_VERSION >= 2);
+});
+
+test('vectores oficiales FIPS 180-4, RFC 4231, RFC 6070 y RFC 7914', async () => {
+  // FIPS 180-4 (SHA-256) + copy() a mitad de entrada.
+  assert.equal(new Sha256().digest(), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+  assert.equal(new Sha256().update(Buffer.from('abc')).digest(), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  const mid = new Sha256().update(Buffer.from('abcdbcdecdefdefgefghfghighij'));
+  const snap = mid.copy();
+  assert.equal(
+    mid.update(Buffer.from('hijkijkljklmklmnlmnomnopnopq')).digest(),
+    '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+  );
+  assert.equal(
+    snap.update(Buffer.from('hijkijkljklmklmnlmnomnopnopq')).digest(),
+    '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+  );
+
+  // RFC 4231 (HMAC-SHA256), casos 1 y 2.
+  assert.equal(
+    Buffer.from(hmacSha256(Buffer.alloc(20, 0x0b), Buffer.from('Hi There'))).toString('hex'),
+    'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7',
+  );
+  assert.equal(
+    Buffer.from(hmacSha256(Buffer.from('Jefe'), Buffer.from('what do ya want for nothing?'))).toString('hex'),
+    '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843',
+  );
+
+  // PBKDF2-HMAC-SHA256 (RFC 7914 / NIST SP 800-132).
+  assert.equal(
+    Buffer.from(pbkdf2Sha256(Buffer.from('password'), Buffer.from('salt'), 4096, 32)).toString('hex'),
+    'c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a',
+  );
+
+  // RFC 7914 seccion 12, primer vector: scrypt("", "", 16, 1, 1, 64).
+  const v1 = await scrypt(Buffer.alloc(0), Buffer.alloc(0), { N: 16, r: 1, p: 1, dkLen: 64, yieldEvery: 0 });
+  assert.equal(
+    Buffer.from(v1).toString('hex'),
+    '77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede21442fcd0069ded0948f8326a753a0fc81f17e8d3e0fb2e0d3628cf35e20c38d18906',
+  );
+});
+
+test('separacion de dominios, verifyProof en tiempo constante y bordes invalidos', async () => {
+  const k1 = deriveKey('4271-lemon-radar-tiger-orbit');
+  const k2 = deriveKey('4272-lemon-radar-tiger-orbit');
+  assert.notEqual(k1.toString('hex'), k2.toString('hex'), 'mismo secreto en distinta sala debe dar otra clave');
+
+  const nonce = '00112233445566778899aabbccddeeff';
+  const proof = cliProofFromKey(k1, nonce);
+  assert.equal(verifyProof(k1, nonce, proof), true);
+  assert.equal(verifyProof(k1, nonce, proof.toUpperCase()), true);
+  assert.equal(verifyProof(k1, nonce, `${proof.slice(0, -2)}00` === proof ? `${proof.slice(0, -2)}ff` : `${proof.slice(0, -2)}00`), false);
+  assert.equal(verifyProof(k1, nonce, 'abcd'), false);
+  assert.equal(verifyProof(k1, nonce, null), false);
+
+  await assert.rejects(scrypt(Buffer.from('a'), Buffer.from('b'), { N: 2 ** 32, r: 1, p: 1, dkLen: 32 }));
+  await assert.rejects(scrypt(Buffer.from('a'), Buffer.from('b'), { N: 3, r: 1, p: 1, dkLen: 32 }));
+  await assert.rejects(scrypt(Buffer.from('a'), Buffer.from('b'), { N: 16, r: 0, p: 1, dkLen: 32 }));
+  await assert.rejects(scrypt(Buffer.from('a'), Buffer.from('b'), { N: 16, r: 1, p: 1, dkLen: 0 }));
+
+  const opener = await openerFor(k1);
+  await assert.rejects(unsealFrame(opener, { type: 'cli-sealed' }), /sin carga/);
 });

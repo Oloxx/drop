@@ -38,9 +38,10 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [x] **Descarga en streaming sin File System Access** (#55): Service Worker en `public/sw.js`
       que sirve la descarga como respuesta HTTP en streaming, desde la v0.9.0. Probado en
       Chrome; falta pasarlo por Firefox y Safari/iOS de verdad (ver el punto de abajo).
-- [ ] **CLI a CLI por WAN** (#11): hoy el TCP directo solo funciona en la misma LAN o con UPnP;
-      fuera de eso cae al relay del servidor. Como mínimo, STUN para conocer la IP pública y
-      documentar honestamente qué velocidad se obtiene en cada caso.
+- [x] **CLI a CLI por WAN** (#11): además de UPnP y la IP vista por el servidor de señalización,
+      `cli/src/stun.js` consulta servidores STUN (RFC 5389) en paralelo para descubrir la IP
+      pública IPv4 incluso cuando la señalización entra por IPv6 o UPnP no responde, y el README
+      documenta honestamente la velocidad real en cada ruta (LAN, WAN directo, relay y WebRTC).
 - [x] **Tuberías** (#29): `drop send -` desde stdin con tamaño desconocido (`size: null` en el
       manifiesto, protocolo 4). Hecho en la v0.9.0; `--stdout` ya existía.
 - [ ] **Safari de escritorio y iOS probados de verdad** con transferencia web completa (SCTP,
@@ -64,8 +65,8 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [x] **Decidir la escala**: una sola instancia, aceptado. Una sala es poco más que dos
       WebSockets y los bytes de WebRTC no pasan por el servidor, así que un proceso sobra; está
       escrito en `DEPLOY-VPS.md`. `fly.toml`, que nunca se probó, se ha quitado.
-- [ ] **Copia de seguridad y rotación** del `.env` de valhalla (`TURN_SECRET`,
-      `DROP_SIGNING_KEY`), con el procedimiento escrito en `DEPLOY-VPS.md`.
+- [x] **Copia de seguridad y rotación** del `.env` de valhalla (`TURN_SECRET`,
+      `DROP_SIGNING_KEY`), con el procedimiento escrito en [`DEPLOY-VPS.md`](DEPLOY-VPS.md).
 - [x] **`npm audit` y actualización de dependencias en CI**: job `audit` en `ci.yml`, solo
       producción y a partir de `moderate`, y falla si `dependencies` deja de tener dos entradas.
       Desde la v0.8.0.
@@ -93,13 +94,14 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 
 ## Seguridad
 
-- [ ] **Documento de modelo de amenazas**: qué ve el servidor, qué ve el TURN, qué protege el
-      código de cuatro palabras y contra cuántos intentos, qué protege la huella (SAS), y qué
-      no está cubierto (un servidor malicioso que sirve otro `app.js`). El README tiene partes;
-      falta el documento que se pueda enlazar.
-- [ ] **Revisión externa** o al menos una pasada formal sobre `crypto.js`, `e2ee.js`,
-      `scrypt.js`, `sas.js` y la derivación de claves. Son implementaciones propias y la 1.0
-      las promete.
+- [x] **Documento de modelo de amenazas**: [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md),
+      enlazado desde [`SECURITY.md`](SECURITY.md), con qué ve el servidor y TURN, el coste
+      contra fuerza bruta de `scrypt`, qué protege el SAS y qué queda fuera de cobertura.
+- [x] **Revisión externa o pasada formal sobre la criptografía**: pasada formal sobre
+      `crypto.js`, `e2ee.js`, `scrypt.js`, `sas.js`, `sha256.js` y `minisign.js` (comparación
+      en tiempo constante `verifyProof`, validación de parámetros en `scrypt.js`/`e2ee.js` y
+      vectores oficiales FIPS 180-4, RFC 4231, RFC 6070 y RFC 7914 en `test/e2ee.test.mjs`).
+      Sigue sin auditoría externa pagada, documentado en `SECURITY.md` y `docs/THREAT-MODEL.md`.
 - [x] **`SECURITY.md`** con cómo reportar, qué versiones tienen soporte y el modelo de
       amenazas en corto. Desde la v0.8.0; el documento largo del punto de arriba sigue pendiente.
 - [x] **Comprobar que el servidor sirve el código del repositorio.** No por release sino por
@@ -121,8 +123,9 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 
 ## Documentación y proceso
 
-- [ ] **README en inglés** además del español, o al menos la parte de instalación y uso. La
-      web ya es en inglés; el proyecto se anuncia en un idioma y se documenta en otro.
+- [x] **README en inglés** además del español: [`README.en.md`](README.en.md) enlazado desde
+      [`README.md`](README.md) y comprobado en `test/version.test.mjs` para que los enlaces de
+      descarga no se queden atrás.
 - [x] **Checklist de release** en `CONTRIBUTING.md` ("Publicar una versión"). Desde la v0.8.0.
 - [ ] **Cerrar o descartar** cada issue abierto con `P3` que no entre: #38 (mDNS), #39
       (servidor de señalización embebido). Una 1.0 con quince issues de "algún día" abiertos

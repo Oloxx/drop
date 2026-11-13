@@ -113,8 +113,11 @@ const yieldNow = () => new Promise((resolve) => setTimeout(resolve, 0));
  * `dkLen` bytes. Lanza si los parametros no son validos para la especificacion.
  */
 export async function scrypt(password, salt, { N, r, p, dkLen, yieldEvery = 4096 } = {}) {
-  if (!Number.isInteger(N) || N < 2 || (N & (N - 1)) !== 0) throw new Error('scrypt: N tiene que ser potencia de 2');
+  if (!Number.isInteger(N) || N < 2 || N > 0x80000000 || (N & (N - 1)) !== 0) {
+    throw new Error('scrypt: N tiene que ser potencia de 2');
+  }
   if (!Number.isInteger(r) || r < 1 || !Number.isInteger(p) || p < 1) throw new Error('scrypt: r y p tienen que ser >= 1');
+  if (!Number.isInteger(dkLen) || dkLen < 1) throw new Error('scrypt: dkLen tiene que ser >= 1');
   if (r * p >= 1 << 30) throw new Error('scrypt: r*p demasiado grande');
 
   const pw = password instanceof Uint8Array ? password : new Uint8Array(password);
@@ -146,7 +149,7 @@ export async function scrypt(password, salt, { N, r, p, dkLen, yieldEvery = 4096
       blockMix(X, 0, Y, r, S, T);
       V.set(Y, (i + 1) * words);
       blockMix(Y, 0, X, r, S, T);
-      if (yieldEvery && (i & (yieldEvery - 1)) === 0 && i) await yieldNow();
+      if (yieldEvery > 0 && i > 0 && (i % yieldEvery) < 2) await yieldNow();
     }
 
     // Segunda mitad: X = BlockMix(X ^ V[Integerify(X) mod N]). Integerify es la
@@ -162,7 +165,7 @@ export async function scrypt(password, salt, { N, r, p, dkLen, yieldEvery = 4096
       vo = j * words;
       for (let k = 0; k < words; k++) Y[k] ^= V[vo + k];
       blockMix(Y, 0, X, r, S, T);
-      if (yieldEvery && (i & (yieldEvery - 1)) === 0 && i) await yieldNow();
+      if (yieldEvery > 0 && i > 0 && (i % yieldEvery) < 2) await yieldNow();
     }
 
     // Palabras -> bytes, de vuelta en B.

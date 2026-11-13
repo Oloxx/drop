@@ -122,6 +122,7 @@ export async function openerFor(key) {
 
 /** Descifra un marco `cli-sealed` y devuelve el objeto de control que llevaba. */
 export async function unsealFrame(opener, frame) {
+  if (!frame || typeof frame.box !== 'string') throw new Error('marco cli-sealed sin carga útil');
   const box = Uint8Array.from(atob(frame.box), (c) => c.charCodeAt(0));
   const plain = await openBox(opener, box);
   return JSON.parse(new TextDecoder().decode(plain));

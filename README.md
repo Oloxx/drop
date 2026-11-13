@@ -1,3 +1,5 @@
+**Español** | [English](README.en.md)
+
 # Drop 📦⚡
 
 Transferencia de archivos P2P cifrada de extremo a extremo, sin cuentas y sin límites de tamaño.
@@ -29,8 +31,8 @@ de cifrado y no salen nunca de tu equipo. Detalle completo en
 |---|---|---|
 | **Ideal para** | Amigos, móviles, tablets, envíos rápidos | Archivos gigantes (ISOs, backups, vídeos) |
 | **Instalación** | **Cero**. Solo abrir el navegador | **Auto-instalable** (1 clic) sin dependencias |
-| **Protocolo** | WebRTC DataChannel | Sockets TCP directos + LAN UDP Broadcast |
-| **Velocidad** | ~15 MB/s (límite SCTP del navegador) | **100–115 MB/s** (satura Gigabit / Wi-Fi 6) |
+| **Protocolo** | WebRTC DataChannel | Sockets TCP directos + LAN UDP + UPnP/STUN |
+| **Velocidad** | ~15 MB/s (límite SCTP del navegador) | **100–115 MB/s** en LAN; por WAN según ruta (ver abajo) |
 | **Compatibilidad** | Con otro navegador y con el CLI | Con otro CLI y con el navegador (las cuatro combinaciones, ver [Interoperabilidad](#4-interoperabilidad-total-cli--web-browser)) |
 
 ---
@@ -375,7 +377,7 @@ Cualquiera recibe de cualquiera, en las cuatro combinaciones:
 | Emisor → Receptor | Camino | Cifrado | Reanuda un corte |
 |---|---|---|---|
 | Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | Por archivo, si el receptor elige carpeta: lo que ya está entero en ella no vuelve a bajar. A mitad de un archivo, no |
-| CLI → CLI | TCP directo (LAN, UPnP, IPv4 o IPv6) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código). No con `drop send -`: una tubería no se rebobina |
+| CLI → CLI | TCP directo (LAN, UPnP, STUN, IPv4 o IPv6) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código). No con `drop send -`: una tubería no se rebobina |
 | CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | Por archivo, como Web → Web |
 | Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código | Sí: el `.part` sigue desde donde se quedó, igual que entre dos CLI |
 
@@ -394,6 +396,15 @@ o no cuadra. Sin carpeta (Firefox, Safari, iOS) no hay nada en disco que mirar y
   relay, cifrado, en vez de mandarle una oferta WebRTC.
 * Por el relay los bytes pasan por el servidor, pero cifrados con la clave que sale de las cuatro
   palabras: el servidor reenvía ruido. Ver [¿Cómo funciona por dentro?](#️-cómo-funciona-por-dentro).
+
+**Qué velocidad esperar en cada ruta:**
+
+| Ruta | Qué ocurre | Velocidad típica |
+|---|---|---|
+| **CLI ↔ CLI en LAN** | Broadcast UDP + TCP directo por IP privada | **100–115 MB/s** (satura Gigabit / Wi-Fi 6) |
+| **CLI ↔ CLI por WAN directo** | IPv6 global, UPnP o puerto abierto con `-p` (IP pública vía UPnP / STUN / servidor) | Limitada por tu subida/bajada real de internet |
+| **CLI ↔ CLI por WAN sin ruta (CGNAT / sin UPnP) o CLI ↔ Web** | Relay cifrado (AES-256-GCM) por el WebSocket del servidor | Depende del VPS y de `DROP_RELAY_LIMIT` (sin límite fijo salvo el que ponga la instancia; en un VPS compartido suele acotarse a unos pocos MB/s por sala) |
+| **Web ↔ Web** | WebRTC DataChannel directo (o por TURN si hay NAT simétrico) | **~15 MB/s** directo por límite de SCTP del navegador; por TURN depende de la red y del servidor |
 
 #### 5. Comandos de gestión del CLI
 ```bash

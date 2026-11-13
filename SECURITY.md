@@ -20,8 +20,9 @@ nada con quien siga en una anterior: el protocolo no cambia ([COMPATIBILITY.md](
 
 ## Modelo de amenazas, en corto
 
-Lo que protege drop y lo que no. La versión larga, con el razonamiento, está en el
-[README](README.md#-modelo-de-seguridad-del-código) y en las cabeceras de
+Lo que protege drop y lo que no. El documento completo y enlazable está en
+[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md), junto con los detalles en el
+[README](README.md#-modelo-de-seguridad-del-código) y las cabeceras de
 [`public/shared/codes.js`](public/shared/codes.js) y [`public/shared/sas.js`](public/shared/sas.js).
 
 **Lo que ve el servidor de señalización:** el identificador público de sala (`4271`), las IPs
@@ -56,9 +57,10 @@ firma o con firma que no cuadra con la clave pública embebida en el binario.
   servidor malicioso puede dar el código bueno a quien pregunta y el malo a un navegador concreto.
 - **PAKE.** No hay SPAKE2/CPace: el código de cuatro palabras protege por entropía y coste de
   derivación, no por un intercambio autenticado. Implementarlo a mano sin auditar sería peor.
-- **Auditoría externa.** `crypto.js`, `e2ee.js`, `scrypt.js`, `sas.js` y la derivación de
-  claves son implementaciones propias sobre primitivas de Node y WebCrypto, sin revisión
-  independiente todavía.
+- **Auditoría externa.** `crypto.js`, `e2ee.js`, `scrypt.js`, `sas.js` y `sha256.js` combinan primitivas
+  de Node y WebCrypto con implementaciones propias verificadas contra vectores oficiales
+  (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) en [`test/e2ee.test.mjs`](test/e2ee.test.mjs),
+  pero sin auditoría externa independiente pagada.
 - **Metadatos.** El servidor y quien mire la red ven cuándo, entre qué IPs y cuántos bytes.
 - **El otro extremo.** Quien tiene las cuatro palabras tiene los archivos; drop no puede
   proteger un código que se ha dictado a la persona equivocada.
