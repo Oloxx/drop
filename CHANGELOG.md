@@ -11,6 +11,22 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.11.0] — 2026-11-13
+
+Compatible con la v0.10.x (protocolo 5 sin cambios).
+
+### Añadido
+- **STUN en el CLI para conexiones WAN (#11):** [`cli/src/stun.js`](cli/src/stun.js) consulta servidores STUN (RFC 5389) por UDP en paralelo a UPnP para incluir la IP pública IPv4 en `cli-offer` y `cli-speed-offer` incluso cuando UPnP no responde o la señalización entra por IPv6. Respeta `DROP_NO_STUN` y `DROP_STUN_SERVER`, y comparte `resolveOfferCandidates` entre `drop send` y `drop speed`.
+- **Modelo de amenazas completo:** [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md), enlazado desde [`SECURITY.md`](SECURITY.md).
+- **Documentación en inglés:** [`README.en.md`](README.en.md), con los enlaces de descarga validados en `test/version.test.mjs`.
+- **Vectores criptográficos oficiales:** pruebas contra vectores FIPS 180-4 (SHA-256), RFC 4231 (HMAC-SHA256), RFC 6070 (PBKDF2-HMAC-SHA256) y RFC 7914 (scrypt) en `test/e2ee.test.mjs`.
+
+### Cambiado
+- **Parser del CLI más estricto:** `install`, `uninstall` y `update` solo coinciden como primera palabra (evitando que `drop send install` dispare `installSelf`), `--help` funciona tras cualquier suborden, se rechazan opciones desconocidas, valores faltantes y puertos/tiempos fuera de rango, y se añade soporte para `--`.
+- **Endurecimiento criptográfico:** verificación de `cli-proof` en tiempo constante (`verifyProof` con `crypto.timingSafeEqual` en `cli/src/crypto.js`), comprobación de límites en `scrypt.js` (`N <= 0x80000000`, `dkLen >= 1`) y validación de `frame.box` en `e2ee.js`.
+- **Workflow de release:** `release.yml` exige `DROP_REQUIRE_CHROME=1` en `verificar` y ejecuta el binario `linux-arm64` en `ubuntu-24.04-arm` antes de publicar.
+- **Documentación operativa:** tabla honesta de velocidades por ruta (LAN, WAN directo, relay y WebRTC) en `README.md`, y procedimiento de copia de seguridad y rotación de `TURN_SECRET` y `DROP_SIGNING_KEY` en `DEPLOY-VPS.md`.
+
 ## [0.10.1] — 2026-09-27
 
 ### Cambiado
@@ -395,7 +411,8 @@ Primera release con binarios autónomos.
   navegador.
 - Descubrimiento en la red local por broadcast UDP.
 
-[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.10.1...HEAD
+[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/Oloxx/drop/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Oloxx/drop/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Oloxx/drop/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/Oloxx/drop/compare/v0.8.0...v0.9.0

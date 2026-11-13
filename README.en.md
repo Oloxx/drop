@@ -34,15 +34,15 @@ The code has two halves with separate roles: **`4271` identifies the room** and 
 
 ---
 
-## 📥 Downloads (Version v0.10.1)
+## 📥 Downloads (Version v0.11.0)
 
-Standalone executables (no Node.js required) on the [v0.10.1 Release](https://github.com/Oloxx/drop/releases/tag/v0.10.1):
+Standalone executables (no Node.js required) on the [v0.11.0 Release](https://github.com/Oloxx/drop/releases/tag/v0.11.0):
 
-* **Windows (x64):** [`drop-v0.10.1-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.10.1/drop-v0.10.1-windows-x64.exe)
-* **Linux (x64):** [`drop-v0.10.1-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.10.1/drop-v0.10.1-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-v0.10.1-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.10.1/drop-v0.10.1-linux-arm64.tar.gz) *(Raspberry Pi, Oracle ARM VPS, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-v0.10.1-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.10.1/drop-v0.10.1-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.10.1-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.10.1/drop-v0.10.1-macos-x64.tar.gz)
+* **Windows (x64):** [`drop-v0.11.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-windows-x64.exe)
+* **Linux (x64):** [`drop-v0.11.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-v0.11.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-linux-arm64.tar.gz) *(Raspberry Pi, Oracle ARM VPS, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-v0.11.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-v0.11.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-macos-x64.tar.gz)
 
 ### Verify your download
 
@@ -57,7 +57,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 ```powershell
 # Windows (PowerShell)
-Get-FileHash drop-v0.10.1-windows-x64.exe -Algorithm SHA256
+Get-FileHash drop-v0.11.0-windows-x64.exe -Algorithm SHA256
 ```
 
 `drop update` checks both the minisign signature and the SHA-256 hash automatically before replacing the executable.
@@ -83,15 +83,15 @@ Upgrade via `brew upgrade drop` or `scoop update drop` (the CLI detects package-
 
 ### Manual installation
 
-- **Windows:** download [`drop-v0.10.1-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.10.1/drop-v0.10.1-windows-x64.exe) and double-click it (installs to `%LOCALAPPDATA%\Programs\drop\` and adds it to `PATH`), or install from terminal via `curl.exe`:
+- **Windows:** download [`drop-v0.11.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-windows-x64.exe) and double-click it (installs to `%LOCALAPPDATA%\Programs\drop\` and adds it to `PATH`), or install from terminal via `curl.exe`:
   ```powershell
-  curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.10.1/drop-v0.10.1-windows-x64.exe
-  .\drop-v0.10.1-windows-x64.exe
+  curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-windows-x64.exe
+  .\drop-v0.11.0-windows-x64.exe
   ```
 - **Linux / macOS:**
   ```bash
-  curl -LO https://github.com/Oloxx/drop/releases/download/v0.10.1/drop-v0.10.1-linux-x64.tar.gz
-  tar -xzf drop-v0.10.1-linux-x64.tar.gz && ./drop-v0.10.1-linux-x64 install
+  curl -LO https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-linux-x64.tar.gz
+  tar -xzf drop-v0.11.0-linux-x64.tar.gz && ./drop-v0.11.0-linux-x64 install
   ```
 
 > **macOS Gatekeeper & Windows SmartScreen:** Binaries are signed with the project's minisign key, not paid Apple/Microsoft certificates. Downloading with `curl`/`curl.exe` or a package manager avoids browser quarantine warnings. If downloaded via browser, clear quarantine with `xattr -d com.apple.quarantine ./drop-*` (macOS) or `Unblock-File .\drop-*.exe` (PowerShell).
