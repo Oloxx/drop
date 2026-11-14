@@ -25,9 +25,8 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       qué transporte usa cada una (TCP directo, relay cifrado, DataChannel) y qué reanuda.
       Hecho en la v0.8.0, con la columna de reanudación y la fila de "Dos modos" corregida.
 - [x] **Reanudación en todas las combinaciones que puedan** (#58): Web→CLI sigue desde el
-      `.part` con el prefijo comprobado; un receptor web con carpeta retoma por archivo (lo
-      entero no vuelve a bajar). A mitad de archivo en el navegador no se puede —File System
-      Access solo escribe al cerrar— y está explicado en el README, con la tabla al día.
+      `.part` con el prefijo comprobado; explicado en el README junto con el motivo por el que el
+      receptor web (Service Worker / Blob) empieza de cero entre sesiones.
 - [x] Decidir si **IPv6** (#37) entra en las rutas directas antes de congelar el formato de
       `cli-offer`. Decidido y hecho en la v0.9.0: las IPv6 van en `ips` como cadenas sueltas,
       sin campo de familia, y el emisor escucha en las dos. Lo que queda de #37 (multicast IPv6

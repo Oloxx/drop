@@ -11,6 +11,20 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.12.0] — 2026-11-14
+
+Compatible con la v0.11.x (protocolo 5 sin cambios).
+
+### Añadido
+- **Lotes como `.zip` en streaming en el receptor web:** cuando llegan varios archivos (o una carpeta enviada desde el CLI), la opción **download as .zip** (marcada por defecto a partir de 4 archivos o con rutas de carpeta) permite empaquetarlos al vuelo con [`public/shared/zip.js`](public/shared/zip.js) (Store, UTF-8, CRC-32, ZIP64 automático si pasa de 4 GiB) y bajarlos por *Service Worker* [`public/sw.js`](public/sw.js) (o Blob si es pequeño) con memoria constante y la misma verificación SHA-256 por archivo.
+
+### Cambiado
+- **Rediseño visual monocromo de la web:** nueva paleta oscura de alto contraste (`--accent`, `--accent-hover`, verde/rojo puntuales) en [`public/style.css`](public/style.css), [`public/index.html`](public/index.html), [`public/speed.html`](public/speed.html) y el código QR ([`public/shared/qr.js`](public/shared/qr.js)), junto con cabecera de navegación actualizada y umbrales WCAG AA verificados en `test/a11y.test.mjs`.
+- **Dependencias:** actualización de dependencias transitivas de `express` (`npm audit`).
+
+### Eliminado
+- **Envío de carpetas y *File System Access* (`showDirectoryPicker`) en la web:** el cliente web pasa a centrarse en archivos (individuales o por lotes), retirando el selector/arrastre de carpetas en la página y la escritura directa a carpeta mediante `showDirectoryPicker` (junto con su reanudación por archivo en navegador). El soporte completo de carpetas y `-o <carpeta>` sigue disponible en el CLI.
+
 ## [0.11.0] — 2026-11-13
 
 Compatible con la v0.10.x (protocolo 5 sin cambios).
@@ -411,7 +425,8 @@ Primera release con binarios autónomos.
   navegador.
 - Descubrimiento en la red local por broadcast UDP.
 
-[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.11.0...HEAD
+[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/Oloxx/drop/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Oloxx/drop/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Oloxx/drop/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/Oloxx/drop/compare/v0.9.0...v0.10.0

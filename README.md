@@ -37,15 +37,15 @@ de cifrado y no salen nunca de tu equipo. Detalle completo en
 
 ---
 
-## 📥 Descargas (Versión v0.11.0)
+## 📥 Descargas (Versión v0.12.0)
 
-Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.11.0](https://github.com/Oloxx/drop/releases/tag/v0.11.0):
+Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.12.0](https://github.com/Oloxx/drop/releases/tag/v0.12.0):
 
-* **Windows (x64):** [`drop-v0.11.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-windows-x64.exe)
-* **Linux (x64):** [`drop-v0.11.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-v0.11.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-v0.11.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.11.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-macos-x64.tar.gz)
+* **Windows (x64):** [`drop-v0.12.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe)
+* **Linux (x64):** [`drop-v0.12.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-v0.12.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-v0.12.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-v0.12.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-macos-x64.tar.gz)
 
 
 ### Verificar la descarga
@@ -67,7 +67,7 @@ Esa clave pública es la del proyecto; la privada solo la usa el workflow de rel
 sha256sum -c SHA256SUMS --ignore-missing
 
 # Windows (PowerShell)
-Get-FileHash drop-v0.11.0-windows-x64.exe -Algorithm SHA256
+Get-FileHash drop-v0.12.0-windows-x64.exe -Algorithm SHA256
 ```
 
 `drop update` hace las dos por su cuenta antes de sustituir el ejecutable y aborta si algo no cuadra. Con una release anterior a la v0.5.2, que no lleva firma, avisa y exige `--allow-unsigned` para seguir: así, borrar la firma no basta para que se conforme con el hash.
@@ -96,7 +96,7 @@ solo después de comprobar la firma minisign del `SHA256SUMS` de la release
 ([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket)).
 
 ### Windows
-Simplemente **descarga [`drop-v0.11.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-windows-x64.exe) y haz doble clic sobre él**.
+Simplemente **descarga [`drop-v0.12.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe) y haz doble clic sobre él**.
 1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
 2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
 3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
@@ -104,8 +104,8 @@ Simplemente **descarga [`drop-v0.11.0-windows-x64.exe`](https://github.com/Oloxx
 ### Linux / macOS
 Descarga el archivo correspondiente, extráelo y ejecútalo con `install`:
 ```bash
-tar -xzf drop-v0.11.0-linux-x64.tar.gz
-./drop-v0.11.0-linux-x64 install
+tar -xzf drop-v0.12.0-linux-x64.tar.gz
+./drop-v0.12.0-linux-x64 install
 ```
 *(O muévelo manualmente a tu ruta del sistema: `sudo mv drop-linux-x64 /usr/local/bin/drop && chmod +x /usr/local/bin/drop`)*
 
@@ -122,14 +122,14 @@ hash como dice arriba y sigue así:
 
 ```bash
 # macOS (Apple Silicon; cambia arm64 por x64 en un Mac Intel)
-curl -LO https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-macos-arm64.tar.gz
-tar -xzf drop-v0.11.0-macos-arm64.tar.gz && ./drop-v0.11.0-macos-arm64 install
+curl -LO https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-macos-arm64.tar.gz
+tar -xzf drop-v0.12.0-macos-arm64.tar.gz && ./drop-v0.12.0-macos-arm64 install
 ```
 
 ```powershell
 # Windows (curl.exe viene con Windows 10 y 11)
-curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.0-windows-x64.exe
-.\drop-v0.11.0-windows-x64.exe
+curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe
+.\drop-v0.12.0-windows-x64.exe
 ```
 
 **Si ya lo bajaste con el navegador:**
@@ -137,14 +137,14 @@ curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.11.0/drop-v0.11.
 * **macOS** dice que *no se puede verificar el desarrollador* y no lo abre. Quítale la marca de
   descarga y ya arranca:
   ```bash
-  xattr -d com.apple.quarantine ./drop-v0.11.0-macos-arm64
+  xattr -d com.apple.quarantine ./drop-v0.12.0-macos-arm64
   ```
   O sin terminal: ábrelo una vez, cierra el aviso y ve a *Ajustes del Sistema → Privacidad y
   seguridad → Abrir igualmente*.
 * **Windows** enseña *"Windows protegió su PC"* (SmartScreen). Pulsa *Más información →
   Ejecutar de todas formas*. O desde PowerShell, antes de abrirlo:
   ```powershell
-  Unblock-File .\drop-v0.11.0-windows-x64.exe
+  Unblock-File .\drop-v0.12.0-windows-x64.exe
   ```
 
 Solo pasa la primera vez: una vez instalado, `drop update` se actualiza solo, comprobando la
@@ -159,10 +159,7 @@ firma, y no vuelve a salir ningún aviso.
 > Web en producción: **[https://drop.oloxx.dev](https://drop.oloxx.dev)**
 
 1. **Enviar:**
-   * Abre la web, arrastra tus archivos **o carpetas** (o *pick a folder*) y pulsa **open channel**.
-     Una carpeta viaja con su árbol; en el receptor, con la *File System Access API*
-     (Chrome/Edge), se recrea tal cual en la carpeta elegida; en otros navegadores cada archivo
-     baja suelto con su nombre.
+   * Abre la web, arrastra tus archivos (o selecciónalos) y pulsa **open channel**.
    * Comparte el **código** (ej. `4271-lemon-radar-tiger-orbit`), que se puede dictar por teléfono,
      o el enlace equivalente (`https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit`).
    * Para un móvil, pulsa **qr**: enfoca la pantalla con la cámara y se abre el enlace, sin
@@ -172,15 +169,17 @@ firma, y no vuelve a salir ningún aviso.
 2. **Recibir:**
    * El receptor abre el enlace en su navegador, **o** entra en la web y teclea el código
      en el campo *«…or receive: type the code you were given»*.
-   * Pulsa **receive**. Dónde acaban los bytes depende del navegador:
+   * Cuando llegan varios archivos, puedes descargarlos uno a uno o marcar **download as .zip**
+     (marcado por defecto a partir de 4 archivos, o al recibir una carpeta enviada desde el CLI)
+     para empaquetarlos al vuelo en un único `.zip`.
+   * Pulsa **receive**. Dónde acaban los bytes depende del tamaño del envío:
 
      | Ruta | Cuándo | Memoria |
      |---|---|---|
-     | Carpeta elegida (*File System Access API*) | Chrome/Edge, con varios archivos, carpetas o más de 128 MB | Constante: se escribe según llega |
-     | Descarga en streaming por *Service Worker* ([`public/sw.js`](public/sw.js)) | Firefox, Safari (macOS e iOS) y Chrome sin carpeta elegida, a partir de 32 MB o sin tamaño conocido | Constante: el navegador escribe a Descargas según llega |
-     | Descarga normal (Blob) | Archivos pequeños, o si el worker no está (contexto no seguro, navegador antiguo) | El archivo entero en RAM hasta el final |
+     | Descarga en streaming por *Service Worker* ([`public/sw.js`](public/sw.js)) | Archivos o `.zip` a partir de 32 MB o sin tamaño conocido | Constante: el navegador escribe a Descargas según llega |
+     | Descarga normal (Blob) | Archivos o `.zip` pequeños, o si el worker no está (contexto no seguro, navegador antiguo) | El archivo entero en RAM hasta el final |
 
-     En las tres se verifica el SHA-256 al terminar; por el worker, si no cuadra, la descarga
+     En ambas se verifica el SHA-256 al terminar; por el worker, si no cuadra, la descarga
      se aborta y el navegador la marca como fallida en vez de dejar un archivo corrupto. El
      worker no cachea nada y solo atiende su propia URL de descarga.
 3. **Test de velocidad P2P (`/speed`):**
@@ -376,17 +375,15 @@ Cualquiera recibe de cualquiera, en las cuatro combinaciones:
 
 | Emisor → Receptor | Camino | Cifrado | Reanuda un corte |
 |---|---|---|---|
-| Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | Por archivo, si el receptor elige carpeta: lo que ya está entero en ella no vuelve a bajar. A mitad de un archivo, no |
+| Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | No (empieza de cero; dentro de la misma sesión sí retoma si cae un eslabón de la cadena) |
 | CLI → CLI | TCP directo (LAN, UPnP, STUN, IPv4 o IPv6) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código). No con `drop send -`: una tubería no se rebobina |
-| CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | Por archivo, como Web → Web |
+| CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | No (como Web → Web) |
 | Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código | Sí: el `.part` sigue desde donde se quedó, igual que entre dos CLI |
 
-**Por qué el navegador no reanuda a mitad de un archivo.** File System Access no escribe en el
-archivo según llega: escribe en un temporal (`.crswap` en Chrome) que solo pasa al nombre bueno al
-cerrarse. Si la pestaña se cierra o se corta la conexión, ese temporal se tira y no queda nada que
-retomar. Un archivo terminado sí queda, y por eso se retoma archivo a archivo: al volver a abrir el
-enlace y elegir la misma carpeta, la pestaña hashea lo que ya hay y el emisor solo manda lo que falta
-o no cuadra. Sin carpeta (Firefox, Safari, iOS) no hay nada en disco que mirar y se empieza de cero.
+**Por qué el navegador no reanuda un corte entre sesiones.** Al descargar en el navegador (ya sea por
+Blob o en streaming por *Service Worker*), la pestaña no tiene acceso para inspeccionar ni añadir
+bytes a un archivo previo en la carpeta de Descargas. Quien necesite reanudar cortes o enviar
+carpetas enteras puede usar el CLI (`drop recv` retoma el `.part` comprobado con SHA-256).
 
 * Si envías con `drop send` y el destinatario **no tiene la terminal**, abre el enlace en **Chrome,
   Edge, Firefox o Safari**, o entra en la web y teclea el código: verá los archivos y el botón
