@@ -187,17 +187,18 @@ Un `k` desconocido se ignora en los dos lados (no cierra nada, no se escribe en 
 
 ### 4.5 Dónde acaban los bytes
 
-Lo decide el receptor al pulsar `accept` (`supportsDirectPicker`): varios archivos, una carpeta,
-más de 128 MB o tamaño desconocido → pide directorio (File System Access, Chrome/Edge) y escribe a
-disco en streaming. Sin la API (Firefox, Safari, iOS), un archivo de 32 MB o más, o sin tamaño, se
-sirve como descarga HTTP en streaming a través de un Service Worker (`public/sw.js`): la página lo
-alimenta trozo a trozo con contrapresión por créditos y el navegador escribe a Descargas según
-llega; si el hash no cuadra la respuesta se rompe y la descarga queda marcada como fallida. Lo que
-quede por debajo, o donde no haya worker (contexto no seguro), se acumula en memoria y baja como
-Blob. Nada de esto toca el protocolo: son sumideros distintos para los mismos trozos. Con carpetas
-cada tramo de `path` pasa por `safeName` (que convierte `..` en `_`) y `getDirectoryHandle(…,
-{ create: true })`. El picker tiene que pedirse **dentro** del click: la activación de usuario se
-pierde tras un `await`.
+En el receptor web, cualquier descarga (archivo suelto o lote empaquetado como `.zip` mediante
+`public/shared/zip.js`) de 32 MB o más, o sin tamaño conocido, se sirve como descarga HTTP en
+streaming a través del Service Worker (`public/sw.js`): la página lo alimenta trozo a trozo con
+contrapresión por créditos y el navegador escribe a Descargas según llega; si el hash no cuadra la
+respuesta se rompe y la descarga queda marcada como fallida. Lo que quede por debajo, o donde no
+haya worker (contexto no seguro), se acumula en memoria y baja como Blob. Nada de esto toca el
+protocolo: son sumideros distintos para los mismos trozos.
+
+El receptor web ya no selecciona carpetas locales (`showDirectoryPicker`), pero el CLI conserva
+carpetas completas (`drop send <carpeta>`, `drop recv -o <carpeta>`) y el campo opcional `path` en
+el manifiesto permite al navegador conservar las rutas si recibe un lote del CLI dentro de un
+`.zip`.
 
 ## 5. Retomar dentro de una sesión
 
@@ -217,13 +218,9 @@ El bucle de envío está guardado por `conn.epoch`: cada `sendAllFiles` lo incre
 si estaba a medio `await`, sale al verlo. Sin esto dos bucles entrelazan dos flujos de bytes por
 el mismo canal.
 
-Entre sesiones se retoma **por archivo** (#58). Un receptor con carpeta elegida hashea lo que ya
-hay en ella con el mismo nombre y tamaño que un archivo del lote y lo ofrece en el `resume` del
-`accept`. El emisor lo comprueba contra su archivo y, si es el suyo, manda `start` con `from` igual
-al tamaño y el `end` detrás, sin bytes; el receptor no reescribe nada, suma esos bytes a lo recibido
-y acusa en el acto. A mitad de un archivo no se puede: File System Access escribe en un temporal que
-solo se confirma al cerrar, así que un corte no deja nada en disco. Un `start` con `from` > 0 para un
-archivo que ni estaba en curso ni se ofreció es un emisor roto y cierra la fila.
+Entre sesiones, el protocolo mantiene `accept.resume` (#58), aunque la pestaña web actual no lo
+emite (el emisor web sí atiende el `resume` por `.part` cuando quien recibe es un `drop recv` del
+CLI).
 
 Quien ofrece `resume` no entra en una cadena (§6.1): se salta archivos y su flujo no es el de nadie
 más.

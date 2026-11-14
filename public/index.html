@@ -11,11 +11,13 @@
 <body data-view="send">
 
 <header class="head">
-  <a class="brand" href="./">drop</a>
-  <a class="nav" href="speed">speed test</a>
-  <button class="nav" id="alerts-toggle" type="button"
-          title="Chime and desktop notification when a transfer finishes">alerts on</button>
-  <span id="status" class="status" role="status">·</span>
+  <nav class="head-nav" aria-label="Primary">
+    <a class="nav active" href="./" aria-current="page">transfer</a>
+    <a class="nav" href="speed">speed test</a>
+    <button class="nav" id="alerts-toggle" type="button"
+            title="Chime and desktop notification when a transfer finishes">alerts on</button>
+  </nav>
+  <span id="status" class="status" role="status">idle</span>
 </header>
 
 <!-- Lo que un lector de pantalla tiene que oir aunque el foco este en otra
@@ -26,17 +28,18 @@
 
   <!-- ---------- Enviar (pantalla por defecto) ---------- -->
   <section class="view" data-name="send">
-    <h1><span class="prompt">❯</span> no middleman</h1>
-    <p class="lead">Browser to browser, encrypted end to end. No account, no cloud,
-      no copy left on a server.</p>
+    <div class="hero">
+      <h1><span class="prompt">❯</span> drop</h1>
+      <p class="lead">Browser to browser, encrypted end to end. No accounts, no cloud,
+        nothing stored on a server.</p>
+    </div>
 
     <label class="drop" id="drop">
       <!-- Oculto a la vista pero no a Tab: es lo que abre el selector con el teclado. -->
       <input type="file" id="file-input" class="sr-only" multiple aria-label="Choose files to send">
-      <input type="file" id="folder-input" webkitdirectory hidden>
-      <span class="drop-glyph">[ + ]</span>
-      <strong>drop payload here</strong>
-      <small>files or folders · or click to select · <button type="button" class="link" id="pick-folder">pick a folder</button></small>
+      <span class="drop-glyph" aria-hidden="true">+</span>
+      <strong><span class="only-pointer">drop files here</span><span class="only-touch">select files</span></strong>
+      <small><span class="only-pointer">or browse</span><span class="only-touch">tap to browse</span></small>
     </label>
 
     <ul class="files" id="file-list"></ul>
@@ -47,7 +50,7 @@
     </div>
 
     <div class="ticket" id="ticket" hidden>
-      <p class="label">one-time code · read it out loud</p>
+      <p class="label">one-time code · share with receiver</p>
       <div class="link-box">
         <input id="code-out" class="code" readonly spellcheck="false" aria-label="Code to share">
         <button class="primary" id="copy-code">copy</button>
@@ -60,15 +63,15 @@
       </div>
       <div class="qr" id="qr-box" hidden></div>
       <p class="hint">The four words never reach the server: only the leading number does.
-        Keep this tab open until the transfers finish. Any number of peers can ride
+        Keep this tab open until transfers finish. Multiple receivers can use
         the same code, each on its own channel.</p>
-      <button class="ghost" id="restart">new payload</button>
+      <button class="ghost" id="restart">new transfer</button>
     </div>
 
     <!-- Recibir tecleando el codigo: es lo que habilita un codigo memorizable.
          Antes solo se podia recibir abriendo un enlace. -->
     <div class="ticket" id="join-box">
-      <p class="label">…or receive: type the code you were given</p>
+      <p class="label">receive · enter a code</p>
       <form class="link-box" id="join-form">
         <input id="code-in" class="code" spellcheck="false" autocomplete="off"
                autocapitalize="off" placeholder="4271-lemon-radar-tiger-orbit"
@@ -83,9 +86,11 @@
 
   <!-- ---------- Sin WebRTC (navegador viejo, Tor, WebRTC apagado) ---------- -->
   <section class="view" data-name="unsupported">
-    <h1><span class="prompt">❯</span> no webrtc</h1>
-    <p class="lead">This browser has no <code>RTCPeerConnection</code>, and the files travel
-      on one: there is no fallback through a server, on purpose.</p>
+    <div class="hero">
+      <h1><span class="prompt">❯</span> no webrtc</h1>
+      <p class="lead">This browser has no <code>RTCPeerConnection</code>, and the files travel
+        on one: there is no fallback through a server, on purpose.</p>
+    </div>
     <p class="hint">Usual causes: a very old browser, Tor Browser, or WebRTC switched off in
       the settings (<code>media.peerconnection.enabled</code> in Firefox, a privacy
       extension in Chrome). Open the same link in Chrome, Edge, Firefox or Safari, or use the
@@ -111,6 +116,10 @@
     <div id="offer" hidden>
       <p class="label" id="offer-title">inbound</p>
       <ul class="files" id="offer-list"></ul>
+      <label class="zip-opt" id="zip-opt" hidden>
+        <input type="checkbox" id="as-zip" aria-label="Download as a single .zip archive">
+        <span>download as .zip</span>
+      </label>
       <div class="row" id="offer-actions">
         <button class="primary" id="accept">receive</button>
         <button class="ghost" id="pick-all" type="button" hidden>select none</button>

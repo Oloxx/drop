@@ -35,14 +35,14 @@ function contrast(a, b) {
 test('todo color de texto llega a 4,5:1 sobre los fondos donde se usa (WCAG AA)', () => {
   const t = tokens();
   for (const bg of ['bg', 'raised', 'sunken']) {
-    for (const fg of ['fg', 'fg-dim', 'muted', 'blue', 'cyan', 'green', 'red']) {
+    for (const fg of ['fg', 'fg-dim', 'muted', 'accent', 'accent-hover', 'green', 'red']) {
       const ratio = contrast(t[fg], t[bg]);
       assert.ok(ratio >= 4.5, `--${fg} sobre --${bg}: ${ratio.toFixed(2)}:1`);
     }
   }
-  // El boton principal: texto --sunken sobre --blue, y --cyan al pasar por encima.
-  assert.ok(contrast(t.sunken, t.blue) >= 4.5);
-  assert.ok(contrast(t.sunken, t.cyan) >= 4.5);
+  // El boton principal: texto --sunken sobre --accent, y --accent-hover al pasar por encima.
+  assert.ok(contrast(t.sunken, t.accent) >= 4.5);
+  assert.ok(contrast(t.sunken, t['accent-hover']) >= 4.5);
 });
 
 test('el marcado tiene lo que un lector de pantalla necesita', () => {

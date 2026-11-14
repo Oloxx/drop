@@ -49,6 +49,7 @@ import { sasInput, sasWords, formatSas, dtlsFingerprints } from './shared/sas.js
 import { Sha256, sha256Hex } from './shared/sha256.js';
 import { PROTOCOL_VERSION, pickedFiles } from './shared/protocol.js';
 import { encodeQr, qrToSvg, ECL } from './shared/qr.js';
+import { ZipWriter, zipArchiveName } from './shared/zip.js';
 import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame, sealBox, sealFrame } from './shared/e2ee.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -220,6 +221,7 @@ function connectSignaling() {
     ws.onclose = () => {
       setStatus('uplink lost', 'bad');
       if (rx.isCli && rx.row && rxIncomplete()) {
+        abortArchive();
         rx.row.fail('uplink lost');
         return;
       }
@@ -567,9 +569,9 @@ function renderFileList() {
     li.innerHTML =
       '<span class="name"></span><span class="size"></span><span class="badge" hidden></span>' +
       (out.code ? '' : '<button class="drop-one" title="Remove">×</button>');
-    li.querySelector('.name').textContent = relPathOf(file) || file.name;
+    li.querySelector('.name').textContent = file.name;
     const remove = li.querySelector('.drop-one');
-    if (remove) remove.setAttribute('aria-label', 'Remove ' + (relPathOf(file) || file.name));
+    if (remove) remove.setAttribute('aria-label', 'Remove ' + file.name);
     li.querySelector('.size').textContent = fmtBytes(file.size);
     if (file.sha256) {
       const badge = li.querySelector('.badge');
@@ -586,55 +588,12 @@ function renderFileList() {
   $('#join-box').hidden = !!out.code;
 }
 
-/** Ruta relativa de un archivo dentro de la carpeta que se solto o eligio, o ''. */
-function relPathOf(file) {
-  return file.relPath || file.webkitRelativePath || '';
-}
-
 function addFiles(fileList) {
   for (const file of fileList) {
-    const dup = out.files.some((f) => f.name === file.name && f.size === file.size && relPathOf(f) === relPathOf(file));
+    const dup = out.files.some((f) => f.name === file.name && f.size === file.size);
     if (!dup) out.files.push(file);
   }
   renderFileList();
-}
-
-/**
- * Una carpeta arrastrada llega como `FileSystemDirectoryEntry`: hay que bajar
- * por ella y pedir cada archivo. `readEntries` devuelve por tandas y hay que
- * seguir llamando hasta que venga una vacia, o Chrome deja la mitad fuera. A
- * cada File se le cuelga `relPath` (`carpeta/sub/archivo`), que es lo que
- * viaja en el manifiesto y lo que el receptor recrea.
- */
-async function filesFromEntry(entry, prefix) {
-  if (entry.isFile) {
-    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
-    file.relPath = prefix ? prefix + '/' + entry.name : '';
-    return [file];
-  }
-  if (!entry.isDirectory) return [];
-  const reader = entry.createReader();
-  const all = [];
-  for (;;) {
-    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
-    if (!batch.length) break;
-    all.push(...batch);
-  }
-  const files = [];
-  for (const child of all) files.push(...await filesFromEntry(child, prefix ? prefix + '/' + entry.name : entry.name));
-  return files;
-}
-
-async function addDropped(dataTransfer) {
-  const items = [...(dataTransfer.items || [])];
-  const entries = items.map((it) => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null));
-  if (!entries.some((e) => e && e.isDirectory)) {
-    if (dataTransfer.files.length) addFiles(dataTransfer.files);
-    return;
-  }
-  const files = [];
-  for (const entry of entries) if (entry) files.push(...await filesFromEntry(entry, ''));
-  addFiles(files);
 }
 
 async function createLink() {
@@ -746,7 +705,7 @@ function onGuestJoined(guestId, name) {
       row.state('awaiting ack…');
       conn.dc.send(JSON.stringify({
         k: 'manifest',
-        files: out.files.map((f) => ({ name: f.name, size: f.size, type: f.type, path: relPathOf(f) || undefined })),
+        files: out.files.map((f) => ({ name: f.name, size: f.size, type: f.type })),
       }));
       return;
     }
@@ -765,7 +724,7 @@ function onGuestJoined(guestId, name) {
     else if (msg.k === 'ack') { conn.acked = msg.bytes; row.progress(msg.bytes, bytesFor(conn)); }
     else if (msg.k === 'complete') {
       conn.acked = bytesFor(conn); row.file(''); row.finish('delivered');
-      alertFinished(label + ' received the payload');
+      alertFinished(label + ' received the files');
     }
     else if (msg.k === 'bye') { conn.cancelled = true; resumePeer(conn); row.fail('aborted by peer'); }
     else if (msg.k === 'hold') conn.paused = true;
@@ -940,7 +899,7 @@ async function sendAllFiles(conn, fromIndex = 0, fromOffset = 0) {
       row.file(accepted ? `${file.name} · already there` : file.name);
       row.state(fromIndex || fromOffset ? 'resuming…' : 'transmitting…');
       dc.send(JSON.stringify({
-        k: 'start', index, name: file.name, size: file.size, type: file.type, from, path: relPathOf(file) || undefined,
+        k: 'start', index, name: file.name, size: file.size, type: file.type, from,
       }));
 
       const hasher = (accepted && accepted.hasher) || new Sha256();
@@ -1130,7 +1089,7 @@ function onCliSignal(from, data) {
         type: 'cli-manifest',
         v: PROTOCOL_VERSION,
         manifest: out.files.map((f) => ({
-          name: f.name, size: f.size, type: f.type || 'application/octet-stream', path: relPathOf(f) || undefined,
+          name: f.name, size: f.size, type: f.type || 'application/octet-stream',
         })),
       });
       return;
@@ -1156,7 +1115,7 @@ function onCliSignal(from, data) {
       wakeCli(conn);
       row.file('');
       row.finish('delivered');
-      alertFinished(conn.label + ' (cli) received the payload');
+      alertFinished(conn.label + ' (cli) received the files');
       return;
     case 'cli-error':
       conn.cancelled = true;
@@ -1260,7 +1219,7 @@ async function streamToCli(conn) {
       row.state('transmitting…');
       await sealedTo(conn, {
         type: 'cli-start', index, name: file.name, size: file.size, mime: file.type || 'application/octet-stream',
-        offset: startAt, path: relPathOf(file) || undefined,
+        offset: startAt,
       });
       // El receptor acusa el offset en cuanto abre el archivo: se suma ya a lo
       // enviado para que la ventana no se quede esperando ese acuse.
@@ -1329,12 +1288,13 @@ const rx = {
   fileGot: 0,         // poder retomar si se cae quien nos reenvia
   sink: null,
   makeSink: null,
+  archive: null,      // escritor ZIP compartido cuando el lote baja empaquetado
+  zipFactory: null,
   writes: Promise.resolve(),   // cadena que serializa las escrituras a disco
   row: null,
   accepted: false,
   finished: false,
   recovering: false,  // ya hemos pedido `resume` y esperamos el `start`
-  have: null,         // indice -> { offset, hasher }: archivos que ya estaban en la carpeta
   fileHasher: null,
   hasIntegrityError: false,
 };
@@ -1456,8 +1416,15 @@ function onHostGone() {
  * eterno: con la fila de progreso ya creada se cierra con `fail(short)`; antes
  * de aceptar se retira la oferta y se ensena `text` con el cuadro de reintento.
  */
+function abortArchive() {
+  const arch = rx.archive;
+  rx.archive = null;
+  if (arch) arch.abort().catch(() => {});
+}
+
 function recvDead(text, short) {
   if (rx.finished) return;
+  abortArchive();
   if (rx.row) {
     // Una fila ya cerrada tiene su motivo (un hash que no cuadra, por
     // ejemplo) y no se pisa con el segundo corte que llegue.
@@ -1652,31 +1619,11 @@ function onControl(msg) {
 
     case 'start': {
       rx.recovering = false;
-      // El archivo ya estaba entero en la carpeta (lo ofrecimos en el `resume`
-      // del accept) y el emisor ha confirmado que es el suyo: no llega ningun
-      // byte y no se reescribe. Cuenta como recibido y se acusa ya, o un emisor
-      // CLI se quedaria esperando ese acuse con la ventana llena.
-      const have = rx.have && rx.have.get(msg.index);
-      if (msg.from > 0 && have && msg.from === have.offset) {
-        rx.have.delete(msg.index);
-        rx.fileIndex = msg.index;
-        rx.fileGot = msg.from;
-        rx.fileHasher = have.hasher;
-        rx.received += msg.from;
-        rx.writes = rx.writes.then(() => {
-          rx.sink = null;
-          if (rx.row) rx.row.file(msg.name + ' · already here');
-        });
-        if (rx.row) rx.row.progress(rx.received, rx.total);
-        rx.lastAck = rx.received;
-        if (rx.isCli) wsSend({ t: 'signal', data: { type: 'cli-ack', bytes: rx.received } });
-        else sendHost({ k: 'ack', bytes: rx.received });
-        break;
-      }
-      // Cualquier otro `from` > 0 es retomar el archivo en curso dentro de la
-      // misma sesion (se cayo el eslabon de arriba). Un emisor que empieza a
-      // mitad de un archivo que no teniamos abierto dejaria un agujero: se corta.
+      // Un `from` > 0 es retomar el archivo en curso dentro de la misma sesion
+      // (se cayo el eslabon de arriba). Un emisor que empieza a mitad de un
+      // archivo que no teniamos abierto dejaria un agujero: se corta.
       if (msg.from > 0 && rx.fileIndex !== msg.index) {
+        abortArchive();
         if (rx.row) rx.row.fail('sender skipped ahead');
         rx.finished = true;
         break;
@@ -1702,6 +1649,7 @@ function onControl(msg) {
       // el hash de este saldria mal.
       const fileHasher = rx.fileHasher;
       rx.writes = rx.writes.then(async () => {
+        if (rx.hasIntegrityError) return;
         const calculated = fileHasher ? fileHasher.digest() : null;
         const expected = msg.sha256;
         const verified = !expected || (calculated === expected);
@@ -1724,8 +1672,12 @@ function onControl(msg) {
     }
 
     case 'done':
-      rx.writes = rx.writes.then(() => {
+      rx.writes = rx.writes.then(async () => {
         if (rx.hasIntegrityError) return;
+        if (rx.archive) {
+          await rx.archive.finish();
+          rx.archive = null;
+        }
         rx.finished = true;
         if (rx.isCli) {
           wsSend({ t: 'signal', data: { type: 'cli-complete' } });
@@ -1735,6 +1687,11 @@ function onControl(msg) {
         if (rx.row) { rx.row.file(''); rx.row.finish('received · ✔ verified (SHA-256)'); }
         setStatus('transfer complete', 'live');
         alertFinished('transfer complete · ' + fmtBytes(rx.received) + ' verified');
+      }).catch((err) => {
+        if (rx.hasIntegrityError || rx.finished) return;
+        abortArchive();
+        rx.finished = true;
+        if (rx.row && !rx.row.closed) rx.row.fail((err && err.message) || 'write error');
       });
       break;
   }
@@ -1789,9 +1746,14 @@ function rxPicked() {
 // desmarca el resto (o `select none` y marca las tres). La eleccion viaja en el
 // `accept` como indices del manifiesto y el emisor solo manda esos.
 function showOffer(files) {
-  $('#recv-title').textContent = 'incoming payload';
+  $('#recv-title').textContent = 'incoming files';
   $('#offer').hidden = false;
   rx.want = null;
+  rx.archive = null;
+  rx.zipFactory = null;
+  zipChoice = null;
+  const asZip = $('#as-zip');
+  if (asZip) asZip.disabled = false;
   const pickable = files.length > 1;
   const list = $('#offer-list');
   list.innerHTML = '';
@@ -1814,7 +1776,7 @@ function showOffer(files) {
   $('#pick-all').hidden = !pickable;
   paintPick();
   setStatus('channel up', 'live');
-  announce('incoming payload: ' + $('#offer-title').textContent);
+  announce('incoming files: ' + $('#offer-title').textContent);
 }
 
 /** Relee las casillas y repinta todo lo que depende de la eleccion. */
@@ -1836,28 +1798,52 @@ function paintPick() {
   const all = $('#pick-all');
   all.textContent = picked.length === boxes.length ? 'select none' : 'select all';
 
+  const hasFolders = chosen.some((f) => f.path && f.path.includes('/'));
+  const canZip = chosen.length > 1 || hasFolders;
+  const zipOpt = $('#zip-opt');
+  const asZip = $('#as-zip');
+  if (zipOpt && asZip) {
+    zipOpt.hidden = !canZip;
+    if (!canZip) {
+      asZip.checked = false;
+    } else if (zipChoice !== null) {
+      asZip.checked = zipChoice;
+    } else {
+      // Para pocos archivos sueltos el `.zip` queda opcional; en lotes grandes
+      // (o si viene una carpeta desde el CLI) se marca por defecto para evitar
+      // multiples dialogos de descarga.
+      asZip.checked = hasFolders || chosen.length >= 4;
+    }
+  }
+  const wantZip = !!(canZip && asZip && asZip.checked);
+
   const hint = $('#offer-hint');
   if (!chosen.length) {
     hint.textContent = 'Nothing selected.';
     return;
   }
-  hint.textContent = supportsDirectPicker(chosen)
-    ? 'You will be asked for a folder. Written straight to disk, no buffering.'
+  hint.textContent = wantZip
+    ? 'Downloaded as a single .zip archive.'
     : 'Downloads start on their own once complete.';
   // Si el worker esta, lo grande no se acumula en memoria: se dice, porque es
   // lo que decide si alguien se atreve con un video en el movil.
   const seq = ++pickSeq;
-  if (!supportsDirectPicker(chosen)) {
-    swReady.then((reg) => {
-      // La eleccion puede haber cambiado mientras se esperaba al worker.
-      if (!reg || seq !== pickSeq) return;
-      if (chosen.some((f) => f.size == null || f.size >= SW_MIN)) {
-        hint.textContent = 'Streamed to your downloads folder as it arrives.';
+  swReady.then((reg) => {
+    // La eleccion puede haber cambiado mientras se esperaba al worker.
+    if (!reg || seq !== pickSeq) return;
+    if (wantZip) {
+      if (rx.total == null || rx.total >= SW_MIN) {
+        hint.textContent = 'Streamed as a single .zip to your downloads folder.';
       }
-    });
-  }
+      return;
+    }
+    if (chosen.some((f) => f.size == null || f.size >= SW_MIN)) {
+      hint.textContent = 'Streamed to your downloads folder as it arrives.';
+    }
+  });
 }
 let pickSeq = 0;
+let zipChoice = null;
 
 /** `select all` / `select none`: con quince fotos, desmarcar doce a mano cansa. */
 function togglePickAll() {
@@ -1907,8 +1893,13 @@ function handleIntegrityFailure(index, expected, calculated) {
     }
     const retryBtn = $('#retry-transfer');
     if (retryBtn) {
-      retryBtn.textContent = `retry ${name}`;
-      retryBtn.onclick = () => retryFile(index);
+      if (rx.zipFactory) {
+        retryBtn.textContent = 'retry transfer';
+        retryBtn.onclick = () => retryFile(0);
+      } else {
+        retryBtn.textContent = `retry ${name}`;
+        retryBtn.onclick = () => retryFile(index);
+      }
     }
   }
   setStatus('integrity discrepancy', 'bad');
@@ -1919,6 +1910,13 @@ function retryFile(index) {
   if (alertEl) alertEl.hidden = true;
   rx.hasIntegrityError = false;
   rx.finished = false;
+  if (rx.zipFactory) {
+    rx.archive = rx.zipFactory();
+    rx.received = 0;
+    rx.lastAck = 0;
+    if (rx.row) rx.row.progress(0, rx.total);
+    index = 0;
+  }
   rx.fileIndex = index;
   rx.fileGot = 0;
   rx.fileHasher = new Sha256();
@@ -1935,27 +1933,13 @@ function retryFile(index) {
   }
 }
 
-// Con varios archivos o mucho volumen escribimos a disco en streaming; para un
-// archivo pequeño la descarga normal del navegador es más cómoda (y funciona en
-// Firefox y Safari, que no tienen la File System Access API).
-function supportsDirectPicker(files) {
-  const total = totalOf(files);
-  // Una carpeta solo se puede recrear escribiendo a disco: sin la API, cada
-  // archivo baja suelto con su nombre (el navegador no crea carpetas en Descargas).
-  const hasFolders = files.some((f) => f.path && f.path.includes('/'));
-  // Sin tamano (stdin del CLI) puede ser cualquier cosa: mejor a disco.
-  return !!window.showDirectoryPicker && (files.length > 1 || hasFolders || total == null || total > 128 * 1024 * 1024);
-}
-
 // ------------------------------------------ descarga en streaming por Service Worker
 //
-// Sin File System Access (Firefox, Safari, todo iOS) el receptor acumulaba
-// cada archivo entero en memoria y lo soltaba como Blob al final: con un video
-// de 2 GB hacia un iPhone la pestana moria sin mensaje. Con el worker
-// (public/sw.js) la descarga es una respuesta HTTP en streaming que el
-// navegador escribe a disco segun llega, con memoria constante. A partir de
-// SW_MIN bytes -- o sin tamano conocido -- se usa si esta disponible; por
-// debajo la descarga normal por Blob es mas comoda y esta mas probada.
+// Con un archivo grande acumulado en RAM la pestana puede quedarse sin memoria.
+// Con el worker (public/sw.js) la descarga es una respuesta HTTP en streaming que
+// el navegador escribe a Descargas segun llega, con memoria constante. A partir
+// de SW_MIN bytes -- o sin tamano conocido -- se usa si esta disponible; por
+// debajo la descarga normal por Blob es mas comoda.
 
 const SW_MIN = 32 * 1024 * 1024;
 
@@ -2025,8 +2009,7 @@ function swSink(reg, meta) {
     else if (msg.type === 'cancel') { cancelled = true; if (wake) { const w = wake; wake = null; w(); } }
   };
 
-  // Una carpeta baja archivo a archivo: el navegador no crea carpetas en
-  // Descargas, asi que va el nombre suelto.
+  // Cada archivo baja suelto en Descargas con nombre saneado.
   const name = safeName(meta.name);
   const size = Number.isFinite(meta.size) ? meta.size : null;
   reg.active.postMessage({ type: 'drop-stream', id, name, size, mime: meta.type || '' }, [port2]);
@@ -2094,43 +2077,63 @@ function memorySink(meta) {
   };
 }
 
-async function diskSink(dirHandle, meta) {
-  // Con carpetas se baja tramo a tramo creando lo que falte. Cada tramo pasa
-  // por safeName, que ademas convierte `..` en `_`: no hay forma de subir.
-  let dir = dirHandle;
-  const parts = String(meta.path || '').split('/').filter(Boolean);
-  for (const seg of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(safeName(seg), { create: true });
-  const leaf = parts.length ? parts[parts.length - 1] : meta.name;
-  const handle = await dir.getFileHandle(safeName(leaf), { create: true });
-  const writable = await handle.createWritable();
-  const BATCH_SIZE = 2 * 1024 * 1024;
-  let pending = [];
-  let pendingBytes = 0;
-
-  async function flush() {
-    if (!pending.length) return;
-    const blob = new Blob(pending);
-    pending = [];
-    pendingBytes = 0;
-    await writable.write(blob);
-  }
-
+/**
+ * Envuelve un sumidero unico (`swSink` o `memorySink`) en un `ZipWriter` para
+ * que `rx.makeSink(meta)` abra una entrada dentro del mismo `.zip` por cada
+ * archivo del lote. Si falla el SHA-256 o se corta el canal se aborta el ZIP
+ * entero para que el navegador no guarde un archivo corrupto.
+ */
+function createZipArchive(makeBaseSink, archiveName) {
+  let base = null;
+  let writer = null;
+  let aborted = false;
+  let finished = false;
+  const noopSink = { write() {}, close() {}, abort() {} };
+  const ensureOpen = () => {
+    if (writer || aborted || finished) return;
+    const b = makeBaseSink({ name: archiveName, size: null, type: 'application/zip' });
+    base = b;
+    writer = new ZipWriter((chunk) => (!aborted && base === b ? b.write(chunk) : undefined));
+  };
   return {
-    write: async (chunk) => {
-      pending.push(chunk);
-      pendingBytes += chunk.byteLength;
-      if (pendingBytes >= BATCH_SIZE) {
-        await flush();
+    name: archiveName,
+    async openEntry(meta) {
+      if (aborted || finished) return noopSink;
+      ensureOpen();
+      if (!writer) return noopSink;
+      await writer.beginFile(meta.name, meta.path, meta.size);
+      return {
+        write: (chunk) => (writer ? writer.writeChunk(chunk) : undefined),
+        flush: () => (base && base.flush ? base.flush() : undefined),
+        close: () => (writer ? writer.endFile() : undefined),
+        abort: async () => {
+          aborted = true;
+          const b = base;
+          base = null;
+          writer = null;
+          if (b && b.abort) await b.abort();
+        },
+      };
+    },
+    async finish() {
+      if (aborted || finished || !writer) return;
+      finished = true;
+      const b = base;
+      const w = writer;
+      try {
+        await w.finish();
+        if (!aborted && b && b.close) await b.close();
+      } finally {
+        if (base === b) base = null;
+        if (writer === w) writer = null;
       }
     },
-    flush,
-    abort: async () => {
-      pending = [];
-      try { await writable.abort(); } catch {}
-    },
-    close: async () => {
-      await flush();
-      await writable.close();
+    async abort() {
+      aborted = true;
+      const b = base;
+      base = null;
+      writer = null;
+      if (b && b.abort) await b.abort();
     },
   };
 }
@@ -2145,31 +2148,34 @@ async function acceptTransfer() {
     box.disabled = true;
     if (!box.checked) box.closest('li').classList.add('skipped');
   }
+  const asZipEl = $('#as-zip');
+  if (asZipEl) asZipEl.disabled = true;
   armAlerts();
 
+  const hasFolders = chosen.some((f) => f.path && f.path.includes('/'));
+  const canZip = chosen.length > 1 || hasFolders;
+  const wantZip = !!(canZip && asZipEl && asZipEl.checked);
+
+  rx.archive = null;
+  rx.zipFactory = null;
   rx.makeSink = (meta) => memorySink(meta);
-  // Sin carpeta elegida, los archivos grandes (o de tamano desconocido) van por
-  // el worker en streaming si lo hay; el resto, por Blob como siempre.
+  // Los archivos (o `.zip`) grandes o de tamano desconocido van por el worker
+  // en streaming si lo hay; el resto, por Blob en memoria.
   const reg = await swReady;
-  if (reg) {
+  if (wantZip) {
+    const zipName = zipArchiveName(chosen);
+    const makeBaseSink = (reg && (rx.total == null || rx.total >= SW_MIN))
+      ? (meta) => swSink(reg, meta)
+      : (meta) => memorySink(meta);
+    rx.zipFactory = () => createZipArchive(makeBaseSink, zipName);
+    rx.archive = rx.zipFactory();
+    rx.makeSink = (meta) => rx.archive.openEntry(meta);
+  } else if (reg) {
     rx.makeSink = (meta) => ((meta.size == null || meta.size >= SW_MIN) ? swSink(reg, meta) : memorySink(meta));
   }
-  let dir = null;
-  if (supportsDirectPicker(chosen)) {
-    try {
-      dir = await window.showDirectoryPicker({ mode: 'readwrite', id: 'drop' });
-      const target = dir;
-      rx.makeSink = (meta) => diskSink(target, meta);
-    } catch {
-      const isHuge = rx.total == null || rx.total > 500 * 1024 * 1024;
-      $('#offer-hint').textContent = reg
-        ? 'No folder chosen. Streamed to your downloads folder as it arrives.'
-        : isHuge
-          ? 'Warning: large file held in RAM. Choosing a folder is recommended to avoid browser crashes.'
-          : 'No folder chosen. Held in memory until the transfer completes.';
-    }
-  }
 
+  const zipOpt = $('#zip-opt');
+  if (zipOpt) zipOpt.hidden = true;
   const actions = $('#offer-actions');
   if (actions) actions.hidden = true;
   const hint = $('#offer-hint');
@@ -2178,67 +2184,16 @@ async function acceptTransfer() {
   rx.row = makeProgressRow($('#recv-progress'), 'inbound');
   rx.row.files(chosen);
   rx.row.state('arming…');
-  // Con carpeta elegida, lo que ya este entero en ella se ofrece como hecho:
-  // un lote que se corto a la mitad no vuelve a bajar lo que ya llego.
-  const resume = dir ? await scanExisting(dir) : [];
-  // Sin `files` es el lote entero y sin `resume` no hay nada que retomar: es
-  // lo que entiende cualquier emisor.
+  // Sin `files` es el lote entero: es lo que entiende cualquier emisor.
   const files = rx.want || undefined;
-  const offer = resume.length ? resume : undefined;
   if (rx.isCli) {
     rx.row.path('CLI stream');
     rx.row.state('downloading…');
-    wsSend({ t: 'signal', data: { type: 'cli-accept', files, resume: offer } });
+    wsSend({ t: 'signal', data: { type: 'cli-accept', files } });
     return;
   }
   watchPaths();
-  sendHost({ k: 'accept', files, resume: offer });
-}
-
-/**
- * Lo que ya esta en la carpeta elegida, entero, con el mismo nombre y tamano
- * que un archivo del lote. Se hashea aqui y se le ofrece al emisor como
- * `resume` con `offset` = tamano; si su SHA-256 cuadra, abre ese archivo desde
- * el final, no manda nada y aqui no se reescribe.
- *
- * Es reanudar POR ARCHIVO, no a mitad de uno: File System Access escribe en un
- * temporal (`.crswap`) que solo pasa al nombre bueno al cerrar, asi que un
- * archivo cortado no deja nada en disco que retomar. Uno terminado, si.
- */
-async function scanExisting(dirHandle) {
-  rx.have = new Map();
-  const indices = rx.want || rx.manifest.map((_, i) => i);
-  const resume = [];
-  for (const [n, index] of indices.entries()) {
-    const meta = rx.manifest[index];
-    if (!Number.isFinite(meta.size) || meta.size <= 0) continue;
-    const file = await existingFile(dirHandle, meta);
-    if (!file || file.size !== meta.size) continue;
-    rx.row.state(`checking files already here · ${n + 1}/${indices.length}`);
-    const hasher = new Sha256();
-    const READ_BLOCK = 2 * 1024 * 1024;
-    for (let pos = 0; pos < file.size; pos += READ_BLOCK) {
-      hasher.update(await file.slice(pos, Math.min(pos + READ_BLOCK, file.size)).arrayBuffer());
-    }
-    const sha256 = hasher.copy().digest();
-    rx.have.set(index, { offset: file.size, hasher });
-    resume.push({ index, offset: file.size, sha256 });
-  }
-  rx.row.state('arming…');
-  return resume;
-}
-
-/** El archivo que ocuparia `meta` en la carpeta, si ya existe; sin crear nada. */
-async function existingFile(dirHandle, meta) {
-  try {
-    let dir = dirHandle;
-    const parts = String(meta.path || '').split('/').filter(Boolean);
-    for (const seg of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(safeName(seg));
-    const leaf = parts.length ? parts[parts.length - 1] : meta.name;
-    return await (await dir.getFileHandle(safeName(leaf))).getFile();
-  } catch {
-    return null;
-  }
+  sendHost({ k: 'accept', files });
 }
 
 // Lado RECEPTOR WEB del protocolo de relay del CLI (los mensajes `cli-*`): el
@@ -2256,6 +2211,7 @@ function cliEnqueue(job) {
   rx.cliQueue = rx.cliQueue.then(() => (rx.cliBroken ? null : job())).catch((err) => {
     console.error('cli relay', err);
     rx.cliBroken = true;
+    abortArchive();
     if (rx.row && !rx.finished) rx.row.fail('decrypt error');
     setStatus('relay frame failed to authenticate', 'bad');
     wsSend({ t: 'signal', data: { type: 'cli-error', message: String((err && err.message) || err) } });
@@ -2376,11 +2332,13 @@ for (const evt of ['dragleave', 'drop']) {
 }
 drop.addEventListener('drop', (e) => {
   e.preventDefault();
-  addDropped(e.dataTransfer).catch((err) => console.error('drop', err));
+  const fileItems = [...(e.dataTransfer.items || [])].filter((it) => it.kind === 'file');
+  const entries = fileItems.map((it) => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null));
+  const files = entries.some(Boolean)
+    ? [...e.dataTransfer.files].filter((_, i) => !entries[i] || entries[i].isFile)
+    : [...e.dataTransfer.files];
+  addFiles(files);
 });
-$('#folder-input').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
-// El selector de carpeta es otro <input>: un solo input no puede ser las dos cosas.
-$('#pick-folder').onclick = (e) => { e.preventDefault(); e.stopPropagation(); $('#folder-input').click(); };
 
 $('#clear-files').onclick = () => { out.files = []; renderFileList(); };
 $('#create-link').onclick = createLink;
@@ -2423,6 +2381,7 @@ $('#link-out').onclick = (e) => e.currentTarget.select();
 $('#restart').onclick = () => location.reload();
 $('#accept').onclick = acceptTransfer;
 $('#pick-all').onclick = togglePickAll;
+$('#as-zip').onchange = (e) => { zipChoice = e.currentTarget.checked; paintPick(); };
 
 // ------------------------------------------------------- entrada del codigo
 

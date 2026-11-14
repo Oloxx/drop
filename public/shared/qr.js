@@ -418,7 +418,7 @@ export function encodeQr(text, { ecl = ECL.M, minVersion = 1, maxVersion = 40 } 
  * claro, la polaridad de siempre: no todas las camaras leen un QR invertido, y
  * la estetica se pone en el marco, no en el codigo.
  */
-export function qrToSvg(qr, { quiet = 4, dark = '#1a1b26', light = '#c0caf5' } = {}) {
+export function qrToSvg(qr, { quiet = 4, dark = '#080809', light = '#fafafa' } = {}) {
   const n = qr.size + quiet * 2;
   let path = '';
   for (let y = 0; y < qr.size; y++) {

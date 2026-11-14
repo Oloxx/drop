@@ -11,17 +11,21 @@
 <body data-view="send">
 
 <header class="head">
-  <a class="brand" href="./">drop</a>
-  <a class="nav" href="./">transfer</a>
-  <span id="status" class="status" role="status">·</span>
+  <nav class="head-nav" aria-label="Primary">
+    <a class="nav" href="./">transfer</a>
+    <a class="nav active" href="speed" aria-current="page">speed test</a>
+  </nav>
+  <span id="status" class="status" role="status">idle</span>
 </header>
 
 <main>
   <section class="view" data-name="send">
 
-    <h1><span class="prompt">❯</span> <span id="title">link speed</span></h1>
-    <p class="lead" id="lead">Open a channel, send the link to whoever you want to measure
-      against. Payload runs both ways over the same connection a transfer would use.</p>
+    <div class="hero">
+      <h1><span class="prompt">❯</span> <span id="title">link speed</span></h1>
+      <p class="lead" id="lead">Open a channel, send the link to whoever you want to measure
+        against. Payload runs both ways over the same connection a transfer would use.</p>
+    </div>
 
     <div class="row" id="start-row">
       <button class="primary" id="start">open channel</button>

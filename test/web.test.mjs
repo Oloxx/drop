@@ -12,9 +12,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 
-import { startServer, findChrome, CHROME_ARGS } from './helpers.mjs';
+import { startServer, findChrome, CHROME_ARGS, ROOT } from './helpers.mjs';
+import { crc32Update } from '../public/shared/zip.js';
 
 const CHROME = findChrome();
 const REQUIRED = process.env.DROP_REQUIRE_CHROME === '1';
@@ -62,8 +66,6 @@ test('web -> web: un archivo llega entero y verificado entre dos pestanas', { sk
   // -------------------------------------------------------------- receptor
   const receiver = await context.newPage();
   watch(receiver, 'receptor');
-  // Sin esto Chrome abriria un dialogo nativo de carpeta que nadie puede cerrar.
-  await receiver.addInitScript(() => { delete window.showDirectoryPicker; });
   const downloaded = new Promise((resolve) => receiver.on('download', resolve));
   await receiver.goto(link, { waitUntil: 'domcontentloaded' });
   await receiver.waitForSelector('#accept:visible', { timeout: 20_000 });
@@ -120,7 +122,6 @@ async function offerReady(t, srv, context, size = 512 * 1024) {
   await sender.waitForFunction(() => document.getElementById('link-out').value.includes('#'), null, { timeout: 15_000 });
   const link = await sender.inputValue('#link-out');
   const receiver = await context.newPage();
-  await receiver.addInitScript(() => { delete window.showDirectoryPicker; });
   await receiver.goto(link, { waitUntil: 'domcontentloaded' });
   await receiver.waitForSelector('#accept:visible', { timeout: 20_000 });
   return { sender, receiver, body };
@@ -204,7 +205,6 @@ test('web -> web: el receptor elige que archivos baja', { skip: !CHROME && !REQU
   const link = await sender.inputValue('#link-out');
 
   const receiver = await context.newPage();
-  await receiver.addInitScript(() => { delete window.showDirectoryPicker; });
   const downloads = [];
   receiver.on('download', (d) => downloads.push(d));
   await receiver.goto(link, { waitUntil: 'domcontentloaded' });
@@ -317,117 +317,203 @@ test('web -> CLI: un drop recv cortado sigue desde su .part', { skip: !CHROME &&
   assert.equal(fs.statSync(path.join(other, 'grande.bin.part')).size, 1024 * 1024);
 });
 
-// Reanudar por archivo en el receptor web (#58): con carpeta elegida, lo que ya
-// esta entero en ella no vuelve a bajar si el emisor confirma el SHA-256; lo que
-// no cuadra baja entero. La carpeta es OPFS (misma API de handles que
-// showDirectoryPicker, sin dialogo que nadie pueda cerrar en headless).
-test('web: lo que ya esta en la carpeta no vuelve a bajar (web y CLI)', { skip: !CHROME && !REQUIRED && 'sin Chrome (CHROME_PATH)', timeout: 180_000 }, async (t) => {
+function readZip(buf) {
+  let eocdOff = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocdOff = i; break; }
+  }
+  assert.ok(eocdOff >= 0, 'el archivo descargado no tiene cabecera EOCD de ZIP');
+  const count = buf.readUInt16LE(eocdOff + 10);
+  let p = buf.readUInt32LE(eocdOff + 16);
+  const out = {};
+  for (let i = 0; i < count; i++) {
+    assert.equal(buf.readUInt32LE(p), 0x02014b50);
+    const crc = buf.readUInt32LE(p + 16);
+    const size = buf.readUInt32LE(p + 24);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const lfhOff = buf.readUInt32LE(p + 42);
+    const name = buf.subarray(p + 46, p + 46 + nameLen).toString('utf8');
+    p += 46 + nameLen + extraLen + commentLen;
+
+    const lfhNameLen = buf.readUInt16LE(lfhOff + 26);
+    const lfhExtraLen = buf.readUInt16LE(lfhOff + 28);
+    const start = lfhOff + 30 + lfhNameLen + lfhExtraLen;
+    const data = buf.subarray(start, start + size);
+    assert.equal(crc32Update(0, data), crc, `CRC-32 corrupto en ${name}`);
+    out[name] = data;
+  }
+  return out;
+}
+
+// Empaquetado en .zip al vuelo en el receptor web:
+//   1. Un lote grande (>= 4 archivos y > SW_MIN, 34 MB) marca .zip por defecto
+//      y baja en streaming por el Service Worker como `drop-files.zip`.
+//   2. Con pocos archivos sueltos la casilla empieza desmarcada y al marcarla
+//      se juntan en `drop-files.zip`.
+//   3. CLI -> web enviando una carpeta sigue llegando intacta en `<carpeta>.zip`.
+test('web: lotes de archivos bajan en streaming como .zip', { skip: !CHROME && !REQUIRED && 'sin Chrome (CHROME_PATH)', timeout: 180_000 }, async (t) => {
   assert.ok(CHROME, 'DROP_REQUIRE_CHROME=1 pero no hay Chrome: indicalo con CHROME_PATH');
   const { chromium } = await import('playwright-core');
-  const { spawn } = await import('node:child_process');
-  const path = await import('node:path');
-  const os = await import('node:os');
-  const { ROOT } = await import('./helpers.mjs');
-
   const srv = await startServer();
   t.after(() => srv.stop());
   const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS });
   t.after(() => browser.close());
-  const context = await browser.newContext();
-  await context.addInitScript(() => {
-    window.showDirectoryPicker = async () => (await navigator.storage.getDirectory()).getDirectoryHandle('destino', { create: true });
-  });
 
-  const bodies = {
-    'uno.bin': crypto.randomBytes(300 * 1024),
-    'dos.bin': crypto.randomBytes(200 * 1024),
-    'tres.bin': crypto.randomBytes(100 * 1024),
-  };
-  const opfs = (page, fn, arg) => page.evaluate(fn, arg);
-  const readAll = (page) => opfs(page, async () => {
-    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('destino', { create: true });
-    const out = {};
-    for await (const [name, h] of dir.entries()) {
-      const buf = new Uint8Array(await (await h.getFile()).arrayBuffer());
-      out[name] = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)), (b) => b.toString(16).padStart(2, '0')).join('');
+  const fillDeterministic = (len, seed) => {
+    const out = Buffer.allocUnsafe(len);
+    let x = seed >>> 0;
+    for (let i = 0; i < len; i += 4) {
+      x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+      const rem = Math.min(4, len - i);
+      for (let j = 0; j < rem; j++) out[i + j] = (x >>> (j * 8)) & 0xff;
     }
     return out;
-  });
-  const clear = (page) => opfs(page, async () => { await (await navigator.storage.getDirectory()).removeEntry('destino', { recursive: true }).catch(() => {}); });
-  const put = (page, name, b64) => opfs(page, async ([n, data]) => {
-    const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle('destino', { create: true });
-    const w = await (await dir.getFileHandle(n, { create: true })).createWritable();
-    await w.write(Uint8Array.from(atob(data), (ch) => ch.charCodeAt(0)));
-    await w.close();
-  }, [name, b64]);
-  // Bytes de archivo que han entrado por el DataChannel del emisor.
-  const dcBytes = (page) => page.evaluate(async () => {
-    let n = 0;
-    (await window.__drop.rx.links.get(0).pc.getStats()).forEach((r) => { if (r.type === 'data-channel') n += r.bytesReceived; });
-    return n;
-  });
-  const received = (page) => page.waitForFunction(
-    () => /received/.test(document.querySelector('.peer .state')?.textContent || ''), null, { timeout: 60_000 });
+  };
 
-  // ------------------------------------------------------------ web -> web
-  const sender = await context.newPage();
-  await sender.goto(srv.http, { waitUntil: 'domcontentloaded' });
-  await sender.evaluate((list) => {
-    const dt = new DataTransfer();
-    for (const [name, b64] of list) dt.items.add(new File([Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0))], name));
-    const input = document.getElementById('file-input');
-    input.files = dt.files;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  }, Object.entries(bodies).map(([n, b]) => [n, b.toString('base64')]));
-  await sender.click('#create-link');
-  await sender.waitForFunction(() => document.getElementById('link-out').value.includes('#'), null, { timeout: 15_000 });
-  const link = await sender.inputValue('#link-out');
+  // ----------------------------------------- 1. Web -> Web lote 34 MB (SW)
+  {
+    const context = await browser.newContext({ acceptDownloads: true });
+    t.after(() => context.close());
+    const errors = [];
+    const watch = (p, tag) => p.on('console', (m) => {
+      if (m.type() === 'error' && !/404/.test(m.text())) errors.push(`[${tag}] ${m.text()}`);
+    });
 
-  // La carpeta se prepara desde otra pestana del mismo origen: pasar de `/` a
-  // `/#codigo` en la misma seria navegar por fragmento y la app no se enteraria.
-  const prep = await context.newPage();
-  await prep.goto(srv.http, { waitUntil: 'domcontentloaded' });
-  await clear(prep);
-  // Ya estan `uno` y `tres` enteros, y un `dos` del mismo tamano pero de otra cosa.
-  await put(prep, 'uno.bin', bodies['uno.bin'].toString('base64'));
-  await put(prep, 'tres.bin', bodies['tres.bin'].toString('base64'));
-  await put(prep, 'dos.bin', crypto.randomBytes(200 * 1024).toString('base64'));
-  const rx = await context.newPage();
-  await rx.goto(link, { waitUntil: 'domcontentloaded' });
-  await rx.waitForSelector('#accept:visible', { timeout: 20_000 });
-  await rx.click('#accept');
-  await received(rx);
-  const got = await readAll(rx);
-  for (const [name, body] of Object.entries(bodies)) assert.equal(got[name], sha256(body), `${name} no es el del emisor`);
-  const bytes = await dcBytes(rx);
-  assert.ok(bytes < 300 * 1024, `solo deberia haber bajado dos.bin (200 KB), han entrado ${bytes} bytes`);
-  await sender.waitForFunction(
-    () => /delivered/.test(document.querySelector('.peer .state')?.textContent || ''), null, { timeout: 15_000 });
+    const s1 = 18 * 1024 * 1024;
+    const s2 = 16 * 1024 * 1024;
+    const sender = await context.newPage();
+    watch(sender, 'emisor');
+    await sender.goto(srv.http, { waitUntil: 'domcontentloaded' });
+    assert.equal(await sender.$('#folder-input'), null, 'la web no deberia tener selector de carpetas');
+    assert.equal(await sender.$('#pick-folder'), null, 'la web no deberia ofrecer elegir carpetas');
+    await sender.evaluate(([len1, len2]) => {
+      const make = (len, seed) => {
+        const bytes = new Uint8Array(len);
+        let x = seed >>> 0;
+        for (let i = 0; i < len; i += 4) {
+          x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+          const rem = Math.min(4, len - i);
+          for (let j = 0; j < rem; j++) bytes[i + j] = (x >>> (j * 8)) & 0xff;
+        }
+        return bytes;
+      };
+      const dt = new DataTransfer();
+      dt.items.add(new File([make(len1, 101)], 'parte1.bin'));
+      dt.items.add(new File([make(len2, 202)], 'parte2.bin'));
+      dt.items.add(new File(['hola\n'], 'nota.txt'));
+      dt.items.add(new File([new Uint8Array(0)], 'vacio.bin'));
+      const input = document.getElementById('file-input');
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, [s1, s2]);
+    await sender.click('#create-link');
+    await sender.waitForFunction(() => document.getElementById('link-out').value.includes('#'), null, { timeout: 15_000 });
+    const link = await sender.inputValue('#link-out');
 
-  // ------------------------------------------------------------ CLI -> web
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-web-have-'));
-  t.after(() => fs.rmSync(work, { recursive: true, force: true }));
-  for (const [n, b] of Object.entries(bodies)) fs.writeFileSync(path.join(work, n), b);
-  const cli = spawn(process.execPath, [path.join(ROOT, 'cli', 'src', 'cli.js'), 'send',
-    ...Object.keys(bodies).map((n) => path.join(work, n)), '--server', srv.http, '--relay'],
-  { env: { ...process.env, DROP_NO_UPNP: '1' } });
-  t.after(() => cli.kill('SIGKILL'));
-  let out = '';
-  cli.stdout.on('data', (d) => { out += String(d).replace(/\x1b\[[0-9;]*m/g, ''); });
-  const t0 = Date.now();
-  while (!/Enlace:\s+\S+/.test(out)) {
-    assert.ok(Date.now() - t0 < 20_000, out);
-    await new Promise((r) => setTimeout(r, 100));
+    const receiver = await context.newPage();
+    watch(receiver, 'receptor');
+    const downloaded = new Promise((resolve) => receiver.on('download', resolve));
+    await receiver.goto(link, { waitUntil: 'domcontentloaded' });
+    await receiver.waitForSelector('#as-zip:visible', { timeout: 20_000 });
+    assert.equal(await receiver.isChecked('#as-zip'), true, 'un lote de >= 4 archivos deberia marcar .zip por defecto');
+    await receiver.waitForFunction(() => /Streamed as a single \.zip/.test(document.getElementById('offer-hint').textContent), null, { timeout: 10_000 });
+
+    await receiver.click('#accept');
+    await sender.waitForFunction(() => /delivered/.test(document.querySelector('.peer .state')?.textContent || ''), null, { timeout: 90_000 });
+    await receiver.waitForFunction(() => /received/.test(document.querySelector('.peer .state')?.textContent || ''), null, { timeout: 90_000 });
+
+    const dl = await downloaded;
+    assert.equal(dl.suggestedFilename(), 'drop-files.zip');
+    const entries = readZip(fs.readFileSync(await dl.path()));
+    assert.deepEqual(Object.keys(entries).sort(), ['nota.txt', 'parte1.bin', 'parte2.bin', 'vacio.bin']);
+    assert.equal(entries['nota.txt'].toString('utf8'), 'hola\n');
+    assert.equal(entries['vacio.bin'].length, 0);
+    assert.equal(sha256(entries['parte1.bin']), sha256(fillDeterministic(s1, 101)));
+    assert.equal(sha256(entries['parte2.bin']), sha256(fillDeterministic(s2, 202)));
+    assert.deepEqual(errors, []);
   }
-  const cliLink = out.match(/Enlace:\s+(\S+)/)[1];
-  await clear(prep);
-  await put(prep, 'dos.bin', bodies['dos.bin'].toString('base64'));
-  const rx2 = await context.newPage();
-  await rx2.goto(cliLink, { waitUntil: 'domcontentloaded' });
-  await rx2.waitForSelector('#accept:visible', { timeout: 30_000 });
-  await rx2.click('#accept');
-  await received(rx2);
-  const got2 = await readAll(rx2);
-  for (const [name, body] of Object.entries(bodies)) assert.equal(got2[name], sha256(body), `${name} no es el del emisor`);
-  assert.match(out, /ya tiene 200 KB \(100%\) de dos\.bin/, `el emisor CLI deberia haber aceptado el archivo entero:\n${out}`);
+
+  // ------------------------- 2. Web -> Web archivos sueltos con toggle manual
+  {
+    const context = await browser.newContext({ acceptDownloads: true });
+    t.after(() => context.close());
+    const a = crypto.randomBytes(64 * 1024);
+    const b = crypto.randomBytes(32 * 1024);
+    const sender = await context.newPage();
+    await sender.goto(srv.http, { waitUntil: 'domcontentloaded' });
+    await sender.evaluate(([b1, b2]) => {
+      const toFile = (b64, name) => new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], name);
+      const dt = new DataTransfer();
+      dt.items.add(toFile(b1, 'uno.bin'));
+      dt.items.add(toFile(b2, 'dos.bin'));
+      const input = document.getElementById('file-input');
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, [a.toString('base64'), b.toString('base64')]);
+    await sender.click('#create-link');
+    await sender.waitForFunction(() => document.getElementById('link-out').value.includes('#'), null, { timeout: 15_000 });
+    const link = await sender.inputValue('#link-out');
+
+    const receiver = await context.newPage();
+    const downloaded = new Promise((resolve) => receiver.on('download', resolve));
+    await receiver.goto(link, { waitUntil: 'domcontentloaded' });
+    await receiver.waitForSelector('#as-zip:visible', { timeout: 20_000 });
+    assert.equal(await receiver.isChecked('#as-zip'), false, 'dos archivos sueltos no deberian forzar .zip por defecto');
+    await receiver.click('#zip-opt');
+    assert.equal(await receiver.isChecked('#as-zip'), true);
+
+    await receiver.click('#accept');
+    await receiver.waitForFunction(() => /received/.test(document.querySelector('.peer .state')?.textContent || ''), null, { timeout: 60_000 });
+    const dl = await downloaded;
+    assert.equal(dl.suggestedFilename(), 'drop-files.zip');
+    const entries = readZip(fs.readFileSync(await dl.path()));
+    assert.deepEqual(Object.keys(entries).sort(), ['dos.bin', 'uno.bin']);
+    assert.equal(sha256(entries['uno.bin']), sha256(a));
+    assert.equal(sha256(entries['dos.bin']), sha256(b));
+  }
+
+  // ------------------------------ 3. CLI send <carpeta> -> Web como .zip
+  {
+    const context = await browser.newContext({ acceptDownloads: true });
+    t.after(() => context.close());
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-web-zip-'));
+    t.after(() => fs.rmSync(work, { recursive: true, force: true }));
+    const src = path.join(work, 'proyecto');
+    fs.mkdirSync(path.join(src, 'src'), { recursive: true });
+    const readme = Buffer.from('# Hola España\n');
+    const code = crypto.randomBytes(80 * 1024);
+    fs.writeFileSync(path.join(src, 'README.md'), readme);
+    fs.writeFileSync(path.join(src, 'vacio.txt'), Buffer.alloc(0));
+    fs.writeFileSync(path.join(src, 'src', 'index.js'), code);
+
+    const cli = spawn(process.execPath, [path.join(ROOT, 'cli', 'src', 'cli.js'), 'send', src, '--server', srv.http, '--relay', '--no-qr'],
+      { env: { ...process.env, DROP_NO_UPNP: '1' } });
+    t.after(() => cli.kill('SIGKILL'));
+    let out = '';
+    cli.stdout.on('data', (d) => { out += String(d).replace(/\x1b\[[0-9;]*m/g, ''); });
+    const t0 = Date.now();
+    while (!/Enlace:\s+\S+/.test(out)) {
+      assert.ok(Date.now() - t0 < 20_000, out);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const cliLink = out.match(/Enlace:\s+(\S+)/)[1];
+
+    const receiver = await context.newPage();
+    const downloaded = new Promise((resolve) => receiver.on('download', resolve));
+    await receiver.goto(cliLink, { waitUntil: 'domcontentloaded' });
+    await receiver.waitForSelector('#as-zip:visible', { timeout: 30_000 });
+    assert.equal(await receiver.isChecked('#as-zip'), true);
+    await receiver.click('#accept');
+    await receiver.waitForFunction(() => /received/.test(document.querySelector('.peer .state')?.textContent || ''), null, { timeout: 60_000 });
+
+    const dl = await downloaded;
+    assert.equal(dl.suggestedFilename(), 'proyecto.zip');
+    const entries = readZip(fs.readFileSync(await dl.path()));
+    assert.deepEqual(Object.keys(entries).sort(), ['proyecto/README.md', 'proyecto/src/index.js', 'proyecto/vacio.txt']);
+    assert.ok(entries['proyecto/README.md'].equals(readme));
+    assert.equal(entries['proyecto/vacio.txt'].length, 0);
+    assert.equal(sha256(entries['proyecto/src/index.js']), sha256(code));
+  }
 });
