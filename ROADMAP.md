@@ -73,7 +73,7 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 ## Distribución del CLI
 
 - [x] **macOS firmado** (#24): tras migrar el CLI a Rust, el build firma el binario nativo con `codesign --sign - --force`
-      ad hoc, así que el binario arranca en arm64; `build:macos-x64` existe. **Sin notarizar, a
+      ad hoc, así que el binario arranca en Apple Silicon (`aarch64-apple-darwin`). **Sin notarizar, a
       propósito:** el Apple Developer Program cuesta dinero cada año. El README explica cómo
       pasar Gatekeeper y recomienda descargar con `curl`, que no marca el archivo.
 - [x] **Windows sin Authenticode, a propósito** (#57): un certificado cuesta dinero cada año. El

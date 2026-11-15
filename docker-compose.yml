@@ -21,6 +21,8 @@ services:
       # WebSocket del navegador por Origin (ver server/index.js).
       DROP_DOMAIN: "${DROP_DOMAIN}"
       DROP_ALLOWED_ORIGINS: "${DROP_ALLOWED_ORIGINS:-}"
+      # Solo acepta X-Forwarded-For de Caddy/loopback dentro de la red de Docker.
+      DROP_TRUST_PROXY: "${DROP_TRUST_PROXY:-loopback,private}"
       # El cliente recibe esto desde /config y lo usa como TURN. Las credenciales
       # no van aqui: el servidor las firma al vuelo con TURN_SECRET y caducan.
       TURN_URL: "turn:${DROP_DOMAIN}:3478"
@@ -72,6 +74,17 @@ services:
       # Sin certificados no montamos listeners TLS; el trafico ya va cifrado por DTLS.
       # (El CLI de coturn viene apagado por defecto, no hace falta desactivarlo.)
       - "--no-tls"
+      # Denegar relay hacia bucle local, redes privadas y servicios de metadatos (SSRF)
+      - "--denied-peer-ip=0.0.0.0-0.255.255.255"
+      - "--denied-peer-ip=127.0.0.0-127.255.255.255"
+      - "--denied-peer-ip=10.0.0.0-10.255.255.255"
+      - "--denied-peer-ip=172.16.0.0-172.31.255.255"
+      - "--denied-peer-ip=192.168.0.0-192.168.255.255"
+      - "--denied-peer-ip=169.254.0.0-169.254.255.255"
+      - "--denied-peer-ip=100.64.0.0-100.127.255.255"
+      - "--denied-peer-ip=::1"
+      - "--denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+      - "--denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
 
 volumes:
   caddy_data:

@@ -304,3 +304,85 @@ test('/healthz cuenta las conexiones rechazadas por motivo', async () => {
     srv.stop();
   }
 });
+
+// Sin DROP_TRUST_PROXY, la cabecera X-Forwarded-For de un cliente directo se
+// ignora para que no pueda rotar IPs y saltarse las cuotas por IP (#59).
+test('un cliente directo no puede evadir TOO_MANY_ROOMS ni RATE_LIMITED con X-Forwarded-For', async () => {
+  const srv = await startServer({ DROP_ROOM_RATE_MAX: '2' });
+  const sockets = [];
+  try {
+    for (let i = 0; i < 2; i++) {
+      const host = await open(srv.ws, { headers: { 'X-Forwarded-For': `203.0.113.${10 + i}` } });
+      sockets.push(host);
+      host.say({ t: 'host', v: 2 });
+      const hosted = await host.next();
+      assert.equal(hosted.t, 'hosted');
+      assert.notEqual(hosted.publicIp, `203.0.113.${10 + i}`);
+    }
+
+    const extra = await open(srv.ws, { headers: { 'X-Forwarded-For': '203.0.113.99' } });
+    sockets.push(extra);
+    extra.say({ t: 'host', v: 2 });
+    assert.equal((await extra.next()).reason, 'TOO_MANY_ROOMS');
+
+    for (let i = 0; i < 20; i++) {
+      const g = await open(srv.ws, { headers: { 'X-Forwarded-For': `198.51.100.${i + 1}` } });
+      sockets.push(g);
+      g.say({ t: 'join', token: '0000' });
+      assert.equal((await g.next()).reason, 'NOT_FOUND');
+    }
+
+    const blocked = await open(srv.ws, { headers: { 'X-Forwarded-For': '198.51.100.250' } });
+    sockets.push(blocked);
+    blocked.say({ t: 'join', token: '0000' });
+    assert.equal((await blocked.next()).reason, 'RATE_LIMITED');
+  } finally {
+    for (const s of sockets) s.close();
+    srv.stop();
+  }
+});
+
+// Con DROP_TRUST_PROXY configurado, solo se leen proxies autorizados y la
+// cadena se recorre desde la derecha para tomar el ultimo salto no confiable.
+test('DROP_TRUST_PROXY lee el salto real en X-Forwarded-For e ignora prefijos falsos', async () => {
+  const srv = await startServer({ DROP_TRUST_PROXY: 'loopback,10.20.0.0/16', DROP_ROOM_RATE_MAX: '1' });
+  const sockets = [];
+  try {
+    const h1 = await open(srv.ws, {
+      headers: { 'X-Forwarded-For': '9.9.9.9, 198.51.100.42, 10.20.1.5' },
+    });
+    sockets.push(h1);
+    h1.say({ t: 'host', v: 2 });
+    const hosted1 = await h1.next();
+    assert.equal(hosted1.t, 'hosted');
+    assert.equal(hosted1.publicIp, '198.51.100.42');
+
+    // Aunque el cliente ponga otra IP a la izquierda, el salto real antes del
+    // proxy confiable sigue siendo 198.51.100.42 y cae en TOO_MANY_ROOMS.
+    const h2 = await open(srv.ws, {
+      headers: { 'X-Forwarded-For': '8.8.8.8, 198.51.100.42, 10.20.9.9' },
+    });
+    sockets.push(h2);
+    h2.say({ t: 'host', v: 2 });
+    assert.equal((await h2.next()).reason, 'TOO_MANY_ROOMS');
+
+    // Otra IP real distinta detras del mismo proxy si tiene su propio cupo.
+    const h3 = await open(srv.ws, { headers: { 'X-Forwarded-For': '198.51.100.43' } });
+    sockets.push(h3);
+    h3.say({ t: 'host', v: 2 });
+    const hosted3 = await h3.next();
+    assert.equal(hosted3.t, 'hosted');
+    assert.equal(hosted3.publicIp, '198.51.100.43');
+
+    // Cabeceras malformadas no rompen ni contaminan publicIp.
+    const h4 = await open(srv.ws, { headers: { 'X-Forwarded-For': 'no-es-una-ip' } });
+    sockets.push(h4);
+    h4.say({ t: 'host', v: 2 });
+    const hosted4 = await h4.next();
+    assert.equal(hosted4.t, 'hosted');
+    assert.match(hosted4.publicIp, /^(?:127\.0\.0\.1|::1)$/);
+  } finally {
+    for (const s of sockets) s.close();
+    srv.stop();
+  }
+});

@@ -104,9 +104,11 @@ abrir salas contra tu servidor. Si sirves el frontend desde otro sitio (un domin
 un CDN), añádelo con `DROP_ALLOWED_ORIGINS` separando por comas. El CLI no manda cabecera
 `Origin`, así que no le afecta.
 
+Las trazas dicen qué orígenes acepta WebSocket de navegador y qué proxies de confianza (`DROP_TRUST_PROXY`) pueden pasar `X-Forwarded-For`. En [docker-compose.yml](docker-compose.yml) viene puesto `loopback,private` porque el contenedor `drop` solo expone el puerto `3000` dentro de la red privada detrás de Caddy, y [Caddyfile](Caddyfile) sobrescribe `X-Forwarded-For` con `{remote_host}` para impedir falsificaciones de IP. Si arrancas `node server/index.js` directamente sin definir `DROP_TRUST_PROXY`, la cabecera `X-Forwarded-For` se ignora por defecto.
+
 El TURN no tiene usuario ni contraseña fijos: el servidor firma con `TURN_SECRET` unas
 credenciales que llevan dentro su propia caducidad (12 h por defecto, `TURN_TTL_SECONDS`) y
-coturn las valida sin guardar ninguna. Si falta el secreto, al arrancar lo dice:
+coturn las valida sin guardar ninguna. Además, [docker-compose.yml](docker-compose.yml) bloquea en `coturn` mediante `--denied-peer-ip` las retransmisiones hacia bucle local (`127.0.0.0/8`, `::1`), redes privadas RFC 1918/CGNAT, link-local IPv6 (`fe80::/10`), ULA (`fc00::/7`) y metadatos de instancia cloud (`169.254.0.0/16`) para evitar SSRF (#60). Si falta el secreto, al arrancar lo dice:
 
 ```text
 AVISO: hay TURN_URL pero no TURN_SECRET, no se sirve TURN (ver .env.example)

@@ -6,7 +6,7 @@ convenciones sigue el repositorio.
 
 ## Montar el entorno
 
-Hace falta **Node.js >= 18** (para el servidor, la web y la suite de integración) y **Rust (`cargo` estable)** si vas a compilar o tocar el CLI (`cli-rs/`).
+Hace falta **Node.js >= 22.9** (para el servidor, la web y la suite de integración) y **Rust (`cargo` estable)** si vas a compilar o tocar el CLI (`cli-rs/`).
 
 ```bash
 git clone https://github.com/Oloxx/drop.git
@@ -110,7 +110,7 @@ y cada una está ahí porque romperla costó una tarde.
 ## Publicar una versión
 
 Una release son dos commits y un tag; el workflow `release.yml` hace el resto (compila los
-cinco binarios, firma `SHA256SUMS`, verifica la firma con el `minisign` real y publica). Lo que
+cuatro binarios, firma `SHA256SUMS`, verifica la firma con el `minisign` real y publica). Lo que
 no puede comprobar la máquina va en esta lista, en este orden:
 
 1. **`npm test` en verde en las tres plataformas.** Localmente pasa en una; el CI de la PR

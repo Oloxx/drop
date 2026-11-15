@@ -42,7 +42,6 @@ Standalone executables (no Node.js required) on the [v0.13.0 Release](https://gi
 * **Linux (x64):** [`drop-v0.13.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-x64.tar.gz)
 * **Linux (ARM64):** [`drop-v0.13.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-arm64.tar.gz) *(Raspberry Pi, Oracle ARM VPS, AWS Graviton)*
 * **macOS (Apple Silicon):** [`drop-v0.13.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.13.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-x64.tar.gz)
 
 ### Verify your download
 
@@ -167,7 +166,7 @@ All four combinations (`Web ↔ Web`, `CLI ↔ CLI`, `CLI → Web`, `Web → CLI
 
 ## 💻 Local Development & Self-Hosting
 
-Requires **Node.js >= 18** (signaling server & web tests) and **Rust / Cargo** (to compile the native CLI in `cli-rs/`):
+Requires **Node.js >= 22.9** (signaling server & web tests) and **Rust / Cargo** (to compile the native CLI in `cli-rs/`):
 
 ```bash
 npm install

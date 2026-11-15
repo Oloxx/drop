@@ -11,6 +11,17 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+### Seguridad
+- **Validación de `X-Forwarded-For` y proxies de confianza (#59):** [`server/index.js`](server/index.js) ignora `X-Forwarded-For` por defecto y solo extrae la IP real del cliente (de derecha a izquierda) cuando el socket entra desde `DROP_TRUST_PROXY` (`loopback,private` en [docker-compose.yml](docker-compose.yml)), mientras que [Caddyfile](Caddyfile) sobrescribe la cabecera con `{remote_host}`.
+- **Restricción de peers en `coturn` (#60):** añadidas reglas `--denied-peer-ip` en [docker-compose.yml](docker-compose.yml) para bloquear retransmisiones hacia loopback, redes privadas RFC 1918/CGNAT, link-local y metadatos cloud (`169.254.0.0/16`).
+- **Comparación en tiempo constante en el cliente web (#62):** [`public/app.js`](public/app.js) verifica las pruebas de sala (`proofFromKey` y `secretProof`) con [`timingSafeEqualStr`](public/shared/e2ee.js) en lugar de `!==`, y [`cli-rs/tests/transfer_test.rs`](cli-rs/tests/transfer_test.rs) añade test de regresión contra tramas TCP sobredimensionadas (#61).
+
+### Cambiado
+- **Requisito mínimo de Node.js (#63):** `engines.node` actualizado a `>=22.9.0` en [`package.json`](package.json) y documentación en consonancia con `--env-file-if-exists` y los runners de CI.
+
+### Eliminado
+- **Compilación y releases para `macos-x64` (macOS Intel):** retirado de [`.github/workflows/release.yml`](.github/workflows/release.yml), [`package.json`](package.json) y enlaces de descarga para centrarse en macOS Apple Silicon (`macos-arm64`), Windows x64 y Linux x64/ARM64.
+
 ## [0.13.0] — 2026-11-15
 
 Compatible con la v0.12.x (protocolo 5 sin cambios).

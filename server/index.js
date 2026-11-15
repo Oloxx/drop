@@ -1,4 +1,5 @@
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -315,15 +316,112 @@ function closeRoom(token, reason, { hangUp = false } = {}) {
   rooms.delete(token);
 }
 
-// Detras de Caddy la IP real llega en X-Forwarded-For; en local no hay proxy y
-// vale la del socket. Lo usan el limite de fuerza bruta, el cupo de salas y el
-// `publicIp` que se devuelve al cliente.
+const TRUST_PROXY_RAW = (process.env.DROP_TRUST_PROXY || '').trim();
+
+// Normaliza IPs IPv4/IPv6 (quitando el prefijo ::ffff: de IPv4 mapeado) y descarta
+// cadenas que no sean una IP valida.
+function normalizeIp(raw) {
+  if (typeof raw !== 'string') return '';
+  let s = raw.trim();
+  if (!s) return '';
+  if (s.startsWith('[') && s.endsWith(']')) s = s.slice(1, -1);
+  const v4Mapped = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (v4Mapped) s = v4Mapped[1];
+  return net.isIP(s) ? s : '';
+}
+
+function ipv4ToInt(ip) {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let out = 0;
+  for (const p of parts) {
+    const n = Number(p);
+    if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+    out = (out << 8) | n;
+  }
+  return out >>> 0;
+}
+
+function ipv6ToBigInt(ip) {
+  const halves = ip.split('::');
+  if (halves.length > 2) return null;
+  const parsePart = (part) => {
+    if (!part) return [];
+    const segs = part.split(':');
+    const out = [];
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      if (i === segs.length - 1 && seg.includes('.')) {
+        const v4 = ipv4ToInt(seg);
+        if (v4 === null) return null;
+        out.push((v4 >>> 16) & 0xffff, v4 & 0xffff);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/i.test(seg)) return null;
+        out.push(parseInt(seg, 16));
+      }
+    }
+    return out;
+  };
+  const left = parsePart(halves[0]);
+  const right = halves.length === 2 ? parsePart(halves[1]) : [];
+  if (!left || !right) return null;
+  const missing = 8 - (left.length + right.length);
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+  const words = halves.length === 2 ? [...left, ...Array(missing).fill(0), ...right] : left;
+  let n = 0n;
+  for (const w of words) n = (n << 16n) | BigInt(w);
+  return n;
+}
+
+function compileCidrMatcher(spec) {
+  const expanded = [];
+  for (const token of spec.split(/[\s,]+/).filter(Boolean)) {
+    const low = token.toLowerCase();
+    if (low === 'loopback') expanded.push('127.0.0.0/8', '::1/128');
+    else if (low === 'private' || low === 'uniquelocal') {
+      expanded.push('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7', 'fe80::/10');
+    } else expanded.push(token);
+  }
+  const rules = [];
+  for (const entry of expanded) {
+    const [addrRaw, prefixRaw] = entry.split('/');
+    const addr = normalizeIp(addrRaw);
+    if (!addr) continue;
+    const ver = net.isIP(addr);
+    const maxBits = ver === 4 ? 32 : 128;
+    const prefix = prefixRaw === undefined ? maxBits : Number(prefixRaw);
+    if (!Number.isInteger(prefix) || prefix < 0 || prefix > maxBits) continue;
+    if (ver === 4) {
+      const mask = prefix === 0 ? 0 : (~0 << (32 - prefix)) >>> 0;
+      const netInt = (ipv4ToInt(addr) & mask) >>> 0;
+      rules.push((ip) => net.isIP(ip) === 4 && ((ipv4ToInt(ip) & mask) >>> 0) === netInt);
+    } else {
+      const shift = BigInt(128 - prefix);
+      const netVal = ipv6ToBigInt(addr) >> shift;
+      rules.push((ip) => net.isIP(ip) === 6 && (ipv6ToBigInt(ip) >> shift) === netVal);
+    }
+  }
+  return (ip) => rules.some((fn) => fn(ip));
+}
+
+const isTrustedProxy = compileCidrMatcher(TRUST_PROXY_RAW);
+
+// Solo confiamos en X-Forwarded-For cuando el socket entra desde un proxy
+// listado en DROP_TRUST_PROXY (en Docker Compose, la red interna de Caddy; por
+// defecto, vacio para evitar spoofing si alguien expone el puerto directo). Al
+// leer la lista se recorre de derecha a izquierda tomando el ultimo salto NO
+// confiable para que una cabecera previa falsificada no engañe al servidor.
 function clientIp(req) {
-  return (
-    req?.headers?.['x-forwarded-for']?.split(',')[0] ||
-    req?.socket?.remoteAddress ||
-    ''
-  ).replace(/^::ffff:/, '').trim();
+  const remote = normalizeIp(req?.socket?.remoteAddress || '');
+  if (!remote || !isTrustedProxy(remote)) return remote;
+  const raw = req?.headers?.['x-forwarded-for'];
+  const header = Array.isArray(raw) ? raw.join(',') : raw;
+  if (typeof header !== 'string') return remote;
+  const hops = header.split(',').map(normalizeIp).filter(Boolean);
+  for (let i = hops.length - 1; i >= 0; i--) {
+    if (!isTrustedProxy(hops[i])) return hops[i];
+  }
+  return hops[0] || remote;
 }
 
 // -------------------------------------------------------- credenciales TURN
@@ -715,6 +813,7 @@ server.listen(PORT, () => {
   // Una lista mal puesta se nota como "la web no conecta" y nada mas: dejarla
   // escrita al arrancar es lo que ahorra buscarlo a ciegas.
   log('origenes permitidos:', ORIGIN_ANY ? '(cualquiera)' : [...ALLOWED_ORIGINS].join(', '));
+  log('proxies de confianza:', TRUST_PROXY_RAW || '(ninguno)');
   log('caudal del relay:', RELAY_LIMIT ? RELAY_LIMIT + ' B/s por sala' : 'sin limite por sala',
       '|', RELAY_LIMIT_TOTAL ? RELAY_LIMIT_TOTAL + ' B/s en total' : 'sin limite total');
   // Un TURN configurado a medias no da error: simplemente no se ofrece, y las

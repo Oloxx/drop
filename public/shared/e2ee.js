@@ -66,6 +66,19 @@ export async function deriveRoomKey(roomId, secret) {
 const toHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 /**
+ * Compara dos cadenas en tiempo constante sobre su longitud para evitar
+ * filtraciones temporales al verificar pruebas o digests hexadecimales.
+ */
+export function timingSafeEqualStr(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
  * Prueba de conocimiento del codigo para el camino por relay:
  * HMAC-SHA256(clave, 'drop-proof-v3|' + nonce). Deriva de la clave scrypt, no del
  * secreto, para que el servidor que la vea pasar no tenga nada barato que atacar.

@@ -10,7 +10,8 @@ import crypto from 'node:crypto';
 import { scrypt, hmacSha256, pbkdf2Sha256 } from '../public/shared/scrypt.js';
 import { Sha256 } from '../public/shared/sha256.js';
 import {
-  deriveRoomKey, proofFromKey, sasFromKeyBytes, sealBox, openBox, openerFor, unsealFrame, SCRYPT_PARAMS,
+  deriveRoomKey, proofFromKey, sasFromKeyBytes, sealBox, openBox, openerFor, unsealFrame,
+  timingSafeEqualStr, SCRYPT_PARAMS,
 } from '../public/shared/e2ee.js';
 import { PROTOCOL_VERSION } from '../public/shared/protocol.js';
 import { splitForKey } from '../public/shared/codes.js';
@@ -177,6 +178,13 @@ test('separacion de dominios, verifyProof en tiempo constante y bordes invalidos
   assert.equal(verifyProof(k1, nonce, `${proof.slice(0, -2)}00` === proof ? `${proof.slice(0, -2)}ff` : `${proof.slice(0, -2)}00`), false);
   assert.equal(verifyProof(k1, nonce, 'abcd'), false);
   assert.equal(verifyProof(k1, nonce, null), false);
+
+  // Misma comprobacion sobre timingSafeEqualStr (usada en public/app.js).
+  assert.equal(timingSafeEqualStr(proof, proof), true);
+  assert.equal(timingSafeEqualStr(`${proof.slice(0, -1)}${proof.endsWith('0') ? '1' : '0'}`, proof), false);
+  assert.equal(timingSafeEqualStr('abcd', proof), false);
+  assert.equal(timingSafeEqualStr(null, proof), false);
+  assert.equal(timingSafeEqualStr(undefined, proof), false);
 
   await assert.rejects(scrypt(Buffer.from('a'), Buffer.from('b'), { N: 2 ** 32, r: 1, p: 1, dkLen: 32 }));
   await assert.rejects(scrypt(Buffer.from('a'), Buffer.from('b'), { N: 3, r: 1, p: 1, dkLen: 32 }));

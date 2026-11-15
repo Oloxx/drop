@@ -16,8 +16,8 @@ use drop::shared::codes::new_code;
 use drop::shared::protocol::FileEntry;
 use drop::signaling::{SignalingSender, WsEvent};
 use drop::transfer::{
-    RELAY_ACK_EVERY, ReceiveOptions, SendItem, attach_sender, hash_partial, receive_files,
-    receive_from_relay, reserve_output_path, safe_output_path, verify_prefix,
+    RELAY_ACK_EVERY, ReceiveOptions, SendItem, attach_sender, hash_partial, read_tcp_frame,
+    receive_files, receive_from_relay, reserve_output_path, safe_output_path, verify_prefix,
 };
 
 fn scratch(prefix: &str) -> PathBuf {
@@ -664,4 +664,25 @@ async fn test_relay_receive_acks_and_tamper_detection() {
     assert_eq!(err.code, "BAD_CODE");
 
     ws_srv.abort();
+}
+
+#[tokio::test]
+async fn test_tcp_rejects_oversized_frame_without_oom() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let srv = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        // Cabecera de 256 MiB (> MAX_FRAME_LEN = 64 MiB) sin cuerpo: debe fallar al instante.
+        sock.write_all(&0x1000_0000u32.to_be_bytes()).await.unwrap();
+    });
+
+    let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let key = [0x42u8; 32];
+    let err = match read_tcp_frame(&mut client, &key).await {
+        Err(err) => err,
+        Ok(_) => panic!("deberia rechazar trama TCP sobredimensionada"),
+    };
+    assert_eq!(err.code, "PROTOCOL_FRAME");
+
+    srv.await.unwrap();
 }

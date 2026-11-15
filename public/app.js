@@ -50,7 +50,7 @@ import { Sha256, sha256Hex } from './shared/sha256.js';
 import { PROTOCOL_VERSION, pickedFiles } from './shared/protocol.js';
 import { encodeQr, qrToSvg, ECL } from './shared/qr.js';
 import { ZipWriter, zipArchiveName } from './shared/zip.js';
-import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame, sealBox, sealFrame } from './shared/e2ee.js';
+import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame, sealBox, sealFrame, timingSafeEqualStr } from './shared/e2ee.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -690,7 +690,7 @@ function onGuestJoined(guestId, name) {
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.k === 'proof') {
       if (!conn.nonce) return;
-      if (msg.proof !== secretProof(conn.nonce, out.secret)) {
+      if (!timingSafeEqualStr(msg.proof, secretProof(conn.nonce, out.secret))) {
         // No sabe las palabras: se le echa y se avisa al servidor, que quema la
         // sala si esto se repite (alguien esta probando codigos contra ella).
         conn.nonce = null;
@@ -1077,7 +1077,7 @@ function onCliSignal(from, data) {
         wsSend({ t: 'signal', to: from, data: { type: 'cli-denied', reason: 'VERSION', v: PROTOCOL_VERSION } });
         return;
       }
-      if (data.proof !== proofFromKey(out.key, nonce)) {
+      if (!timingSafeEqualStr(data.proof, proofFromKey(out.key, nonce))) {
         conn.cancelled = true;
         conn.rejected = true;
         row.fail('wrong code');

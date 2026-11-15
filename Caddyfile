@@ -12,5 +12,9 @@
 	# es un camino de ida, y el dominio tendria que servir HTTPS para siempre.
 	header Strict-Transport-Security "max-age=63072000; includeSubDomains"
 
-	reverse_proxy drop:3000
+	reverse_proxy drop:3000 {
+		# Sobrescribimos cualquier X-Forwarded-For enviado por el cliente para evitar
+		# spoofing antes de llegar al servidor de senalizacion.
+		header_up X-Forwarded-For {remote_host}
+	}
 }

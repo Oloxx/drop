@@ -73,9 +73,6 @@ jobs:
           - target: macos-arm64
             rust_target: aarch64-apple-darwin
             runner: macos-latest      # Apple Silicon
-          - target: macos-x64
-            rust_target: x86_64-apple-darwin
-            runner: macos-15-intel    # Intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -207,11 +204,11 @@ jobs:
           mkdir -p dist
           find artefactos -type f \( -name 'drop-v*.tar.gz' -o -name 'drop-v*.exe' \) -exec mv {} dist/ \;
           ls -la dist
-          # Cinco assets exactos: si falta uno, algo se perdio por el camino y es
+          # Cuatro assets exactos: si falta uno, algo se perdio por el camino y es
           # mejor no publicar una release incompleta.
           COUNT=$(ls dist | wc -l)
-          if [ "$COUNT" -ne 5 ]; then
-            echo "::error::Se esperaban 5 binarios y hay $COUNT."
+          if [ "$COUNT" -ne 4 ]; then
+            echo "::error::Se esperaban 4 binarios y hay $COUNT."
             exit 1
           fi
 
@@ -223,7 +220,7 @@ jobs:
           sha256sum drop-v* > SHA256SUMS
           cat SHA256SUMS
 
-      # La firma cubre el SHA256SUMS y, a traves de el, los cinco binarios: el
+      # La firma cubre el SHA256SUMS y, a traves de el, los cuatro binarios: el
       # hash dice que el binario llego entero, la firma dice quien lo publico.
       # Sin el secret la release se para: una release sin firmar no la instalaria
       # `drop update` sin --allow-unsigned, y es mejor enterarse aqui.

@@ -45,7 +45,6 @@ Descarga directa de los binarios autónomos (sin necesidad de tener Node.js inst
 * **Linux (x64):** [`drop-v0.13.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-x64.tar.gz)
 * **Linux (ARM64):** [`drop-v0.13.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
 * **macOS (Apple Silicon):** [`drop-v0.13.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.13.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-x64.tar.gz)
 
 
 ### Verificar la descarga
@@ -121,7 +120,7 @@ hash como dice arriba y sigue así:
 "bajado de Internet", así que no sale ningún aviso:
 
 ```bash
-# macOS (Apple Silicon; cambia arm64 por x64 en un Mac Intel)
+# macOS (Apple Silicon)
 curl -LO https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz
 tar -xzf drop-v0.13.0-macos-arm64.tar.gz && ./drop-v0.13.0-macos-arm64 install
 ```
@@ -532,7 +531,7 @@ se dice en el [CHANGELOG](CHANGELOG.md). Desde la 1.0 manda la
 ## 💻 Desarrollo y Compilación Local
 
 ### Requisitos
-* Node.js >= 18
+* Node.js >= 22.9 (servidor de señalización y tests; CLI en Rust con Cargo estable)
 
 ```bash
 # Instalar dependencias

@@ -21,7 +21,6 @@
     "build:linux": "cargo build --release --manifest-path cli-rs/Cargo.toml --target x86_64-unknown-linux-musl",
     "build:arm": "cargo build --release --manifest-path cli-rs/Cargo.toml --target aarch64-unknown-linux-musl",
     "build:macos": "cargo build --release --manifest-path cli-rs/Cargo.toml --target aarch64-apple-darwin",
-    "build:macos-x64": "cargo build --release --manifest-path cli-rs/Cargo.toml --target x86_64-apple-darwin",
     "install:bin": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "bench": "node test/throughput.bench.mjs",
@@ -35,7 +34,7 @@
     "ws": "^8.18.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.9.0"
   },
   "devDependencies": {
     "playwright-core": "^1.62.1"
