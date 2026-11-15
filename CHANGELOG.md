@@ -27,6 +27,9 @@ Las notas de cada release, con los binarios, están en
 ### Cambiado
 - **Requisito mínimo de Node.js (#63):** `engines.node` actualizado a `>=22.9.0` en [`package.json`](package.json) y documentación en consonancia con `--env-file-if-exists` y los runners de CI.
 
+### Corregido
+- **Binario Windows autocontenido (sin `VCRUNTIME140.dll`):** [`.cargo/config.toml`](.cargo/config.toml) enlaza estáticamente el CRT en `x86_64-pc-windows-msvc` (`+crt-static`) para evitar el error `0xC0000135` en equipos Windows limpios sin *Visual C++ Redistributable*.
+
 ### Eliminado
 - **Compilación y releases para `macos-x64` (macOS Intel):** retirado de [`.github/workflows/release.yml`](.github/workflows/release.yml), [`package.json`](package.json) y enlaces de descarga para centrarse en macOS Apple Silicon (`macos-arm64`), Windows x64 y Linux x64/ARM64.
 - **Publicación del CLI en npm (#40):** descartada tras migrar el CLI a binario nativo estático en Rust (`cli-rs/`) sin dependencia de Node.js; `package.json` conserva `"private": true` y la distribución se cubre con Homebrew, Scoop, WinGet y binarios firmados.

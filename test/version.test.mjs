@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 
-import { ROOT, cliSpawnTarget } from './helpers.mjs';
+import { ROOT, CLI_BIN, cliSpawnTarget } from './helpers.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const CLI_RS = path.join(ROOT, 'cli-rs', 'src', 'cli.rs');
@@ -156,4 +156,58 @@ test('`drop send install` no activa la suborden install', () => {
   const res = runCli(['send', 'install']);
   assert.equal(res.status, 1);
   assert.match(res.stderr, /El archivo no existe/);
+});
+
+function readPeImportedDlls(exePath) {
+  const buf = fs.readFileSync(exePath);
+  const peOff = buf.readUInt32LE(0x3c);
+  assert.equal(buf.toString('ascii', peOff, peOff + 4), 'PE\0\0', `${exePath} no es un PE valido`);
+  const numSections = buf.readUInt16LE(peOff + 6);
+  const optSize = buf.readUInt16LE(peOff + 20);
+  const optOff = peOff + 24;
+  const magic = buf.readUInt16LE(optOff);
+  const ddOff = optOff + (magic === 0x20b ? 112 : 96);
+  const importRva = buf.readUInt32LE(ddOff + 8);
+  assert.ok(importRva > 0, `${exePath} no tiene tabla de importaciones`);
+
+  const secOff = optOff + optSize;
+  const sections = [];
+  for (let i = 0; i < numSections; i++) {
+    const o = secOff + i * 40;
+    sections.push({
+      va: buf.readUInt32LE(o + 12),
+      vsize: buf.readUInt32LE(o + 8),
+      raw: buf.readUInt32LE(o + 20),
+      rsize: buf.readUInt32LE(o + 16),
+    });
+  }
+  const rvaToOff = (rva) => {
+    const s = sections.find((sec) => rva >= sec.va && rva < sec.va + Math.max(sec.vsize, sec.rsize));
+    assert.ok(s, `RVA 0x${rva.toString(16)} fuera de secciones`);
+    return rva - s.va + s.raw;
+  };
+  const readCStr = (off) => {
+    let end = off;
+    while (end < buf.length && buf[end] !== 0) end++;
+    return buf.toString('ascii', off, end);
+  };
+
+  const dlls = [];
+  for (let off = rvaToOff(importRva); ; off += 20) {
+    const ilt = buf.readUInt32LE(off);
+    const nameRva = buf.readUInt32LE(off + 12);
+    const iat = buf.readUInt32LE(off + 16);
+    if (!ilt && !nameRva && !iat) break;
+    dlls.push(readCStr(rvaToOff(nameRva)));
+  }
+  return dlls;
+}
+
+test('el binario de Windows enlaza el CRT estaticamente sin VCRUNTIME*.dll', () => {
+  if (process.platform !== 'win32') return;
+  assert.ok(fs.existsSync(CLI_BIN), `Falta el binario en ${CLI_BIN}`);
+  const dlls = readPeImportedDlls(CLI_BIN);
+  assert.ok(dlls.length > 0, 'Tabla de importaciones vacia');
+  const forbidden = dlls.filter((dll) => /^(vcruntime|msvcp|concrt|ucrtbase)/i.test(dll));
+  assert.deepEqual(forbidden, [], `Importaciones dinamicas de MSVC CRT no deseadas: ${forbidden.join(', ')} (todas: ${dlls.join(', ')})`);
 });

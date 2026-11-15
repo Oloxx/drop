@@ -1,0 +1,5 @@
+# Enlaza de forma estatica el runtime de C en Windows para que el binario
+# funcione en equipos limpios sin tener Visual C++ Redistributable instalado
+# (evita el error 0xC0000135 por falta de VCRUNTIME140.dll).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
