@@ -17,6 +17,10 @@ use drop::discovery::{
     start_broadcasting_on,
 };
 use drop::listen::{explain_listen_error, listen_any_family};
+use drop::mdns::{
+    MDNS_V4, MDNS_V6, SERVICE_TYPE, build_mdns_query, build_mdns_response, decode_dns_name,
+    encode_dns_name, is_drop_ptr_query, listen_mdns_on, parse_mdns_response, start_mdns_on,
+};
 use drop::natpmp::{
     NatPmpMapResponse, build_map_tcp_request, build_public_address_request,
     parse_bsd_default_route, parse_map_tcp_response, parse_proc_net_route,
@@ -853,4 +857,176 @@ async fn test_natpmp_map_renew_unmap_and_upnp_fallback() {
 
     upnp_srv.abort();
     natpmp_srv.abort();
+}
+
+#[test]
+fn test_mdns_wire_encoding_compression_and_privacy() {
+    let code = "7319-cobalt-orchid-velvet-lynx";
+    let hash = room_hash(code);
+    let q_mcast = build_mdns_query(SERVICE_TYPE, false);
+    assert_eq!(is_drop_ptr_query(&q_mcast), Some(false));
+    let q_qu = build_mdns_query(SERVICE_TYPE, true);
+    assert_eq!(is_drop_ptr_query(&q_qu), Some(true));
+    assert_eq!(is_drop_ptr_query(&build_mdns_query("_http._tcp.local", false)), None);
+
+    let pkt = build_mdns_response(
+        &hash,
+        45123,
+        &[Ipv4Addr::new(192, 168, 10, 4)],
+        &[],
+    );
+    // El paquete mDNS jamás puede filtrar las cuatro palabras secretas ni parte del secreto.
+    let lower_bytes = String::from_utf8_lossy(&pkt).to_ascii_lowercase();
+    for secret_word in ["cobalt", "orchid", "velvet", "lynx"] {
+        assert!(!lower_bytes.contains(secret_word), "secreto filtrado en mDNS: {secret_word}");
+    }
+    assert!(lower_bytes.contains(&hash));
+
+    let src: std::net::SocketAddr = "192.168.10.4:5353".parse().unwrap();
+    assert_eq!(
+        parse_mdns_response(&pkt, src, &hash),
+        Some(("192.168.10.4".to_string(), 45123))
+    );
+    assert_eq!(parse_mdns_response(&pkt, src, "0000000000000000"), None);
+
+    // Respaldo a registro A del paquete si la IP origen viniera sin especificar.
+    let unspec: std::net::SocketAddr = "0.0.0.0:5353".parse().unwrap();
+    assert_eq!(
+        parse_mdns_response(&pkt, unspec, &hash),
+        Some(("192.168.10.4".to_string(), 45123))
+    );
+
+    // Paquete DNS comprimido manualmente con punteros 0xC0 para validar decode_dns_name.
+    let test_hash = "0123456789abcdef";
+    let service_wire = encode_dns_name(SERVICE_TYPE).unwrap();
+    let inst_prefix = format!("drop-{test_hash}");
+    let target_wire = encode_dns_name(&format!("drop-{test_hash}.local")).unwrap();
+
+    let mut compressed = vec![
+        0, 0, 0x84, 0x00, // flags QR=1 AA=1
+        0, 0, 0, 3,       // ANCOUNT=3
+        0, 0, 0, 0,
+    ];
+    compressed.extend_from_slice(&service_wire); // empieza en offset 12 (0x0C)
+    compressed.extend_from_slice(&12u16.to_be_bytes()); // PTR
+    compressed.extend_from_slice(&1u16.to_be_bytes());
+    compressed.extend_from_slice(&120u32.to_be_bytes());
+    let ptr_rdata_len = (1 + inst_prefix.len() + 2) as u16;
+    compressed.extend_from_slice(&ptr_rdata_len.to_be_bytes());
+    let inst_offset = compressed.len();
+    compressed.push(inst_prefix.len() as u8);
+    compressed.extend_from_slice(inst_prefix.as_bytes());
+    compressed.extend_from_slice(&[0xC0, 0x0C]); // puntero a _drop._tcp.local
+
+    let ptr_hi = 0xC0 | ((inst_offset >> 8) as u8);
+    let ptr_lo = (inst_offset & 0xFF) as u8;
+
+    // SRV con nombre comprimido apuntando a inst_offset.
+    compressed.extend_from_slice(&[ptr_hi, ptr_lo]);
+    compressed.extend_from_slice(&33u16.to_be_bytes());
+    compressed.extend_from_slice(&0x8001u16.to_be_bytes());
+    compressed.extend_from_slice(&120u32.to_be_bytes());
+    compressed.extend_from_slice(&((6 + target_wire.len()) as u16).to_be_bytes());
+    compressed.extend_from_slice(&[0, 0, 0, 0]);
+    compressed.extend_from_slice(&49152u16.to_be_bytes());
+    compressed.extend_from_slice(&target_wire);
+
+    // TXT con nombre comprimido apuntando a inst_offset.
+    let txt_h = format!("h={test_hash}");
+    let txt_p = "p=49152";
+    compressed.extend_from_slice(&[ptr_hi, ptr_lo]);
+    compressed.extend_from_slice(&16u16.to_be_bytes());
+    compressed.extend_from_slice(&0x8001u16.to_be_bytes());
+    compressed.extend_from_slice(&120u32.to_be_bytes());
+    compressed.extend_from_slice(&((2 + txt_h.len() + txt_p.len()) as u16).to_be_bytes());
+    compressed.push(txt_h.len() as u8);
+    compressed.extend_from_slice(txt_h.as_bytes());
+    compressed.push(txt_p.len() as u8);
+    compressed.extend_from_slice(txt_p.as_bytes());
+
+    assert_eq!(
+        parse_mdns_response(&compressed, src, test_hash),
+        Some(("192.168.10.4".to_string(), 49152))
+    );
+    // Protección frente a bucle infinito en punteros DNS maliciosos.
+    assert!(decode_dns_name(&[0xC0, 0x00], 0).is_none());
+}
+
+#[tokio::test]
+async fn test_mdns_responder_query_reply_and_tcp_connect() {
+    let tcp_listener = listen_any_family(0).unwrap();
+    let tcp_port = tcp_listener.local_addr().unwrap().port();
+    let srv = tokio::spawn(async move {
+        let _ = tcp_listener.accept().await;
+    });
+
+    let code = "4123-maple-cedar-frost-river";
+    let hash = room_hash(code);
+    let mut responder = start_mdns_on(code, tcp_port, 0);
+    let mdns_v4_port = responder.local_v4_port().expect("socket mDNS v4 activo");
+
+    let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let target: std::net::SocketAddr = format!("127.0.0.1:{mdns_v4_port}").parse().unwrap();
+    let query = build_mdns_query(SERVICE_TYPE, true);
+    client.send_to(&query, target).await.unwrap();
+
+    let mut buf = [0u8; 4096];
+    let recv_res = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let (n, peer) = client.recv_from(&mut buf).await.ok()?;
+            if let Some(hit) = parse_mdns_response(&buf[..n], peer, &hash) {
+                return Some(hit);
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+
+    responder.stop();
+
+    let (host, discovered_port) = recv_res.expect("respuesta mDNS válida tras consulta PTR");
+    assert_eq!(discovered_port, tcp_port);
+    let conn = connect_host(&host, discovered_port).await;
+    assert!(conn.is_ok(), "fallo conectando TCP tras mDNS: {conn:?}");
+    srv.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_mdns_multicast_roundtrip_and_graceful_degradation() {
+    assert_eq!(MDNS_V4, Ipv4Addr::new(224, 0, 0, 251));
+    assert_eq!(MDNS_V6, std::net::Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb));
+
+    // Puerto ocupado o sin respuestas debe degradar devolviendo None sin paniquear.
+    let occupied = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let occupied_port = occupied.local_addr().unwrap().port();
+    assert_eq!(
+        listen_mdns_on("8811-maple-cedar-frost-river", 100, occupied_port).await,
+        None
+    );
+    drop(occupied);
+
+    // Prueba de multicast mDNS real en puerto efímero si el entorno tiene ruta multicast loopback.
+    let tcp_listener = listen_any_family(0).unwrap();
+    let tcp_port = tcp_listener.local_addr().unwrap().port();
+    let srv = tokio::spawn(async move {
+        let _ = tcp_listener.accept().await;
+    });
+
+    let code = "6204-maple-cedar-frost-river";
+    let mut responder = start_mdns_on(code, tcp_port, 0);
+    if let Some(mdns_port) = responder.local_v4_port() {
+        let hit = listen_mdns_on(code, 1000, mdns_port).await;
+        responder.stop();
+        if let Some((host, port)) = hit {
+            assert_eq!(port, tcp_port);
+            let conn = connect_host(&host, port).await;
+            assert!(conn.is_ok(), "fallo conectando TCP tras multicast mDNS: {conn:?}");
+            srv.await.unwrap();
+            return;
+        }
+    } else {
+        responder.stop();
+    }
+    srv.abort();
 }

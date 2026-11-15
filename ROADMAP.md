@@ -31,6 +31,11 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       en `ips` y el emisor escucha en dual-stack; completado el descubrimiento local por multicast
       UDP IPv6 (`ff02::1`, puerto `42424`) en [`cli-rs/src/discovery.rs`](cli-rs/src/discovery.rs)
       en paralelo al broadcast IPv4.
+- [x] **Descubrimiento local por mDNS / DNS-SD** (#38): [`cli-rs/src/mdns.rs`](cli-rs/src/mdns.rs)
+      anuncia y consulta `_drop._tcp.local` (`224.0.0.251:5353` y `[ff02::fb]:5353`) con `PTR`,
+      `SRV` y `TXT` (`h=<roomHash>`, `p=<puerto>`) en paralelo al broadcast UDP `42424`, sin
+      dependencias externas ni filtrar el secreto de cuatro palabras, degradando limpio si el
+      puerto `5353` está ocupado sin `SO_REUSEPORT`.
 
 ## Robustez de lo que ya existe
 
@@ -133,9 +138,9 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       [`README.md`](README.md) y comprobado en `test/version.test.mjs` para que los enlaces de
       descarga no se queden atrás.
 - [x] **Checklist de release** en `CONTRIBUTING.md` ("Publicar una versión"). Desde la v0.8.0.
-- [ ] **Cerrar o descartar** cada issue abierto con `P3` que no entre: #38 (mDNS), #39
+- [ ] **Cerrar o descartar** cada issue abierto con `P3` que no entre: #39
       (servidor de señalización embebido). Una 1.0 con quince issues de "algún día" abiertos
-      no dice nada; una con cinco decididos, sí.
+      no dice nada; una con pocos puntos decididos, sí.
 
 ## Lo que la 1.0 no necesita
 

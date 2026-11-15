@@ -10,7 +10,7 @@ Este documento detalla qué garantiza **drop** en cada ruta de transferencia y d
 |---|---|---|
 | **Servidor de señalización** (`server/index.js`) | Identificador público de sala (`4271`, 4 dígitos), direcciones IP de emisor y receptores, SDP/ICE en WebRTC, `cli-offer`/`cli-proof` y tráfico cifrado (`cli-sealed` + trozos AES-GCM) cuando se usa relay | Las cuatro palabras del código, la clave derivada, los nombres/tamaños de archivos del CLI ni ningún byte de archivo en claro |
 | **Servidor TURN** (`coturn`) | IPs de los pares y paquetes DTLS ya cifrados extremo a extremo entre navegadores | Contenido del DataChannel ni contraseñas permanentes (usa credenciales HMAC temporales de duración `TURN_TTL_SECONDS`) |
-| **Vecino de LAN** (UDP `42424`) | `roomHash = sha256(roomId).slice(0, 16)` y puerto TCP local del emisor | Las cuatro palabras del código, el manifiesto o los archivos: sin clave scrypt, AES-GCM rechaza el primer paquete TCP |
+| **Vecino de LAN** (UDP `42424` / mDNS `5353`) | `roomHash = sha256(roomId).slice(0, 16)` y puerto TCP local del emisor | Las cuatro palabras del código, el manifiesto o los archivos: sin clave scrypt, AES-GCM rechaza el primer paquete TCP |
 | **Observador pasivo en red / ISP** | IPs, horarios, volumen de tráfico y SNI/DNS; el contenido va dentro de DTLS (WebRTC) o AES-256-GCM (TCP y relay) | Nombres de archivo ni contenido en claro |
 | **Otro extremo con el código** | Todo lo incluido en la oferta (y lo elegido con `--only` / casillas) una vez aceptado por el emisor | Otros archivos del equipo fuera del envío |
 

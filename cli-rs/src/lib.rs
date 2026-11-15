@@ -4,6 +4,7 @@ pub mod completion;
 pub mod crypto;
 pub mod discovery;
 pub mod listen;
+pub mod mdns;
 pub mod minisign;
 pub mod natpmp;
 pub mod pkgmgr;

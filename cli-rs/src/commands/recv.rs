@@ -142,7 +142,7 @@ async fn attempt_receive(
         })
     };
 
-    // 1. Descubierta local LAN (broadcast UDP IPv4 + multicast IPv6)
+    // 1. Descubierta local LAN (broadcast UDP IPv4 + multicast IPv6 + mDNS en paralelo)
     if !force_relay && let Some((host, port)) = listen_for_lan(code, 1200).await {
         log_out(
             to_stdout,

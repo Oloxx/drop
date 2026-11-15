@@ -1,4 +1,4 @@
-// Descubrimiento en LAN por broadcast UDP IPv4, multicast IPv6 y candidatos + Happy Eyeballs.
+// Descubrimiento en LAN por broadcast UDP IPv4, multicast IPv6, mDNS y candidatos + Happy Eyeballs.
 
 use std::collections::HashSet;
 use std::env;
@@ -207,6 +207,7 @@ pub fn get_broadcast_addresses() -> Vec<String> {
 pub struct Broadcaster {
     stop_tx: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<()>>,
+    mdns: Option<crate::mdns::MdnsResponder>,
 }
 
 impl Broadcaster {
@@ -216,6 +217,9 @@ impl Broadcaster {
         }
         if let Some(h) = self.handle.take() {
             h.abort();
+        }
+        if let Some(ref mut m) = self.mdns {
+            m.stop();
         }
     }
 }
@@ -300,7 +304,7 @@ pub async fn connect_host(host: &str, port: u16) -> std::io::Result<TcpStream> {
     Ok(stream)
 }
 
-fn create_reusable_udp4(bind_port: u16) -> std::io::Result<UdpSocket> {
+pub(crate) fn create_reusable_udp4(bind_port: u16) -> std::io::Result<UdpSocket> {
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_reuse_address(true)?;
     #[cfg(all(unix, not(target_os = "android")))]
@@ -308,6 +312,7 @@ fn create_reusable_udp4(bind_port: u16) -> std::io::Result<UdpSocket> {
         let _ = sock.set_reuse_port(true);
     }
     sock.set_broadcast(true)?;
+    let _ = sock.set_multicast_loop_v4(true);
     sock.set_nonblocking(true)?;
     let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, bind_port));
     sock.bind(&addr.into())?;
@@ -315,7 +320,7 @@ fn create_reusable_udp4(bind_port: u16) -> std::io::Result<UdpSocket> {
     UdpSocket::from_std(std_sock)
 }
 
-fn create_reusable_udp6(bind_port: u16) -> std::io::Result<UdpSocket> {
+pub(crate) fn create_reusable_udp6(bind_port: u16) -> std::io::Result<UdpSocket> {
     let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_only_v6(true)?;
     sock.set_reuse_address(true)?;
@@ -332,39 +337,100 @@ fn create_reusable_udp6(bind_port: u16) -> std::io::Result<UdpSocket> {
     UdpSocket::from_std(std_sock)
 }
 
-fn join_v6_multicast(sock: &UdpSocket, ifindices: &[u32]) {
+pub(crate) fn ipv4_multicast_addrs() -> Vec<Ipv4Addr> {
+    let mut seen = HashSet::new();
+    let mut nic = Vec::new();
+    let mut lo = Vec::new();
+    if let Ok(addrs) = get_if_addrs() {
+        for iface in addrs {
+            if let IfAddr::V4(ref v4) = iface.addr
+                && !v4.ip.is_unspecified()
+                && seen.insert(v4.ip)
+            {
+                if iface.is_loopback() {
+                    lo.push(v4.ip);
+                } else {
+                    nic.push(v4.ip);
+                }
+            }
+        }
+    }
+    if seen.insert(Ipv4Addr::LOCALHOST) {
+        lo.push(Ipv4Addr::LOCALHOST);
+    }
+    nic.extend(lo);
+    nic
+}
+
+pub(crate) fn join_v4_multicast_group(sock: &UdpSocket, group: Ipv4Addr, addrs: &[Ipv4Addr]) {
     let mut joined = false;
-    for &idx in ifindices {
-        if sock.join_multicast_v6(&MULTICAST_V6, idx).is_ok() {
+    for &ip in addrs {
+        if sock.join_multicast_v4(group, ip).is_ok() {
             joined = true;
         }
     }
     if !joined {
-        let _ = sock.join_multicast_v6(&MULTICAST_V6, 0);
+        let _ = sock.join_multicast_v4(group, Ipv4Addr::UNSPECIFIED);
     }
 }
 
-async fn send_v6_multicast(
+pub(crate) fn join_v6_multicast_group(sock: &UdpSocket, group: Ipv6Addr, ifindices: &[u32]) {
+    let mut joined = false;
+    for &idx in ifindices {
+        if sock.join_multicast_v6(&group, idx).is_ok() {
+            joined = true;
+        }
+    }
+    if !joined {
+        let _ = sock.join_multicast_v6(&group, 0);
+    }
+}
+
+pub(crate) async fn send_v4_multicast_to(
     sock: &UdpSocket,
     payload: &[u8],
+    group: Ipv4Addr,
+    udp_port: u16,
+    addrs: &[Ipv4Addr],
+) {
+    let sock_ref = SockRef::from(sock);
+    let target = SocketAddr::V4(SocketAddrV4::new(group, udp_port));
+    if addrs.is_empty() {
+        let _ = sock.send_to(payload, target).await;
+        return;
+    }
+    for &ip in addrs {
+        let _ = sock_ref.set_multicast_if_v4(&ip);
+        let _ = sock.send_to(payload, target).await;
+    }
+}
+
+pub(crate) async fn send_v6_multicast_to(
+    sock: &UdpSocket,
+    payload: &[u8],
+    group: Ipv6Addr,
     udp_port: u16,
     ifindices: &[u32],
 ) {
     let sock_ref = SockRef::from(sock);
     if ifindices.is_empty() {
-        let target = SocketAddr::V6(SocketAddrV6::new(MULTICAST_V6, udp_port, 0, 0));
+        let target = SocketAddr::V6(SocketAddrV6::new(group, udp_port, 0, 0));
         let _ = sock.send_to(payload, target).await;
         return;
     }
     for &idx in ifindices {
         let _ = sock_ref.set_multicast_if_v6(idx);
-        let target = SocketAddr::V6(SocketAddrV6::new(MULTICAST_V6, udp_port, 0, idx));
+        let target = SocketAddr::V6(SocketAddrV6::new(group, udp_port, 0, idx));
         let _ = sock.send_to(payload, target).await;
     }
 }
 
 pub fn start_broadcasting(code: &str, tcp_port: u16) -> Broadcaster {
-    start_broadcasting_on(code, tcp_port, BROADCAST_PORT)
+    let mut b = start_broadcasting_on(code, tcp_port, BROADCAST_PORT);
+    if env::var_os("DROP_NO_LAN").is_none_or(|v| v.is_empty()) {
+        b.mdns = Some(crate::mdns::start_mdns(code, tcp_port));
+    }
+    b
 }
 
 pub fn start_broadcasting_on(code: &str, tcp_port: u16, udp_port: u16) -> Broadcaster {
@@ -401,7 +467,7 @@ pub fn start_broadcasting_on(code: &str, tcp_port: u16, udp_port: u16) -> Broadc
                         }
                     }
                     if let Some(ref sock) = v6_sock {
-                        send_v6_multicast(sock, payload.as_bytes(), udp_port, &v6_ifindices).await;
+                        send_v6_multicast_to(sock, payload.as_bytes(), MULTICAST_V6, udp_port, &v6_ifindices).await;
                     }
                 }
             }
@@ -411,6 +477,7 @@ pub fn start_broadcasting_on(code: &str, tcp_port: u16, udp_port: u16) -> Broadc
     Broadcaster {
         stop_tx: Some(stop_tx),
         handle: Some(handle),
+        mdns: None,
     }
 }
 
@@ -452,7 +519,7 @@ impl LanListener {
     fn bind_v6_socket(udp_port: u16) -> std::io::Result<UdpSocket> {
         let sock = create_reusable_udp6(udp_port)?;
         let ifindices = ipv6_multicast_ifindices();
-        join_v6_multicast(&sock, &ifindices);
+        join_v6_multicast_group(&sock, MULTICAST_V6, &ifindices);
         Ok(sock)
     }
 
@@ -498,8 +565,23 @@ pub async fn listen_for_lan(code: &str, timeout_ms: u64) -> Option<(String, u16)
     if env::var_os("DROP_NO_LAN").is_some_and(|v| !v.is_empty()) {
         return None;
     }
-    let listener = LanListener::bind(BROADCAST_PORT)?;
-    listener.accept(code, timeout_ms).await
+    let lan_fut = async {
+        let listener = LanListener::bind(BROADCAST_PORT)?;
+        listener.accept(code, timeout_ms).await
+    };
+    let mdns_fut = crate::mdns::listen_mdns(code, timeout_ms);
+    let mut f_lan = std::pin::pin!(lan_fut);
+    let mut f_mdns = std::pin::pin!(mdns_fut);
+    tokio::select! {
+        res = &mut f_lan => match res {
+            Some(hit) => Some(hit),
+            None => f_mdns.await,
+        },
+        res = &mut f_mdns => match res {
+            Some(hit) => Some(hit),
+            None => f_lan.await,
+        },
+    }
 }
 
 /// Happy Eyeballs: sondea IPs escalonadas (`min(i * 100, 300) ms`) y devuelve el primer TCP valido.
