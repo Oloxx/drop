@@ -19,7 +19,7 @@ export const DEFAULT_REPO = 'Oloxx/drop';
 export const UPSTREAM_REPO = 'microsoft/winget-pkgs';
 export const PACKAGE_ID = 'Oloxx.drop';
 export const PUBLIC_KEY = 'RWQqNnfqvCrj+eavJ9njz2vCoHaC8YnLqjsvNBMndz3hBroQLpou7+Kp';
-export const SCHEMA_VERSION = '1.28.0';
+export const SCHEMA_VERSION = '1.12.0';
 
 function normalizeTagAndVersion(rawTag) {
   const clean = String(rawTag || '').trim();
@@ -327,7 +327,7 @@ function buildPrBody({ version, isNewPackage }) {
     '- [x] Checked that there are no duplicate open pull requests for this package version',
     '- [x] This PR only modifies one manifest directory under `manifests/`',
     '- [x] Verified `SHA256SUMS` signature with Minisign before generating manifests',
-    '- [x] Manifest conforms to the 1.28.0 schema',
+    '- [x] Manifest conforms to the 1.12.0 schema',
     '',
   ].join('\n');
 }

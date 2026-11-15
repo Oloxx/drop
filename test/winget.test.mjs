@@ -4,7 +4,7 @@
 // 1. Que `scripts/winget.mjs` nunca genere un manifiesto si falta `SHA256SUMS.minisig`
 //    o si la firma no valida con la clave publica empotrada en `cli-rs/src/cli.rs`.
 // 2. Que la estructura de directorio (`manifests/o/Oloxx/drop/<ver>/`) y los campos
-//    YAML cumplan el esquema 1.28.0 (validado tambien por `winget validate` en Windows).
+//    YAML cumplan el esquema 1.12.0 (validado tambien por `winget validate` en Windows).
 // 3. Que `--submit` solo modifique los 3 ficheros del manifiesto, evite duplicados y
 //    escoja bien entre `New package` y `New version`.
 import test from 'node:test';
@@ -77,7 +77,7 @@ test('parseSums y buildManifests generan estructura y campos WinGet validos', ()
     'Oloxx.drop.installer.yaml',
     'Oloxx.drop.locale.en-US.yaml',
   ]);
-  assert.match(manifest.files['Oloxx.drop.yaml'], /ManifestVersion: 1\.28\.0/);
+  assert.match(manifest.files['Oloxx.drop.yaml'], /ManifestVersion: 1\.12\.0/);
   assert.match(manifest.files['Oloxx.drop.installer.yaml'], /InstallerType: portable/);
   assert.match(manifest.files['Oloxx.drop.installer.yaml'], /- drop\b/);
   assert.match(manifest.files['Oloxx.drop.installer.yaml'], new RegExp(`InstallerSha256: ${sha.toUpperCase()}`));
