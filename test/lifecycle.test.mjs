@@ -8,13 +8,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { startServer, ROOT } from './helpers.mjs';
+import { startServer, cliSpawnTarget } from './helpers.mjs';
 
-const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 function runCli(args, { env = {}, stdin = 'ignore' } = {}) {
-  const proc = spawn(process.execPath, [CLI, ...args], {
+  const [cmd, cmdArgs] = cliSpawnTarget(args);
+  const proc = spawn(cmd, cmdArgs, {
     env: { ...process.env, DROP_NO_UPNP: '1', ...env },
     stdio: [stdin, 'pipe', 'pipe'],
   });
@@ -95,7 +95,7 @@ test('--expire cierra el emisor solo cuando nadie ha descargado', { timeout: 30_
 });
 
 test('--expire con una duración mal escrita no abre ningún canal', async () => {
-  const proc = runCli(['send', CLI, '--expire', 'luego']);
+  const proc = runCli(['send', 'package.json', '--expire', 'luego']);
   assert.equal(await proc.exited, 1);
   assert.match(proc.output, /Duración no válida/);
   assert.doesNotMatch(proc.output, /Canal abierto/);
@@ -112,7 +112,8 @@ test('--text envía un fragmento y --stdout lo vuelca limpio por la tubería', {
     const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
     assert.match(sender.output, /message\.txt|1 archivo/);
 
-    receiver = spawn(process.execPath, [CLI, 'recv', code, '--server', server.http, '--relay', '--stdout'], {
+    const [cmd, cmdArgs] = cliSpawnTarget(['recv', code, '--server', server.http, '--relay', '--stdout']);
+    receiver = spawn(cmd, cmdArgs, {
       env: { ...process.env, DROP_NO_UPNP: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

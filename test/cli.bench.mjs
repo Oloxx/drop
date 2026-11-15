@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { cliSpawnTarget } from './helpers.mjs';
 
 const TEST_DIR = path.resolve('test_tmp');
 if (!fs.existsSync(TEST_DIR)) fs.mkdirSync(TEST_DIR);
@@ -38,7 +39,8 @@ const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
 // Iniciar emisor CLI
 console.log('Iniciando emisor CLI...');
-const sender = spawn('node', ['cli/src/cli.js', 'send', TEST_FILE, '--server', 'http://localhost:3456'], {
+const [sendCmd, sendArgs] = cliSpawnTarget(['send', TEST_FILE, '--server', 'http://localhost:3456']);
+const sender = spawn(sendCmd, sendArgs, {
   stdio: ['pipe', 'pipe', 'pipe'],
 });
 
@@ -60,7 +62,8 @@ sender.stderr.on('data', (d) => console.error('[SENDER ERR]', d.toString()));
 function startReceiver(tok) {
   console.log('Iniciando receptor CLI...');
   const t0 = performance.now();
-  const receiver = spawn('node', ['cli/src/cli.js', 'recv', tok, '--server', 'http://localhost:3456', '--out', OUT_DIR], {
+  const [recvCmd, recvArgs] = cliSpawnTarget(['recv', tok, '--server', 'http://localhost:3456', '--out', OUT_DIR]);
+  const receiver = spawn(recvCmd, recvArgs, {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 

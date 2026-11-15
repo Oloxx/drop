@@ -13,17 +13,10 @@ import { Readable } from 'node:stream';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { createSenderServer, receiveFiles, openSource, totalOf } from '../cli/src/transfer.js';
-import { makeThrottle } from '../cli/src/throttle.js';
-import { newCode, randomRoomId } from '../public/shared/codes.js';
-import { startServer } from './helpers.mjs';
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
+import { startServer, cliSpawnTarget } from './helpers.mjs';
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-const someCode = () => newCode(randomRoomId(crypto.randomBytes), crypto.randomBytes);
 
 function scratch(t, prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -31,100 +24,11 @@ function scratch(t, prefix) {
   return dir;
 }
 
-/** Un stream que suelta `body` en trozos de tamanos raros, como una tuberia. */
-function chunky(body, sizes = [1, 7, 4096, 65536, 100000]) {
-  let offset = 0;
-  let i = 0;
-  return new Readable({
-    read() {
-      if (offset >= body.length) { this.push(null); return; }
-      const n = sizes[i++ % sizes.length];
-      this.push(body.subarray(offset, offset + n));
-      offset += n;
-    },
-  });
-}
-
-// ------------------------------------------------------------ openSource
-
-test('totalOf: un solo archivo sin tamaño deja el total en null', () => {
-  assert.equal(totalOf([{ size: 10 }, { size: 5 }]), 15);
-  assert.equal(totalOf([{ size: 10 }, { size: null }]), null);
-  assert.equal(totalOf([{ size: undefined }]), null);
-  assert.equal(totalOf([]), 0);
-});
-
-test('openSource(stream): entrega los bytes en orden y termina con una lectura vacía', async () => {
-  // Los trozos del stream no tienen nada que ver con el tamano del buffer del
-  // emisor: hay que cortarlos y pegarlos sin perder ni repetir un byte.
-  const body = crypto.randomBytes(300_000);
-  const src = await openSource({ name: 'x', size: null, stream: chunky(body) });
-  const buf = Buffer.alloc(50_000);
-  const got = [];
-  let offset = 0;
-  for (;;) {
-    const n = await src.read(buf, offset);
-    if (n === 0) break;
-    assert.ok(n > 0 && n <= buf.length);
-    got.push(Buffer.from(buf.subarray(0, n)));
-    offset += n;
-  }
-  await src.close();
-  assert.equal(sha256(Buffer.concat(got)), sha256(body));
-});
-
-test('openSource(stream): no se puede leer desde un offset que no es el siguiente', async () => {
-  // Es lo que impide que una reanudacion o un segundo receptor cosan
-  // silenciosamente un archivo con un agujero.
-  const src = await openSource({ name: 'x', size: null, stream: chunky(Buffer.alloc(10)) });
-  await src.read(Buffer.alloc(4), 0);
-  await assert.rejects(() => src.read(Buffer.alloc(4), 0), /entrada estándar/);
-  await src.close();
-});
-
-test('openSource(stream): un stream vacío es un archivo vacío, no un cuelgue', async () => {
-  const src = await openSource({ name: 'x', size: null, stream: Readable.from([]) });
-  assert.equal(await src.read(Buffer.alloc(8), 0), 0);
-  await src.close();
-});
-
-// ------------------------------------------------------- TCP en proceso
-
-test('TCP directo: un archivo con size null llega entero y verificado', async (t) => {
-  const body = crypto.randomBytes(3 * 1024 * 1024 + 123);
-  const code = someCode();
-  const totals = new Set();
-  // Frenado para que de tiempo a pintar progreso por el camino: en local 3 MB
-  // pasan en menos de lo que tarda el primer aviso.
-  const server = createSenderServer(
-    [{ name: 'tuberia.bin', size: null, stream: chunky(body) }],
-    code,
-    (sent, total) => totals.add(total),
-    null,
-    { throttle: makeThrottle(2 * 1024 * 1024) },
-  );
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-
-  const out = scratch(t, 'drop-stdin-out-');
-  const received = await receiveFiles('127.0.0.1', server.address().port, code, out, (got, total) => totals.add(total));
-
-  const dest = path.join(out, 'tuberia.bin');
-  assert.equal(received.length, 1);
-  assert.ok(received[0].verified);
-  assert.equal(sha256(fs.readFileSync(dest)), sha256(body));
-  assert.ok(!fs.existsSync(dest + '.part'));
-  // El total que se ensena es "no se sabe", no NaN ni 0: la barra lo pinta
-  // distinto, y un 0 daria un ETA infinito. Solo el aviso final del emisor,
-  // ya con todo leido, lleva el total de verdad.
-  assert.deepEqual([...totals].sort(), [body.length, null].sort());
-  assert.equal(received.stats.totalBytes, body.length);
-});
-
 // ----------------------------------------------- extremo a extremo (CLI)
 
 function runCli(args, { stdin = 'ignore' } = {}) {
-  const proc = spawn(process.execPath, [CLI, ...args], {
+  const [cmd, cmdArgs] = cliSpawnTarget(args);
+  const proc = spawn(cmd, cmdArgs, {
     env: { ...process.env, DROP_NO_UPNP: '1', DROP_NO_QR: '1' },
     stdio: [stdin, 'pipe', 'pipe'],
   });

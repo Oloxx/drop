@@ -2,10 +2,9 @@
 #
 #   npm version 0.4.1 && git push --follow-tags
 #
-# Cada binario se EJECUTA en su plataforma nativa antes de publicarse. No es
-# ceremonia: la v0.4.0 se publico con los cinco ejecutables rotos porque el
-# workflow solo comprobaba que los archivos existieran. Un binario que no se ha
-# arrancado nunca no esta verificado, por muy verde que salga el job.
+# Cada binario Rust se EJECUTA en su plataforma nativa antes de publicarse. No es
+# ceremonia: un binario que no se ha arrancado nunca no esta verificado, por muy
+# verde que salga la compilacion.
 
 name: Release
 
@@ -29,21 +28,30 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli-rs
 
-      # La version del CLI sale del package.json (issue #26), asi que aqui solo
-      # queda contrastar el tag: etiquetar v0.5.3 con el package.json en 0.5.2
-      # publicaria binarios que se presentan con otra version que la release.
-      - name: Comprobar que el tag y el package.json coinciden
+      # Comprueba que tag, package.json y cli-rs/Cargo.toml estan sincronizados.
+      - name: Comprobar que tag, package.json y Cargo.toml coinciden
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG=$(node -p "require('./package.json').version")
-          echo "tag=$TAG  package.json=$PKG"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "::error::El tag $GITHUB_REF_NAME no cuadra con la version $PKG del package.json."
+          CARGO=$(grep -m1 '^version' cli-rs/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$TAG  package.json=$PKG  Cargo.toml=$CARGO"
+          if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$CARGO" ]; then
+            echo "::error::Versiones desincronizadas (tag=$TAG, package.json=$PKG, Cargo.toml=$CARGO)."
             exit 1
           fi
 
       - run: npm ci
+      - run: |
+          cargo clippy --manifest-path cli-rs/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path cli-rs/Cargo.toml
+          cargo build --release --manifest-path cli-rs/Cargo.toml
 
       # La suite levanta su propio servidor de senializacion (issue #23): aqui no
       # hay que preparar nada. Exigimos Chrome igual que en ci.yml para que
@@ -54,8 +62,7 @@ jobs:
 
   # ------------------------------------------------------------------- macOS
   # Un runner por arquitectura, para poder EJECUTAR lo que se compila. macOS
-  # necesita ademas `codesign`, que solo existe aqui: sin firma los binarios
-  # arm64 ni arrancan.
+  # necesita ademas `codesign` ad-hoc para Apple Silicon.
   macos:
     name: macOS ${{ matrix.target }}
     needs: verificar
@@ -63,30 +70,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: darwin-arm64
+          - target: macos-arm64
+            rust_target: aarch64-apple-darwin
             runner: macos-latest      # Apple Silicon
-          # `macos-13` ya no existe: GitHub lo retiro y las imagenes vivas son
-          # macOS 26, 15 y 14 (esta ultima deprecada). Un label retirado no falla,
-          # se queda encolado esperando un runner que no va a aparecer nunca.
-          - target: darwin-x64
+          - target: macos-x64
+            rust_target: x86_64-apple-darwin
             runner: macos-15-intel    # Intel
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli-rs
 
-      - run: node scripts/build-cross.mjs ${{ matrix.target }}
+      - run: cargo build --release --manifest-path cli-rs/Cargo.toml --target ${{ matrix.rust_target }}
 
-      - name: Comprobar firma y ejecutar el binario
+      - name: Firmar, probar y empaquetar binario
         run: |
-          BIN=$(ls dist/drop-v*-macos-* | grep -v '\.tar\.gz$')
-          codesign --verify --verbose "$BIN"
-          "$BIN" --version
-          "$BIN" --help > /dev/null
+          VER=$(grep -m1 '^version' cli-rs/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          NAME="drop-v${VER}-${{ matrix.target }}"
+          mkdir -p dist
+          cp "cli-rs/target/${{ matrix.rust_target }}/release/drop" "dist/${NAME}"
+          codesign --sign - --force "dist/${NAME}"
+          codesign --verify --verbose "dist/${NAME}"
+          "dist/${NAME}" --version
+          "dist/${NAME}" --help > /dev/null
+          tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -95,9 +107,8 @@ jobs:
           retention-days: 1
 
   # ------------------------------------------------------------------- Linux
-  # Un runner por arquitectura, igual que en macOS, para poder EJECUTAR ambos
-  # binarios antes de publicarlos (antes linux-arm64 se compilaba en x64 y se
-  # subia sin haber arrancado nunca).
+  # Compilacion estatica musl en runner nativo para cada arquitectura, sin
+  # depender de la glibc del host.
   linux:
     name: Linux ${{ matrix.target }}
     needs: verificar
@@ -106,26 +117,34 @@ jobs:
       matrix:
         include:
           - target: linux-x64
+            rust_target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
           - target: linux-arm64
+            rust_target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+          targets: ${{ matrix.rust_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli-rs
 
-      - run: node scripts/build-cross.mjs ${{ matrix.target }}
+      - run: cargo build --release --manifest-path cli-rs/Cargo.toml --target ${{ matrix.rust_target }}
 
-      - name: Ejecutar el binario
+      - name: Probar y empaquetar binario
         run: |
-          BIN=$(ls dist/drop-v*-${{ matrix.target }} | grep -v '\.tar\.gz$')
-          chmod +x "$BIN"
-          "$BIN" --version
-          "$BIN" --help > /dev/null
+          VER=$(grep -m1 '^version' cli-rs/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          NAME="drop-v${VER}-${{ matrix.target }}"
+          mkdir -p dist
+          cp "cli-rs/target/${{ matrix.rust_target }}/release/drop" "dist/${NAME}"
+          chmod +x "dist/${NAME}"
+          "dist/${NAME}" --version
+          "dist/${NAME}" --help > /dev/null
+          tar -czf "dist/${NAME}.tar.gz" -C dist "${NAME}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -140,19 +159,21 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+          workspaces: cli-rs
 
-      - run: npm run build:exe
+      - run: cargo build --release --manifest-path cli-rs/Cargo.toml
 
-      - name: Ejecutar el binario
+      - name: Probar y preparar binario
         run: |
-          $bin = Get-ChildItem dist/drop-v*-windows-x64.exe | Select-Object -First 1
-          & $bin.FullName --version
-          & $bin.FullName --help | Out-Null
+          $ver = (Select-String -Path cli-rs/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $name = "drop-v$ver-windows-x64.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "cli-rs/target/release/drop.exe" "dist/$name"
+          & "dist/$name" --version
+          & "dist/$name" --help | Out-Null
 
       - uses: actions/upload-artifact@v4
         with:
@@ -223,7 +244,7 @@ jobs:
       - name: Verificar la firma con minisign
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq minisign
-          PUBKEY=$(grep -o "RW[A-Za-z0-9+/=]\{40,\}" repo/cli/src/cli.js | head -1)
+          PUBKEY=$(grep -o "RW[A-Za-z0-9+/=]\{40,\}" repo/cli-rs/src/cli.rs | head -1)
           echo "clave publica del CLI: $PUBKEY"
           minisign -V -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig -P "$PUBKEY"
 

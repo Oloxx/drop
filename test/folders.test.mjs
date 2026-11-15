@@ -1,6 +1,6 @@
-// Carpetas enteras: la ruta relativa del manifiesto se acepta solo hacia abajo,
-// y un `drop send carpeta` llega al otro lado con su arbol. El caso de extremo a
-// extremo levanta su propio servidor y va por relay.
+// Carpetas enteras: un `drop send carpeta` llega al otro lado con su arbol.
+// El caso de extremo a extremo levanta su propio servidor y va por relay.
+// (Las pruebas unitarias de rutas seguras y reserva estan en cli-rs/tests/transfer_test.rs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,48 +9,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { safeOutputPath, reserveOutputPath } from '../cli/src/transfer.js';
-import { startServer, ROOT } from './helpers.mjs';
+import { startServer, cliSpawnTarget } from './helpers.mjs';
 
-const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 
-test('safeOutputPath acepta una ruta relativa hacia abajo y la resuelve dentro del destino', () => {
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-folders-'));
-  assert.equal(safeOutputPath(out, 'playa.jpg', 'fotos/verano/playa.jpg'), path.join(out, 'fotos', 'verano', 'playa.jpg'));
-  // Barras de Windows: se normalizan igual que en el nombre suelto.
-  assert.equal(safeOutputPath(out, 'a.txt', 'dir\\sub\\a.txt'), path.join(out, 'dir', 'sub', 'a.txt'));
-  // Sin `path` no cambia nada: el nombre suelto va a la raiz.
-  assert.equal(safeOutputPath(out, 'suelto.bin'), path.join(out, 'suelto.bin'));
-  fs.rmSync(out, { recursive: true, force: true });
-});
-
-test('safeOutputPath rechaza toda ruta que suba, salga o no sea relativa', () => {
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-folders-'));
-  const malas = [
-    '../fuera.txt', 'a/../../fuera.txt', 'a/./b.txt', '/etc/passwd', 'C:/Windows/x.txt', 'C:\\x.txt',
-    '', '/', 'a//b.txt', 'a/', 'con\u0000nulo/a.txt', '..', '.', 42,
-  ];
-  for (const mala of malas) {
-    assert.throws(() => safeOutputPath(out, 'x.txt', mala), (err) => err.code === 'UNSAFE_NAME', `deberia rechazar ${JSON.stringify(mala)}`);
-  }
-  fs.rmSync(out, { recursive: true, force: true });
-});
-
-test('reserveOutputPath numera colisiones dentro de la subcarpeta', () => {
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-folders-'));
-  fs.mkdirSync(path.join(out, 'dir'));
-  fs.writeFileSync(path.join(out, 'dir', 'a.txt'), 'viejo');
-  const reserved = new Set();
-  assert.equal(reserveOutputPath(out, 'a.txt', reserved, { subpath: 'dir/a.txt' }).finalPath, path.join(out, 'dir', 'a (2).txt'));
-  assert.equal(reserveOutputPath(out, 'a.txt', reserved, { subpath: 'dir/a.txt' }).finalPath, path.join(out, 'dir', 'a (3).txt'));
-  // El mismo nombre en otra carpeta no choca con nada.
-  assert.equal(reserveOutputPath(out, 'a.txt', reserved, { subpath: 'otra/a.txt' }).finalPath, path.join(out, 'otra', 'a.txt'));
-  fs.rmSync(out, { recursive: true, force: true });
-});
-
 function runCli(args) {
-  const proc = spawn(process.execPath, [CLI, ...args], {
+  const [cmd, cmdArgs] = cliSpawnTarget(args);
+  const proc = spawn(cmd, cmdArgs, {
     env: { ...process.env, DROP_NO_UPNP: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

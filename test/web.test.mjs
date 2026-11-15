@@ -246,11 +246,11 @@ test('web -> CLI: un drop recv cortado sigue desde su .part', { skip: !CHROME &&
   const { spawn } = await import('node:child_process');
   const path = await import('node:path');
   const os = await import('node:os');
-  const { ROOT } = await import('./helpers.mjs');
-  const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
+  const { cliSpawnTarget } = await import('./helpers.mjs');
   const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
   const runCli = (args) => {
-    const p = spawn(process.execPath, [CLI, ...args], { env: { ...process.env, DROP_NO_UPNP: '1' } });
+    const [cmd, cmdArgs] = cliSpawnTarget(args);
+    const p = spawn(cmd, cmdArgs, { env: { ...process.env, DROP_NO_UPNP: '1' } });
     p.out = '';
     p.stdout.on('data', (d) => { p.out += strip(String(d)); });
     p.stderr.on('data', (d) => { p.out += strip(String(d)); });
@@ -488,7 +488,9 @@ test('web: lotes de archivos bajan en streaming como .zip', { skip: !CHROME && !
     fs.writeFileSync(path.join(src, 'vacio.txt'), Buffer.alloc(0));
     fs.writeFileSync(path.join(src, 'src', 'index.js'), code);
 
-    const cli = spawn(process.execPath, [path.join(ROOT, 'cli', 'src', 'cli.js'), 'send', src, '--server', srv.http, '--relay', '--no-qr'],
+    const { cliSpawnTarget } = await import('./helpers.mjs');
+    const [cliCmd, cliArgs] = cliSpawnTarget(['send', src, '--server', srv.http, '--relay', '--no-qr']);
+    const cli = spawn(cliCmd, cliArgs,
       { env: { ...process.env, DROP_NO_UPNP: '1' } });
     t.after(() => cli.kill('SIGKILL'));
     let out = '';

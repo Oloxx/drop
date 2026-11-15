@@ -15,7 +15,7 @@ sección 1 cambia de forma incompatible. Lo que no está en la lista no es prome
   `cli-accept`, `cli-start`, `cli-ack`, `cli-end`, `cli-done`, `cli-complete`, `cli-retry`,
   `cli-error`, `cli-denied`, `cli-wait`), la derivación de la clave con scrypt, la fórmula de la prueba y de
   la huella, y `files` para elegir archivos. La descripción canónica está encima de
-  `receiveFromRelay` en [`cli/src/transfer.js`](../cli/src/transfer.js).
+  `receive_from_relay` en [`cli-rs/src/transfer.rs`](../cli-rs/src/transfer.rs).
 - **El protocolo web** (señalización y DataChannel): lo que marca como congelado la sección 8 de
   [`PROTOCOL.md`](PROTOCOL.md).
 - **La señalización con el servidor:** `host` con `v: 2`, `join`, `signal` y `bad-guest` hacia el

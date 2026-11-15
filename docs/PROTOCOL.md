@@ -5,7 +5,7 @@ Es la referencia del código de `public/app.js` y `server/index.js`: si algo de 
 no cuadran, es un bug en uno de los dos, y esta página es la que dice cuál.
 
 Lo que **no** está aquí: el protocolo del CLI (TCP directo y relay `cli-*`), que se describe en un
-solo sitio, encima de `receiveFromRelay` en [`cli/src/transfer.js`](../cli/src/transfer.js). Las
+solo sitio, encima de `receive_from_relay` en [`cli-rs/src/transfer.rs`](../cli-rs/src/transfer.rs). Las
 dos cosas se tocan solo en un punto: una pestaña que recibe de un `drop send`, o que envía a un
 `drop recv`, deja de usar lo que sigue y pasa a hablar `cli-*` por el WebSocket. Se dice dónde.
 
@@ -61,7 +61,7 @@ cosa fuera de lo que sigue, y tiene cuotas por IP y por socket ("Server limits" 
 | `bad-guest` | `guestId`                  | emisor    | Ese receptor ha fallado la prueba del secreto. El servidor le manda `error BAD_SECRET`, lo echa, y al quinto fallo en la sala (`BAD_GUEST_MAX`) la quema: `BURNED` para todos. |
 
 `data` de un `signal` es `{ sdp: RTCSessionDescription }` o `{ ice: RTCIceCandidate }`. Con un
-CLI en la sala también viajan los `cli-*` de `transfer.js`, y los frames **binarios** del
+CLI en la sala también viajan los `cli-*` de `cli-rs/src/transfer.rs`, y los frames **binarios** del
 WebSocket son trozos cifrados de ese relay: el servidor los reenvía por la cabecera de 4 bytes
 (`guestId`) y nunca los interpreta.
 
@@ -75,7 +75,7 @@ WebSocket son trozos cifrados de ese relay: el servidor los reenvía por la cabe
 | `guest-gone` | `guestId`                        | emisor      | Se ha ido. Llega **al instante**, mucho antes de que WebRTC se entere: es lo que dispara la reparación de la cadena (§6.4). |
 | `host-gone`  | —                                | receptores  | El emisor ha cerrado. La sala muere con él; lo que ya esté en vuelo por la cadena puede terminar. |
 | `signal`     | `from`, `data`                   | ambos       | Un `signal` reenviado; `from` es `0` (emisor) o el `guestId` de otro receptor. |
-| `error`      | `reason`                         | ambos       | Rechazo, y normalmente cierre. `reason` ∈ `NOT_FOUND`, `RATE_LIMITED`, `BAD_SECRET`, `BURNED`, `ROOM_FULL`, `TOO_MANY_ROOMS`, `NO_ROOMS`, `EXPIRED`, `FLOOD`, `VERSION`. Los textos viven en `JOIN_ERRORS`/`HOST_ERRORS` de `app.js` y en `ERRORS` de `cli/src/signaling.js`; un motivo nuevo tiene que existir en los tres sitios o el usuario ve el token pelado. |
+| `error`      | `reason`                         | ambos       | Rechazo, y normalmente cierre. `reason` ∈ `NOT_FOUND`, `RATE_LIMITED`, `BAD_SECRET`, `BURNED`, `ROOM_FULL`, `TOO_MANY_ROOMS`, `NO_ROOMS`, `EXPIRED`, `FLOOD`, `VERSION`. Los textos viven en `JOIN_ERRORS`/`HOST_ERRORS` de `app.js` y en `translate_error` de `cli-rs/src/signaling.rs`; un motivo nuevo tiene que existir en los tres sitios o el usuario ve el token pelado. |
 
 ### 3.3 Conexiones y quién ofrece
 
@@ -153,7 +153,7 @@ baja con los trozos, salto a salto; *control* va siempre directo entre ese recep
 | `k`         | Dir. | Campos | Canal | Notas |
 |-------------|------|--------|-------|-------|
 | `challenge` | E→R  | `nonce` (32 hex) | control | Nuevo por receptor. |
-| `proof`     | R→E  | `proof` (64 hex) | control | `sha256Hex("drop-proof-v2\|" + nonce + "\|" + secreto)`; `secreto` son las cuatro palabras con guiones. Misma fórmula en `cli/src/crypto.js`. |
+| `proof`     | R→E  | `proof` (64 hex) | control | `sha256Hex("drop-proof-v2\|" + nonce + "\|" + secreto)`; `secreto` son las cuatro palabras con guiones. Misma fórmula en `cli-rs/src/crypto.rs`. |
 | `manifest`  | E→R  | `files: [{ name, size, type, path? }]` | control | `path` es la ruta relativa con `/` cuando se envía una carpeta. `size` es `null` cuando el emisor no lo sabe (hoy sólo un CLI leyendo de stdin, §7): el receptor no da porcentaje y cierra el archivo con el `end`, no contando bytes. |
 | `accept`    | R→E  | `files?`, `resume?` | control | `resume: [{ index, offset, sha256 }]` son archivos que el receptor ya tiene enteros en su carpeta (`offset` = tamaño): el emisor hashea los suyos y, si cuadra, abre ese archivo con `start {from: offset}` y no manda bytes; si no, lo manda entero. Vale una vez por archivo. `files` son los índices del manifiesto que quiere el receptor (las casillas de la oferta). Sin el campo, el lote entero. El emisor limpia la lista (enteros dentro del manifiesto, sin repetir, en orden: `pickedFiles` en `public/shared/protocol.js`) y manda sólo esos; los demás no tienen `start` ni `end`. Sólo cuenta el primer `accept`. |
 | `start`     | E→R  | `index`, `name`, `size`, `type`, `from`, `path?` | **en banda** | Abre el archivo `index`. `from` > 0 sólo al retomar (§5): el receptor no recrea el destino, sigue escribiendo. |
@@ -317,7 +317,7 @@ Al revés, una pestaña que recibe de `drop send` procesa `cli-manifest`/`cli-st
 `cli-accept`, y es lo mismo que manda `drop recv --only`. Con `drop send -` el manifiesto trae `size: null`: la fila pinta el
 archivo como `stream`, sin porcentaje ni ETA, y el total se sabe al `done`.
 
-Los dos casos están descritos, mensaje a mensaje, en `cli/src/transfer.js`, y
+Los dos casos están descritos, mensaje a mensaje, en `cli-rs/src/transfer.rs` (`receive_from_relay`), y
 `PROTOCOL_VERSION` ([`public/shared/protocol.js`](../public/shared/protocol.js), la 5 desde la
 selección de archivos) se comprueba en la oferta: una pestaña y un CLI de versiones distintas se rechazan con un
 mensaje, no se entienden a medias. Esa versión es del protocolo **del CLI**; el de esta página no

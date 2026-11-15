@@ -19,7 +19,7 @@ import {
   parseSignature,
   signContent,
   verifySignature,
-} from '../cli/src/minisign.js';
+} from '../scripts/minisign.mjs';
 
 const CONTENT = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  drop-v9.9.9-linux-x64.tar.gz\n';
 
@@ -153,18 +153,18 @@ test('la firma es Ed25519 estandar sobre el contenido tal cual', () => {
   assert.equal(crypto.verify(null, Buffer.from(CONTENT), pub, sig.signature), true);
 });
 
-// La constante de `cli.js` es la unica copia de la clave publica que viaja en
-// los binarios, y el workflow de release la saca de ahi con un grep para
+// La constante de `cli-rs/src/cli.rs` es la unica copia de la clave publica que
+// viaja en los binarios, y el workflow de release la saca de ahi con un grep para
 // contrastarla con el minisign de verdad. Si alguien la parte en dos lineas o le
 // cambia el formato, la release deja de verificarse y nadie se entera hasta que
 // falla el despliegue.
 test('la clave publica empotrada en el CLI es usable', async () => {
   const fs = await import('node:fs');
-  const url = new URL('../cli/src/cli.js', import.meta.url);
+  const url = new URL('../cli-rs/src/cli.rs', import.meta.url);
   const fuente = fs.readFileSync(url, 'utf8');
 
   const match = fuente.match(/RW[A-Za-z0-9+/=]{40,}/);
-  assert.ok(match, 'deberia haber una clave publica en cli/src/cli.js');
+  assert.ok(match, 'deberia haber una clave publica en cli-rs/src/cli.rs');
 
   const parsed = parsePublicKey(match[0]);
   assert.equal(parsed.key.length, 32);

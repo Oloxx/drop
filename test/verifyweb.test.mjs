@@ -3,16 +3,23 @@
 // arbol del directorio de trabajo, que es justo lo que sirve el servidor local.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 
-import { gitBlobSha, verifyWeb } from '../cli/src/verifyweb.js';
-import { startServer, ROOT } from './helpers.mjs';
+import { startServer, ROOT, cliSpawnTarget } from './helpers.mjs';
 
 const COMMIT = 'c0ffee'.padEnd(40, '0');
-const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
+
+function gitBlobSha(buf) {
+  return crypto
+    .createHash('sha1')
+    .update(`blob ${buf.length}\0`)
+    .update(buf)
+    .digest('hex');
+}
 
 function publicTree() {
   const out = [];
@@ -42,6 +49,17 @@ async function fakeGithub(t, { tamper = (x) => x, status = 200 } = {}) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
+function runVerifyWebCli(url, githubApi) {
+  return new Promise((resolve) => {
+    const [cmd, cmdArgs] = cliSpawnTarget(['verify-web', url]);
+    const p = spawn(cmd, cmdArgs, { env: { ...process.env, DROP_GITHUB_API: githubApi } });
+    let out = '';
+    p.stdout.on('data', (d) => { out += d; });
+    p.stderr.on('data', (d) => { out += d; });
+    p.on('exit', (code) => resolve({ code, out: out.replace(/\x1b\[[0-9;]*m/g, '') }));
+  });
+}
+
 test('gitBlobSha es el hash que da git a un blob', () => {
   const body = Buffer.from('hola\nmundo\n');
   const expected = execFileSync('git', ['hash-object', '--stdin', '--no-filters'], { input: body }).toString().trim();
@@ -63,32 +81,16 @@ test('verify-web: todo cuadra con el commit, y lo que no cuadra se dice por arch
   const srv = await startServer({ DROP_COMMIT: COMMIT });
   t.after(() => srv.stop());
 
-  const good = await verifyWeb(srv.http, { githubApi: await fakeGithub(t) });
-  assert.equal(good.commit, COMMIT);
-  assert.ok(good.files.length >= 10);
-  assert.deepEqual(good.files.filter((f) => !f.ok), []);
-  assert.ok(good.files.some((f) => f.path === 'index.html'));
-  assert.ok(good.files.some((f) => f.path === 'app.js'));
-
-  // El repositorio dice otra cosa de app.js: el servidor sirve algo distinto.
-  const api = await fakeGithub(t, {
-    tamper: (tree) => tree.map((e) => (e.path === 'public/app.js' ? { ...e, sha: '0'.repeat(40) } : e)),
-  });
-  const bad = await verifyWeb(srv.http, { githubApi: api });
-  assert.deepEqual(bad.files.filter((f) => !f.ok).map((f) => f.path), ['app.js']);
-
-  // Por la orden, con su codigo de salida.
-  const run = (githubApi) => new Promise((resolve) => {
-    const p = spawn(process.execPath, [CLI, 'verify-web', srv.http], { env: { ...process.env, DROP_GITHUB_API: githubApi } });
-    let out = '';
-    p.stdout.on('data', (d) => { out += d; });
-    p.stderr.on('data', (d) => { out += d; });
-    p.on('exit', (code) => resolve({ code, out: out.replace(/\x1b\[[0-9;]*m/g, '') }));
-  });
-  const ok = await run(await fakeGithub(t));
+  const apiGood = await fakeGithub(t);
+  const ok = await runVerifyWebCli(srv.http, apiGood);
   assert.equal(ok.code, 0, ok.out);
   assert.match(ok.out, /son idénticos a public\/ del commit c0ffee000000/);
-  const ko = await run(api);
+
+  // El repositorio dice otra cosa de app.js: el servidor sirve algo distinto.
+  const apiTampered = await fakeGithub(t, {
+    tamper: (tree) => tree.map((e) => (e.path === 'public/app.js' ? { ...e, sha: '0'.repeat(40) } : e)),
+  });
+  const ko = await runVerifyWebCli(srv.http, apiTampered);
   assert.equal(ko.code, 1);
   assert.match(ko.out, /✖ app\.js/);
 });
@@ -96,9 +98,13 @@ test('verify-web: todo cuadra con el commit, y lo que no cuadra se dice por arch
 test('verify-web: sin commit, o con un commit que no es del repositorio, no da nada por bueno', async (t) => {
   const noCommit = await startServer();
   t.after(() => noCommit.stop());
-  await assert.rejects(verifyWeb(noCommit.http, { githubApi: await fakeGithub(t) }), /no dice qué commit sirve/);
+  const res1 = await runVerifyWebCli(noCommit.http, await fakeGithub(t));
+  assert.equal(res1.code, 1);
+  assert.match(res1.out, /no dice qué commit sirve/);
 
   const srv = await startServer({ DROP_COMMIT: COMMIT });
   t.after(() => srv.stop());
-  await assert.rejects(verifyWeb(srv.http, { githubApi: await fakeGithub(t, { status: 404 }) }), /no está en github\.com/);
+  const res2 = await runVerifyWebCli(srv.http, await fakeGithub(t, { status: 404 }));
+  assert.equal(res2.code, 1);
+  assert.match(res2.out, /no está en github\.com/);
 });

@@ -216,7 +216,7 @@ una franja de poco tráfico.
 ### Rotar `DROP_SIGNING_KEY` (releases del CLI)
 
 La clave pública (`PUBLIC_KEY`) va **empotrada dentro de cada binario** en
-[`cli/src/cli.js`](cli/src/cli.js), así que rotar la clave privada es una operación deliberada:
+[`cli-rs/src/cli.rs`](cli-rs/src/cli.rs), así que rotar la clave privada es una operación deliberada:
 
 1. Respalda y aparta `~/.drop-signing-key` y genera un par nuevo:
 
@@ -231,7 +231,7 @@ La clave pública (`PUBLIC_KEY`) va **empotrada dentro de cada binario** en
    gh secret set DROP_SIGNING_KEY < ~/.drop-signing-key
    ```
 
-3. Actualiza `PUBLIC_KEY` en [`cli/src/cli.js`](cli/src/cli.js) y la clave pública de verificación
+3. Actualiza `PUBLIC_KEY` en [`cli-rs/src/cli.rs`](cli-rs/src/cli.rs) y la clave pública de verificación
    en [`README.md`](README.md) y [`README.en.md`](README.en.md).
 4. Ejecuta `npm test` (incluye `test/minisign.test.mjs`) y publica una release nueva.
 

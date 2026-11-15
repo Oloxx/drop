@@ -2,17 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
-import { createSenderServer, receiveFiles, PROTOCOL_VERSION } from '../cli/src/transfer.js';
-import { deriveKey, encryptChunk, sealFrame } from '../cli/src/crypto.js';
 
-// Por el relay todo va cifrado con la clave de la sala, como hace el emisor.
-const RELAY_KEY = deriveKey('4271-lemon-radar-tiger-orbit');
-const sealed = (obj) => JSON.stringify({ t: 'signal', data: sealFrame(obj, RELAY_KEY) });
-
+import { PROTOCOL_VERSION } from '../public/shared/protocol.js';
 // El MISMO modulo que usa el navegador, no una copia: el test tiene que caer si
 // alguien rompe la implementacion de verdad.
 import { Sha256 } from '../public/shared/sha256.js';
+import {
+  startServer,
+  decryptChunk,
+  tcpFrames,
+  hostMockSender,
+  spawnCli,
+} from './helpers.mjs';
+
+const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 test('Sha256 streaming implementation matches node:crypto on various patterns', () => {
   const testBuffers = [
@@ -26,7 +32,7 @@ test('Sha256 streaming implementation matches node:crypto on various patterns', 
   ];
 
   for (const buf of testBuffers) {
-    const expected = crypto.createHash('sha256').update(buf).digest('hex');
+    const expected = sha256(buf);
 
     // Single update
     const single = new Sha256().update(buf).digest();
@@ -44,190 +50,120 @@ test('Sha256 streaming implementation matches node:crypto on various patterns', 
   }
 });
 
-test('TCP transfer calculates SHA-256 and verifies file integrity', async () => {
-  const tmpDir = path.resolve('test_tmp_integrity');
-  const outDir = path.join(tmpDir, 'recv');
-  fs.mkdirSync(outDir, { recursive: true });
+test('TCP transfer calculates SHA-256 and verifies file integrity', { timeout: 30_000 }, async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
 
-  const file1Path = path.join(tmpDir, 'file1.bin');
-  const file2Path = path.join(tmpDir, 'file2.bin');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-int-tcp-'));
+  t.after(() => fs.rmSync(work, { recursive: true, force: true }));
+  const outDir = path.join(work, 'recv');
+  fs.mkdirSync(outDir, { recursive: true });
 
   const content1 = crypto.randomBytes(2 * 1024 * 1024 + 123);
   const content2 = crypto.randomBytes(512 * 1024);
+  const f1 = path.join(work, 'file1.bin');
+  const f2 = path.join(work, 'file2.bin');
+  fs.writeFileSync(f1, content1);
+  fs.writeFileSync(f2, content2);
 
-  fs.writeFileSync(file1Path, content1);
-  fs.writeFileSync(file2Path, content2);
+  const sender = spawnCli(['send', f1, f2, '--server', srv.http, '--yes', '--no-qr', '--once']);
+  t.after(() => sender.kill());
+  const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
 
-  const hash1 = crypto.createHash('sha256').update(content1).digest('hex');
-  const hash2 = crypto.createHash('sha256').update(content2).digest('hex');
+  const recv = spawnCli(['recv', code, '--server', srv.http, '--direct-only', '--yes', '-o', outDir]);
+  t.after(() => recv.kill());
 
-  const code = '4271-lemon-radar-tiger-orbit';
-  const files = [
-    { path: file1Path, size: content1.length },
-    { path: file2Path, size: content2.length },
-  ];
-
-  const server = createSenderServer(files, code);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-
-  try {
-    const received = await receiveFiles('127.0.0.1', port, code, outDir);
-    assert.equal(received.length, 2);
-
-    assert.equal(received[0].verified, true);
-    assert.equal(received[0].sha256, hash1);
-    const diskContent1 = fs.readFileSync(path.join(outDir, 'file1.bin'));
-    assert.equal(crypto.createHash('sha256').update(diskContent1).digest('hex'), hash1);
-
-    assert.equal(received[1].verified, true);
-    assert.equal(received[1].sha256, hash2);
-    const diskContent2 = fs.readFileSync(path.join(outDir, 'file2.bin'));
-    assert.equal(crypto.createHash('sha256').update(diskContent2).digest('hex'), hash2);
-  } finally {
-    server.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+  assert.equal(await recv.exited, 0, recv.output());
+  assert.match(recv.output(), /verificado/);
+  assert.equal(sha256(fs.readFileSync(path.join(outDir, 'file1.bin'))), sha256(content1));
+  assert.equal(sha256(fs.readFileSync(path.join(outDir, 'file2.bin'))), sha256(content2));
 });
 
-test('TCP transfer detects corrupted chunks and triggers INTEGRITY_MISMATCH', async () => {
-  const tmpDir = path.resolve('test_tmp_corrupt');
-  const outDir = path.join(tmpDir, 'recv');
+test('TCP transfer detects corrupted chunks and leaves destination clean', { timeout: 30_000 }, async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-int-badtcp-'));
+  t.after(() => fs.rmSync(work, { recursive: true, force: true }));
+  const outDir = path.join(work, 'recv');
   fs.mkdirSync(outDir, { recursive: true });
 
-  const file1Path = path.join(tmpDir, 'file1.bin');
-  const content1 = Buffer.alloc(100 * 1024, 0x11);
-  fs.writeFileSync(file1Path, content1);
+  const content = crypto.randomBytes(128 * 1024);
+  let keyRef = null;
+  let replied = false;
 
-  const code = '5310-cargo-velvet-jungle-anchor';
-
-  // Spin up a server that intentionally sends a wrong SHA-256 in the end packet
-  const key = (await import('../cli/src/crypto.js')).deriveKey(code);
-  const { encryptChunk } = await import('../cli/src/crypto.js');
-  const net = await import('node:net');
-
-  function frame(buf) {
-    const header = Buffer.allocUnsafe(4);
-    header.writeUInt32BE(buf.length, 0);
-    return Buffer.concat([header, buf]);
-  }
-
-  const server = net.createServer((socket) => {
-    socket.setNoDelay(true);
-    socket.on('data', () => {}); // el `ready` del receptor, que aqui no importa
-    // 1. Manifest
-    const manifest = { v: PROTOCOL_VERSION, files: [{ name: 'file1.bin', size: content1.length }] };
-    socket.write(frame(encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify(manifest))]), key)));
-
-    // 2. Start + Data
-    socket.write(frame(encryptChunk(Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify({ k: 'start', index: 0, offset: 0 }))]), key)));
-    socket.write(frame(encryptChunk(Buffer.concat([Buffer.from([1]), content1]), key)));
-
-    // 3. Corrupt end packet with wrong hash
-    const fakeHash = '0000000000000000000000000000000000000000000000000000000000000000';
-    const endPayload = Buffer.concat([Buffer.from([0]), Buffer.from(JSON.stringify({ k: 'end', index: 0, sha256: fakeHash }))]);
-    socket.write(frame(encryptChunk(endPayload, key)));
-    socket.end();
+  const tcpSrv = net.createServer((socket) => {
+    socket.on('error', () => {});
+    const { control, data } = tcpFrames(keyRef);
+    let buf = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (replied || buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return;
+      replied = true;
+      decryptChunk(buf.subarray(4, 4 + buf.readUInt32BE(0)), keyRef);
+      socket.write(control({ k: 'start', index: 0, offset: 0 }));
+      socket.write(data(content));
+      socket.write(control({ k: 'end', index: 0, sha256: '0'.repeat(64) }));
+      socket.write(control({ k: 'done' }));
+      socket.end();
+    });
+    socket.write(control({ v: PROTOCOL_VERSION, files: [{ name: 'file1.bin', size: content.length }] }));
   });
+  await new Promise((resolve) => tcpSrv.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => tcpSrv.close(resolve)));
 
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
+  const mock = await hostMockSender(srv, { tcpPort: tcpSrv.address().port });
+  t.after(() => mock.close());
+  keyRef = mock.key;
 
-  try {
-    await assert.rejects(
-      async () => {
-        await receiveFiles('127.0.0.1', port, code, outDir);
+  const recv = spawnCli(['recv', mock.code, '--server', srv.http, '--direct-only', '--yes', '-o', outDir]);
+  t.after(() => recv.kill());
+
+  assert.notEqual(await recv.exited, 0);
+  assert.match(recv.output(), /Error|SHA-256|corrupto|verificación/i);
+  assert.equal(fs.existsSync(path.join(outDir, 'file1.bin')), false);
+});
+
+test('Relay transfer verifies valid SHA-256 and rejects corrupted SHA-256', { timeout: 30_000 }, async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-int-relay-'));
+  t.after(() => fs.rmSync(work, { recursive: true, force: true }));
+  const content = crypto.randomBytes(64 * 1024);
+
+  const runCase = async (name, reportedSha, outSubdir) => {
+    const outDir = path.join(work, outSubdir);
+    fs.mkdirSync(outDir, { recursive: true });
+    const mock = await hostMockSender(srv, {
+      tcpPort: 0,
+      onRelay: ({ data, sendSealed, sendBin }) => {
+        if (data.type === 'cli-proof') {
+          sendSealed({
+            type: 'cli-manifest',
+            v: PROTOCOL_VERSION,
+            manifest: [{ name, size: content.length }],
+          });
+        } else if (data.type === 'cli-accept') {
+          sendSealed({ type: 'cli-start', index: 0, offset: 0 });
+          sendBin(content);
+          sendSealed({ type: 'cli-end', index: 0, sha256: reportedSha });
+          sendSealed({ type: 'cli-done' });
+        }
       },
-      (err) => {
-        assert.equal(err.code, 'INTEGRITY_MISMATCH');
-        assert.ok(err.message.includes('SHA-256'));
-        return true;
-      }
-    );
-    // The bad bytes never reach the final name: they stay in the `.part`, which
-    // is removed on failure, so the output directory is left untouched.
-    assert.equal(fs.existsSync(path.join(outDir, 'file1.bin')), false);
-    assert.deepEqual(fs.readdirSync(outDir), []);
-  } finally {
-    server.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+    });
+    const recv = spawnCli(['recv', mock.code, '--server', srv.http, '--relay', '--yes', '-o', outDir]);
+    const code = await recv.exited;
+    recv.kill();
+    mock.close();
+    return { code, out: recv.output(), outDir };
+  };
+
+  const ok = await runCase('relay_test.bin', sha256(content), 'ok');
+  assert.equal(ok.code, 0, ok.out);
+  assert.equal(sha256(fs.readFileSync(path.join(ok.outDir, 'relay_test.bin'))), sha256(content));
+
+  const bad = await runCase('relay_bad.bin', '1'.repeat(64), 'bad');
+  assert.notEqual(bad.code, 0);
+  assert.equal(fs.existsSync(path.join(bad.outDir, 'relay_bad.bin')), false);
 });
-
-test('Relay transfer calculates SHA-256 and verifies file integrity', async () => {
-  const { EventEmitter } = await import('node:events');
-  const { receiveFromRelay } = await import('../cli/src/transfer.js');
-  const tmpDir = path.resolve('test_tmp_relay_ok');
-  const outDir = path.join(tmpDir, 'recv');
-  fs.mkdirSync(outDir, { recursive: true });
-
-  const content = crypto.randomBytes(64 * 1024);
-  const hash = crypto.createHash('sha256').update(content).digest('hex');
-  const manifest = [{ name: 'relay_test.bin', size: content.length }];
-
-  class MockWs extends EventEmitter {
-    send(data) {}
-    addEventListener(evt, fn) { this.on(evt, fn); }
-    removeEventListener(evt, fn) { this.off(evt, fn); }
-  }
-
-  const mockWs = new MockWs();
-  const recvPromise = receiveFromRelay(mockWs, manifest, outDir, () => {}, { key: RELAY_KEY });
-
-  // Send cli-start
-  mockWs.emit('message', { data: sealed({ type: 'cli-start', index: 0, name: 'relay_test.bin', size: content.length }) });
-
-  // Send chunks
-  mockWs.emit('message', { data: encryptChunk(content.subarray(0, 32 * 1024), RELAY_KEY) });
-  mockWs.emit('message', { data: encryptChunk(content.subarray(32 * 1024), RELAY_KEY) });
-
-  // Send cli-end with correct hash
-  mockWs.emit('message', { data: sealed({ type: 'cli-end', index: 0, sha256: hash }) });
-
-  // Send cli-done
-  mockWs.emit('message', { data: sealed({ type: 'cli-done' }) });
-
-  const received = await recvPromise;
-  assert.equal(received.length, 1);
-  assert.equal(received[0].verified, true);
-  assert.equal(received[0].sha256, hash);
-
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-
-test('Relay transfer detects corrupted SHA-256 and throws error', async () => {
-  const { EventEmitter } = await import('node:events');
-  const { receiveFromRelay } = await import('../cli/src/transfer.js');
-  const tmpDir = path.resolve('test_tmp_relay_corrupt');
-  const outDir = path.join(tmpDir, 'recv');
-  fs.mkdirSync(outDir, { recursive: true });
-
-  const content = crypto.randomBytes(64 * 1024);
-  const fakeHash = '1111111111111111111111111111111111111111111111111111111111111111';
-  const manifest = [{ name: 'relay_bad.bin', size: content.length }];
-
-  class MockWs extends EventEmitter {
-    send(data) {}
-    addEventListener(evt, fn) { this.on(evt, fn); }
-    removeEventListener(evt, fn) { this.off(evt, fn); }
-  }
-
-  const mockWs = new MockWs();
-  const recvPromise = receiveFromRelay(mockWs, manifest, outDir, () => {}, { key: RELAY_KEY });
-
-  mockWs.emit('message', { data: sealed({ type: 'cli-start', index: 0, name: 'relay_bad.bin', size: content.length }) });
-  mockWs.emit('message', { data: encryptChunk(content, RELAY_KEY) });
-  mockWs.emit('message', { data: sealed({ type: 'cli-end', index: 0, sha256: fakeHash }) });
-
-  await assert.rejects(
-    async () => await recvPromise,
-    (err) => {
-      assert.equal(err.code, 'INTEGRITY_MISMATCH');
-      assert.ok(err.message.includes('SHA-256'));
-      return true;
-    }
-  );
-
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
-

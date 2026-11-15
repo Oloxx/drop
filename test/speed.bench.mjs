@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { cliSpawnTarget } from './helpers.mjs';
 
 const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -23,8 +24,8 @@ function runPairTest(name, hostExtraArgs = [], guestExtraArgs = []) {
     console.log(`Ejecutando prueba: ${name}`);
     console.log(`---------------------------------------------------------`);
 
-    const hostArgs = ['cli/src/cli.js', 'speed', '-s', 'http://localhost:3458', '-t', '2', ...hostExtraArgs];
-    const host = spawn('node', hostArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const [hostCmd, hostArgs] = cliSpawnTarget(['speed', '-s', 'http://localhost:3458', '-t', '2', ...hostExtraArgs]);
+    const host = spawn(hostCmd, hostArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
 
     let token = null;
     let guest = null;
@@ -48,8 +49,8 @@ function runPairTest(name, hostExtraArgs = [], guestExtraArgs = []) {
       const match = text.match(/Código:\s+([a-zA-Z0-9_-]+)/);
       if (match && !token) {
         token = match[1];
-        const guestArgs = ['cli/src/cli.js', 'speed', token, '-s', 'http://localhost:3458', '-t', '2', ...guestExtraArgs];
-        guest = spawn('node', guestArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+        const [guestCmd, guestArgs] = cliSpawnTarget(['speed', token, '-s', 'http://localhost:3458', '-t', '2', ...guestExtraArgs]);
+        guest = spawn(guestCmd, guestArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
 
         guest.stdout.on('data', (gd) => {
           const gText = stripAnsi(gd.toString());

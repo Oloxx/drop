@@ -1,46 +1,58 @@
-// La version del CLI sale del package.json, y de ningun otro sitio.
+// La version del CLI sale del package.json (via cli-rs/build.rs), y de ningun otro sitio.
 //
-// Estuvo escrita a mano en dos: `const VERSION` en cli/src/cli.js y el
-// package.json. No es cosmetico: `drop update` compara la release de GitHub
-// contra esa constante, asi que una constante vieja deja al CLI creyendose
-// desactualizado para siempre -- reinstalando en bucle -- o al reves, sin
-// enterarse nunca de una version nueva.
+// No es cosmetico: `drop update` compara la release de GitHub contra VERSION,
+// asi que una constante desincronizada deja al CLI creyendose desactualizado
+// para siempre -- reinstalando en bucle -- o sin enterarse de una release nueva.
 //
-// Estos casos vigilan que no vuelva a haber una segunda copia, y que los
-// enlaces de descarga del README apunten a la version que se va a publicar,
-// que es la otra cosa que se quedaba atras al sacar una release con prisa.
+// Estos casos vigilan Cargo.toml vs package.json, que cli.rs use env!("DROP_VERSION"),
+// que los enlaces del README coincidan, y que cada flag salga en `--help` y completion.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 
-import { ROOT } from './helpers.mjs';
-import { FLAGS, COMMANDS, SHELLS, completionScript } from '../cli/src/completion.js';
+import { ROOT, cliSpawnTarget } from './helpers.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
+const CLI_RS = path.join(ROOT, 'cli-rs', 'src', 'cli.rs');
+const CARGO_TOML = path.join(ROOT, 'cli-rs', 'Cargo.toml');
+const COMPLETION_RS = path.join(ROOT, 'cli-rs', 'src', 'completion.rs');
+const SHELLS = ['bash', 'zsh', 'fish', 'powershell'];
 
-test('`drop --version` dice lo que dice el package.json', () => {
-  const out = execFileSync(process.execPath, [CLI, '--version'], { encoding: 'utf8' });
+function execCli(args) {
+  const [cmd, cmdArgs] = cliSpawnTarget(args);
+  return execFileSync(cmd, cmdArgs, { encoding: 'utf8' });
+}
+
+function readCompletionMeta() {
+  const src = fs.readFileSync(COMPLETION_RS, 'utf8');
+  const cmdsBlock = src.match(/pub const COMMANDS:[^=]*=\s*&\[([\s\S]*?)\n\];/)?.[1] || '';
+  const commands = [...cmdsBlock.matchAll(/\(\s*"([^"]+)"\s*,/g)].map((m) => m[1]);
+  const flagsBlock = src.match(/pub const FLAGS:[^=]*=\s*&\[([\s\S]*?)\n\];/)?.[1] || '';
+  const flags = [...flagsBlock.matchAll(/flag:\s*"([^"]+)"/g)].map((m) => m[1]);
+  return { commands, flags };
+}
+
+test('`drop --version` y Cargo.toml coinciden con package.json', () => {
+  const cargoToml = fs.readFileSync(CARGO_TOML, 'utf8');
+  const cargoVer = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+  assert.equal(cargoVer, pkg.version, 'cli-rs/Cargo.toml debe tener la misma versión que package.json');
+
+  const out = execCli(['--version']);
   assert.equal(out.trim(), `drop v${pkg.version}`);
 });
 
-// La ayuda es un template literal enorme: un acento grave suelto dentro (un
-// `.part` con formato de Markdown) lo parte en dos y `node --check` no lo ve,
-// porque sigue siendo sintaxis valida. La v0.7.0 salio con los cinco binarios
-// reventando en `--help` por eso; el workflow de release lo caza, pero mas
-// vale cazarlo aqui.
 test('`drop --help` arranca y menciona las opciones', () => {
-  const out = execFileSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' });
+  const out = execCli(['--help']);
   assert.match(out, /--no-resume/);
   assert.match(out, /--overwrite/);
 });
 
-test('cli.js no tiene una version escrita a mano', () => {
-  const source = fs.readFileSync(CLI, 'utf8');
-  const hardcoded = source.match(/const VERSION\s*=\s*['"`]/);
-  assert.equal(hardcoded, null, 'la version tiene que salir del package.json, no de un literal');
+test('cli.rs lee la version de env!("DROP_VERSION") y no tiene literal a mano', () => {
+  const source = fs.readFileSync(CLI_RS, 'utf8');
+  assert.match(source, /pub const VERSION:\s*&str\s*=\s*env!\("DROP_VERSION"\)/);
+  assert.equal(source.match(/const VERSION\s*:\s*&str\s*=\s*"[0-9]/), null, 'la version no debe ser un literal');
 });
 
 // Los enlaces de descarga son los unicos sitios del README donde la version es
@@ -58,41 +70,47 @@ test('los enlaces de descarga del README apuntan a la version actual', () => {
   }
 });
 
-// Todo flag que el parser de cli.js reconoce tiene que salir en `--help` y en
-// la tabla del autocompletado: el roadmap de la 1.0 pide una ayuda completa, y
-// la forma de que se quede completa es que un flag nuevo sin documentar falle.
+// Todo flag que el parser de cli.rs reconoce tiene que salir en `--help` y en
+// la tabla del autocompletado: un flag nuevo sin documentar debe fallar aqui.
 function parsedFlags() {
-  const source = fs.readFileSync(CLI, 'utf8');
+  const source = fs.readFileSync(CLI_RS, 'utf8').split('pub async fn run_cli')[1] || '';
   const flags = new Set();
-  for (const m of source.matchAll(/argv(?:\[i\])?(?:\.includes\(| === )'(--?[a-z][a-z-]*)'/g)) flags.add(m[1]);
+  for (const m of source.matchAll(/\b(?:a|arg)\s*==\s*"(--?[a-z][a-z-]*)"/g)) flags.add(m[1]);
+  const updateBlock = source.match(/const UPDATE_FLAGS:[^=]*=\s*&\[([^\]]+)\]/)?.[1] || '';
+  for (const m of updateBlock.matchAll(/"(--?[a-z][a-z-]*)"/g)) flags.add(m[1]);
   return [...flags];
 }
 
 test('todo flag del parser sale en --help y en el autocompletado', () => {
-  const help = execFileSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' });
-  const known = new Set(FLAGS.map(([f]) => f));
+  const help = execCli(['--help']);
+  const { commands, flags: completionFlags } = readCompletionMeta();
+  const known = new Set(completionFlags);
   const flags = parsedFlags();
   assert.ok(flags.length >= 20, `el extractor no ha encontrado flags: ${flags}`);
   for (const f of flags) {
     assert.ok(help.includes(f), `${f} no aparece en drop --help`);
-    assert.ok(known.has(f), `${f} no esta en FLAGS de cli/src/completion.js`);
+    assert.ok(known.has(f), `${f} no esta en FLAGS de cli-rs/src/completion.rs`);
   }
-  for (const [cmd] of COMMANDS) assert.ok(help.includes(`drop ${cmd}`), `drop ${cmd} no aparece en la ayuda`);
+  for (const cmd of commands) assert.ok(help.includes(`drop ${cmd}`), `drop ${cmd} no aparece en la ayuda`);
 });
 
 test('drop completion imprime un script por shell, sin colores', () => {
+  const { commands } = readCompletionMeta();
   for (const shell of SHELLS) {
-    const out = execFileSync(process.execPath, [CLI, 'completion', shell], { encoding: 'utf8' });
-    assert.equal(out, completionScript(shell));
+    const out = execCli(['completion', shell]);
+    assert.ok(out.length > 50, `${shell}: script vacío`);
     assert.doesNotMatch(out, /\[/, `${shell}: un eval no quiere codigos ANSI`);
-    for (const [cmd] of COMMANDS) assert.ok(out.includes(cmd), `${shell}: falta la orden ${cmd}`);
+    for (const cmd of commands) assert.ok(out.includes(cmd), `${shell}: falta la orden ${cmd}`);
     assert.ok(out.includes('no-resume'), `${shell}: faltan los flags`);
   }
-  assert.throws(() => completionScript('nope'), (err) => err.code === 'UNKNOWN_SHELL');
+  const bad = spawnSync(...cliSpawnTarget(['completion', 'nope']), { encoding: 'utf8' });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /Shell no reconocido/);
 });
 
 function runCli(args) {
-  return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+  const [cmd, cmdArgs] = cliSpawnTarget(args);
+  return spawnSync(cmd, cmdArgs, { encoding: 'utf8' });
 }
 
 test('--help funciona también detrás de cualquier suborden', () => {

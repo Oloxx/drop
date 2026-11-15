@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { signContent, verifySignature, parseSecretKey } from '../cli/src/minisign.js';
+import { signContent, verifySignature, parseSecretKey } from './minisign.mjs';
 
 const target = process.argv[2];
 if (!target) {

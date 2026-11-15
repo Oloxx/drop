@@ -11,6 +11,18 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.13.0] — 2026-11-15
+
+Compatible con la v0.12.x (protocolo 5 sin cambios).
+
+### Cambiado
+- **CLI reescrito en Rust (`cli-rs/`):** sustitución completa del ejecutable Node.js SEA (`cli/`) por un binario nativo estático compilado con Cargo manteniendo paridad completa de comandos, flags, protocolo 5, cifrado E2EE, STUN, UPnP, Minisign y compatibilidad web ↔ CLI.
+- **Peso, arranque y rendimiento:** reducción del binario Windows x64 de ~`80.54 MiB` (base `node.exe` SEA) a `5.38 MiB`, arranque en frío ~`7.2×` más rápido (`15.01 ms` vs `108.79 ms`), ~`5×` menos memoria activa y >`4×` más caudal cifrado TCP en memoria (`2697 MB/s` vs `662 MB/s` en loopback). Ver comparativa en [`docs/RUST-MIGRATION.md`](docs/RUST-MIGRATION.md).
+- **CI y releases multiplataforma:** compilación nativa en [`.github/workflows/release.yml`](.github/workflows/release.yml) para Windows x64, Linux x64/ARM64 (`musl`) y macOS ARM64/Intel (`codesign` ad-hoc), conservando verificación SHA-256 + Minisign.
+
+### Eliminado
+- **Artefactos heredados del CLI Node.js SEA:** retirados `cli/`, `sea-config.json`, `scripts/build-cross.mjs`, `scripts/shasums.mjs` y sus pruebas asociadas.
+
 ## [0.12.0] — 2026-11-14
 
 Compatible con la v0.11.x (protocolo 5 sin cambios).
@@ -425,7 +437,8 @@ Primera release con binarios autónomos.
   navegador.
 - Descubrimiento en la red local por broadcast UDP.
 
-[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.12.0...HEAD
+[Sin publicar]: https://github.com/Oloxx/drop/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/Oloxx/drop/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Oloxx/drop/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Oloxx/drop/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/Oloxx/drop/compare/v0.10.0...v0.10.1

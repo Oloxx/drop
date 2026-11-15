@@ -2,7 +2,7 @@
 // Este fichero no necesita el servidor levantado.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash, scryptSync } from 'node:crypto';
 
 import { WORDLIST } from '../public/shared/wordlist.js';
 import {
@@ -19,7 +19,21 @@ import {
   randomSecretWords,
   splitForKey,
 } from '../public/shared/codes.js';
-import { deriveKey, secretProof } from '../cli/src/crypto.js';
+
+const keyCache = new Map();
+function deriveKey(code) {
+  const hit = keyCache.get(code);
+  if (hit) return hit;
+  const { roomId, secret } = splitForKey(code);
+  const salt = createHash('sha256').update(`drop-code-v2|${roomId}`).digest();
+  const key = scryptSync(secret, salt, 32, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  keyCache.set(code, key);
+  return key;
+}
+
+function secretProof(nonce, secret) {
+  return createHash('sha256').update(`drop-proof-v2|${nonce}|${secret}`).digest('hex');
+}
 
 // ------------------------------------------------------------- lista de palabras
 

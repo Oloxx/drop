@@ -1,6 +1,6 @@
-// --limit: el cubo de fichas y que el caudal real se ajusta al limite pedido,
-// en el emisor y en el receptor. Los casos de extremo a extremo levantan su
-// propio servidor y van por relay, que es el camino determinista.
+// --limit: que el caudal real se ajusta al limite pedido en el emisor y en el receptor.
+// Los casos de extremo a extremo levantan su propio servidor y van por relay.
+// (Las pruebas unitarias de parseRate y Throttle estan en cli-rs/tests/).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,46 +9,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { parseRate, makeThrottle } from '../cli/src/throttle.js';
-import { startServer, ROOT } from './helpers.mjs';
+import { startServer, cliSpawnTarget } from './helpers.mjs';
 
-const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 
-test('parseRate entiende sufijos y rechaza lo que no es una tasa', () => {
-  assert.equal(parseRate('500K'), 500 * 1024);
-  assert.equal(parseRate('10M'), 10 * 1024 * 1024);
-  assert.equal(parseRate('1.5g'), Math.round(1.5 * 1024 ** 3));
-  assert.equal(parseRate('2MB/s'), 2 * 1024 * 1024);
-  assert.equal(parseRate('4096'), 4096);
-  for (const malo of ['', 'rapido', '0', '-1M', '10X']) {
-    assert.throws(() => parseRate(malo), (err) => err.code === 'BAD_RATE', malo);
-  }
-});
-
-test('el cubo deja pasar una rafaga de un segundo y luego frena a la tasa', async () => {
-  const rate = 1024 * 1024;               // 1 MB/s
-  const t = makeThrottle(rate);
-  const t0 = performance.now();
-  await t.take(rate);                     // la rafaga inicial: sin espera
-  assert.ok(performance.now() - t0 < 50, 'la rafaga inicial no deberia esperar');
-  await t.take(rate / 2);                 // medio segundo de deficit
-  const elapsed = performance.now() - t0;
-  assert.ok(elapsed >= 400 && elapsed < 1500, `esperó ${elapsed.toFixed(0)} ms, se esperaban ~500`);
-  // Un trozo mas grande que la tasa no se atasca: se paga en deficit.
-  const t2 = makeThrottle(1000);
-  const t1 = performance.now();
-  await t2.take(1500);
-  assert.ok(performance.now() - t1 >= 400, 'un trozo mayor que la tasa tiene que esperar el deficit');
-  // Sin limite, nunca espera.
-  const libre = makeThrottle(0);
-  const t3 = performance.now();
-  for (let i = 0; i < 100; i++) await libre.take(1e9);
-  assert.ok(performance.now() - t3 < 100);
-});
-
 function runCli(args) {
-  const proc = spawn(process.execPath, [CLI, ...args], {
+  const [cmd, cmdArgs] = cliSpawnTarget(args);
+  const proc = spawn(cmd, cmdArgs, {
     env: { ...process.env, DROP_NO_UPNP: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -119,7 +86,7 @@ test('--limit en el receptor frena al emisor por los acuses', { timeout: 60_000 
 });
 
 test('un --limit mal escrito no abre ningún canal', async () => {
-  const proc = runCli(['send', CLI, '--limit', 'rapido']);
+  const proc = runCli(['send', 'package.json', '--limit', 'rapido']);
   assert.equal(await proc.exited, 1);
   assert.match(proc.output, /Límite no válido/);
 });

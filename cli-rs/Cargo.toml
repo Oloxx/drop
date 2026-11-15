@@ -1,0 +1,58 @@
+[package]
+name = "drop"
+version = "0.13.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Cliente CLI P2P para enviar y recibir archivos cifrados de extremo a extremo."
+build = "build.rs"
+
+[[bin]]
+name = "drop"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "io-std", "fs", "signal", "sync", "process"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+aes-gcm = "0.10"
+scrypt = { version = "0.11", default-features = false }
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+ed25519-dalek = "2"
+rand = "0.8"
+subtle = "2"
+base64 = "0.22"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-normalization = "0.1"
+regex = "1"
+socket2 = "0.5"
+if-addrs = "0.13"
+url = "2"
+terminal_size = "0.4"
+flate2 = "1"
+tar = "0.4"
+arboard = { version = "3", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.dev.package.aes-gcm]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
+panic = "abort"

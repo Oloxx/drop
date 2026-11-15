@@ -13,10 +13,41 @@ import {
   deriveRoomKey, proofFromKey, sasFromKeyBytes, sealBox, openBox, openerFor, unsealFrame, SCRYPT_PARAMS,
 } from '../public/shared/e2ee.js';
 import { PROTOCOL_VERSION } from '../public/shared/protocol.js';
-import {
-  deriveKey, encryptChunk, decryptChunk, sasFromKey, sealFrame,
-  proofFromKey as cliProofFromKey, verifyProof, unsealFrame as cliUnsealFrame,
-} from '../cli/src/crypto.js';
+import { splitForKey } from '../public/shared/codes.js';
+import { sasWords, formatSas } from '../public/shared/sas.js';
+
+function deriveKey(code) {
+  const { roomId, secret } = splitForKey(code);
+  const salt = crypto.createHash('sha256').update(`drop-code-v2|${roomId}`).digest();
+  return crypto.scryptSync(secret, salt, 32, { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+}
+function encryptChunk(plain, key) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([c.update(plain), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), ct]);
+}
+function decryptChunk(box, key) {
+  const d = crypto.createDecipheriv('aes-256-gcm', key, box.subarray(0, 12));
+  d.setAuthTag(box.subarray(12, 28));
+  return Buffer.concat([d.update(box.subarray(28)), d.final()]);
+}
+function sealFrame(obj, key) {
+  return { type: 'cli-sealed', box: encryptChunk(Buffer.from(JSON.stringify(obj), 'utf8'), key).toString('base64') };
+}
+function cliUnsealFrame(frame, key) {
+  return JSON.parse(decryptChunk(Buffer.from(frame.box, 'base64'), key).toString('utf8'));
+}
+function cliProofFromKey(key, nonce) {
+  return crypto.createHmac('sha256', key).update(`drop-proof-v3|${nonce}`).digest('hex');
+}
+function verifyProof(key, nonce, got) {
+  if (typeof got !== 'string' || !/^[0-9a-f]{64}$/i.test(got)) return false;
+  return crypto.timingSafeEqual(Buffer.from(cliProofFromKey(key, nonce), 'hex'), Buffer.from(got.toLowerCase(), 'hex'));
+}
+function sasFromKey(key, roomId) {
+  return formatSas(sasWords(crypto.createHmac('sha256', key).update(`drop-sas-v1|tcp|${roomId}`).digest('hex')));
+}
 
 const CODE = '4271-lemon-radar-tiger-orbit';
 const eq = (a, b) => assert.equal(Buffer.from(a).toString('hex'), Buffer.from(b).toString('hex'));

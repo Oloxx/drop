@@ -9,17 +9,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-import {
-  buildBindingRequest,
-  parseBindingResponse,
-  parseStunServer,
-  queryStun,
-  discoverPublicIp,
-  resolveOfferCandidates,
-} from '../cli/src/stun.js';
-import { ROOT, startServer, open } from './helpers.mjs';
+import { startServer, open, cliSpawnTarget } from './helpers.mjs';
 
-const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
 const STUN_MAGIC_COOKIE = 0x2112a442;
 
 function buildStunResponse(txId, { ip, port, xor = true, v6 = false }) {
@@ -62,76 +53,6 @@ async function startMockStun(t, handler) {
   return { host: '127.0.0.1', port: sock.address().port };
 }
 
-test('parseBindingResponse decodifica XOR-MAPPED-ADDRESS IPv4, IPv6 y MAPPED-ADDRESS', () => {
-  const txId = crypto.randomBytes(12);
-  const req = buildBindingRequest(txId);
-  assert.equal(req.length, 20);
-  assert.equal(req.readUInt16BE(0), 0x0001);
-  assert.equal(req.readUInt32BE(4), STUN_MAGIC_COOKIE);
-
-  const v4 = buildStunResponse(txId, { ip: '203.0.113.42', port: 54321, xor: true });
-  assert.deepEqual(parseBindingResponse(v4, txId), { ip: '203.0.113.42', port: 54321 });
-
-  const v6 = buildStunResponse(txId, { ip: '2001:0db8:0000:0000:0000:0000:0000:0001', port: 4444, xor: true, v6: true });
-  assert.deepEqual(parseBindingResponse(v6, txId), { ip: '2001:db8::1', port: 4444 });
-
-  const plain = buildStunResponse(txId, { ip: '198.51.100.7', port: 12345, xor: false });
-  assert.deepEqual(parseBindingResponse(plain, txId), { ip: '198.51.100.7', port: 12345 });
-
-  // Otro transactionId se rechaza para no aceptar respuestas ajenas o inyectadas.
-  assert.equal(parseBindingResponse(v4, crypto.randomBytes(12)), null);
-});
-
-test('parseStunServer entiende host:port, stun:host:port e IPv6 entre corchetes', () => {
-  assert.deepEqual(parseStunServer('stun.cloudflare.com:3478'), { host: 'stun.cloudflare.com', port: 3478 });
-  assert.deepEqual(parseStunServer('stun:stun.l.google.com:19302'), { host: 'stun.l.google.com', port: 19302 });
-  assert.deepEqual(parseStunServer('[2001:db8::1]:3478'), { host: '2001:db8::1', port: 3478 });
-  assert.deepEqual(parseStunServer('stun.example.com'), { host: 'stun.example.com', port: 3478 });
-});
-
-test('discoverPublicIp usa el primer servidor que responde y respeta DROP_NO_STUN', async (t) => {
-  const silent = await startMockStun(t, () => {});
-  const responder = await startMockStun(t, (sock, msg, rinfo) => {
-    const txId = msg.subarray(8, 20);
-    const resp = buildStunResponse(txId, { ip: '203.0.113.99', port: rinfo.port });
-    sock.send(resp, rinfo.port, rinfo.address);
-  });
-
-  const direct = await queryStun(responder, { timeoutMs: 800 });
-  assert.equal(direct?.ip, '203.0.113.99');
-
-  const raced = await discoverPublicIp({ servers: [silent, responder], timeoutMs: 800 });
-  assert.equal(raced?.ip, '203.0.113.99');
-  assert.equal(raced?.server, `127.0.0.1:${responder.port}`);
-
-  const prevNoStun = process.env.DROP_NO_STUN;
-  process.env.DROP_NO_STUN = '1';
-  t.after(() => {
-    if (prevNoStun === undefined) delete process.env.DROP_NO_STUN;
-    else process.env.DROP_NO_STUN = prevNoStun;
-  });
-  assert.equal(await discoverPublicIp({ servers: [responder] }), null);
-});
-
-test('resolveOfferCandidates deduplica IPs y respeta forceRelay', async () => {
-  const res = await resolveOfferCandidates({
-    localIPs: ['192.168.1.10', '2001:db8::1'],
-    upnpResult: { success: false, publicIp: '203.0.113.10' },
-    stunResult: { ip: '203.0.113.10', port: 1234 },
-    wsPublicIp: '2001:db8::9',
-    forceRelay: false,
-  });
-  assert.deepEqual(res.candidateIps, ['192.168.1.10', '2001:db8::1', '203.0.113.10', '2001:db8::9']);
-
-  const relay = await resolveOfferCandidates({
-    localIPs: ['192.168.1.10'],
-    stunResult: { ip: '203.0.113.10', port: 1234 },
-    wsPublicIp: '2001:db8::9',
-    forceRelay: true,
-  });
-  assert.deepEqual(relay.candidateIps, []);
-});
-
 test('`drop send` incluye en `cli-offer` la IP descubierta por STUN sin UPnP', async (t) => {
   const srv = await startServer();
   t.after(() => srv.stop());
@@ -147,7 +68,8 @@ test('`drop send` incluye en `cli-offer` la IP descubierta por STUN sin UPnP', a
   const file = path.join(dir, 'hola.txt');
   fs.writeFileSync(file, 'hola');
 
-  const sender = spawn(process.execPath, [CLI, 'send', file, '-s', srv.http, '--no-qr'], {
+  const [cmd, cmdArgs] = cliSpawnTarget(['send', file, '-s', srv.http, '--no-qr']);
+  const sender = spawn(cmd, cmdArgs, {
     env: {
       ...process.env,
       DROP_NO_UPNP: '1',

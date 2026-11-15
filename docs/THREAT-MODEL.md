@@ -21,11 +21,11 @@ Este documento detalla qué garantiza **drop** en cada ruta de transferencia y d
 El código `4271-lemon-radar-tiger-orbit` separa dos mitades ([`public/shared/codes.js`](../public/shared/codes.js)):
 
 - **Identificador público (`4271`, 4 dígitos, 10.000 salas):** solo sirve para enrutar la señalización y calcular `roomHash` en LAN. **No aporta secreto.**
-- **Secreto compartido (`lemon-radar-tiger-orbit`, 4 palabras BIP-39 de 2048):** $4 \times 11 = 44\text{ bits}$ de entropía exacta, sorteados en el cliente (`crypto.randomBytes` en Node / `crypto.getRandomValues` en navegador). Nunca se envía al servidor.
+- **Secreto compartido (`lemon-radar-tiger-orbit`, 4 palabras BIP-39 de 2048):** $4 \times 11 = 44\text{ bits}$ de entropía exacta, sorteados en el cliente (`OsRng` en Rust / `crypto.getRandomValues` en navegador). Nunca se envía al servidor.
 
 ### Derivación (`scrypt`)
 
-Tanto el CLI ([`cli/src/crypto.js`](../cli/src/crypto.js)) como el navegador ([`public/shared/e2ee.js`](../public/shared/e2ee.js), [`public/shared/scrypt.js`](../public/shared/scrypt.js)) derivan la clave AES-256 usando:
+Tanto el CLI ([`cli-rs/src/crypto.rs`](../cli-rs/src/crypto.rs)) como el navegador ([`public/shared/e2ee.js`](../public/shared/e2ee.js), [`public/shared/scrypt.js`](../public/shared/scrypt.js)) derivan la clave AES-256 usando:
 
 ```text
 salt = SHA-256("drop-code-v2|" + roomId)
@@ -42,7 +42,7 @@ Quien intente enumerar salas o adivinar palabras contra un emisor vivo se encuen
 
 1. **`JOIN_FAIL_MAX = 20` por IP cada 60 s (`RATE_LIMITED`):** barrer las 10.000 salas posibles desde una IP tarda del orden de ~8 horas, mientras las salas viven minutos (`DROP_ROOM_TTL_MS`, 30 min por defecto).
 2. **`BAD_GUEST_MAX = 5` (`BURNED`):** si un emisor denuncia 5 pruebas de conocimiento fallidas (`bad-guest`), el servidor quema y cierra la sala entera.
-3. **Verificación en tiempo constante:** el CLI valida `cli-proof` (`HMAC-SHA256(key, "drop-proof-v3|" + nonce)`) mediante `crypto.timingSafeEqual` (`verifyProof` en [`cli/src/crypto.js`](../cli/src/crypto.js)).
+3. **Verificación en tiempo constante:** el CLI valida `cli-proof` (`HMAC-SHA256(key, "drop-proof-v3|" + nonce)`) en tiempo constante mediante `subtle::ConstantTimeEq` (`verify_proof` en [`cli-rs/src/crypto.rs`](../cli-rs/src/crypto.rs)).
 4. **Confirmación explícita del emisor:** incluso con las cuatro palabras, un receptor no recibe el manifiesto ni datos hasta superar la prueba de conocimiento y (salvo `--yes`) ser aceptado por el emisor.
 
 ---
@@ -69,8 +69,8 @@ Los humanos deben comparar la huella por un canal independiente (voz, chat, pres
 
 ## 5. Integridad de distribución y cliente web
 
-- **Binarios del CLI (`drop update`):** cada release publica `SHA256SUMS` y su firma Ed25519 `SHA256SUMS.minisig` ([`cli/src/minisign.js`](../cli/src/minisign.js)), verificadas contra la clave pública embebida en el binario. Un atacante que comprometa el DNS o sirva un espejo falso de GitHub Releases no puede falsificar la firma sin la clave privada (`DROP_SIGNING_KEY`).
-- **Cliente web (`drop verify-web`):** [`cli/src/verifyweb.js`](../cli/src/verifyweb.js) consulta `/version` para obtener el commit declarado (`DROP_COMMIT`) y compara byte a byte los archivos servidos en `public/` contra el árbol de ese commit en GitHub.
+- **Binarios del CLI (`drop update`):** cada release publica `SHA256SUMS` y su firma Ed25519 `SHA256SUMS.minisig` ([`cli-rs/src/minisign.rs`](../cli-rs/src/minisign.rs)), verificadas contra la clave pública embebida en el binario. Un atacante que comprometa el DNS o sirva un espejo falso de GitHub Releases no puede falsificar la firma sin la clave privada (`DROP_SIGNING_KEY`).
+- **Cliente web (`drop verify-web`):** [`cli-rs/src/verifyweb.rs`](../cli-rs/src/verifyweb.rs) consulta `/version` para obtener el commit declarado (`DROP_COMMIT`) y compara byte a byte los archivos servidos en `public/` contra el árbol de ese commit en GitHub.
 
 ---
 

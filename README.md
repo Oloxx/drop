@@ -37,15 +37,15 @@ de cifrado y no salen nunca de tu equipo. Detalle completo en
 
 ---
 
-## 📥 Descargas (Versión v0.12.0)
+## 📥 Descargas (Versión v0.13.0)
 
-Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.12.0](https://github.com/Oloxx/drop/releases/tag/v0.12.0):
+Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.13.0](https://github.com/Oloxx/drop/releases/tag/v0.13.0):
 
-* **Windows (x64):** [`drop-v0.12.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe)
-* **Linux (x64):** [`drop-v0.12.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-v0.12.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-v0.12.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.12.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-macos-x64.tar.gz)
+* **Windows (x64):** [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe)
+* **Linux (x64):** [`drop-v0.13.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-v0.13.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-v0.13.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-v0.13.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-x64.tar.gz)
 
 
 ### Verificar la descarga
@@ -67,7 +67,7 @@ Esa clave pública es la del proyecto; la privada solo la usa el workflow de rel
 sha256sum -c SHA256SUMS --ignore-missing
 
 # Windows (PowerShell)
-Get-FileHash drop-v0.12.0-windows-x64.exe -Algorithm SHA256
+Get-FileHash drop-v0.13.0-windows-x64.exe -Algorithm SHA256
 ```
 
 `drop update` hace las dos por su cuenta antes de sustituir el ejecutable y aborta si algo no cuadra. Con una release anterior a la v0.5.2, que no lleva firma, avisa y exige `--allow-unsigned` para seguir: así, borrar la firma no basta para que se conforme con el hash.
@@ -96,7 +96,7 @@ solo después de comprobar la firma minisign del `SHA256SUMS` de la release
 ([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket)).
 
 ### Windows
-Simplemente **descarga [`drop-v0.12.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe) y haz doble clic sobre él**.
+Simplemente **descarga [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe) y haz doble clic sobre él**.
 1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
 2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
 3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
@@ -104,8 +104,8 @@ Simplemente **descarga [`drop-v0.12.0-windows-x64.exe`](https://github.com/Oloxx
 ### Linux / macOS
 Descarga el archivo correspondiente, extráelo y ejecútalo con `install`:
 ```bash
-tar -xzf drop-v0.12.0-linux-x64.tar.gz
-./drop-v0.12.0-linux-x64 install
+tar -xzf drop-v0.13.0-linux-x64.tar.gz
+./drop-v0.13.0-linux-x64 install
 ```
 *(O muévelo manualmente a tu ruta del sistema: `sudo mv drop-linux-x64 /usr/local/bin/drop && chmod +x /usr/local/bin/drop`)*
 
@@ -122,14 +122,14 @@ hash como dice arriba y sigue así:
 
 ```bash
 # macOS (Apple Silicon; cambia arm64 por x64 en un Mac Intel)
-curl -LO https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-macos-arm64.tar.gz
-tar -xzf drop-v0.12.0-macos-arm64.tar.gz && ./drop-v0.12.0-macos-arm64 install
+curl -LO https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz
+tar -xzf drop-v0.13.0-macos-arm64.tar.gz && ./drop-v0.13.0-macos-arm64 install
 ```
 
 ```powershell
 # Windows (curl.exe viene con Windows 10 y 11)
-curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe
-.\drop-v0.12.0-windows-x64.exe
+curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe
+.\drop-v0.13.0-windows-x64.exe
 ```
 
 **Si ya lo bajaste con el navegador:**
@@ -137,14 +137,14 @@ curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.
 * **macOS** dice que *no se puede verificar el desarrollador* y no lo abre. Quítale la marca de
   descarga y ya arranca:
   ```bash
-  xattr -d com.apple.quarantine ./drop-v0.12.0-macos-arm64
+  xattr -d com.apple.quarantine ./drop-v0.13.0-macos-arm64
   ```
   O sin terminal: ábrelo una vez, cierra el aviso y ve a *Ajustes del Sistema → Privacidad y
   seguridad → Abrir igualmente*.
 * **Windows** enseña *"Windows protegió su PC"* (SmartScreen). Pulsa *Más información →
   Ejecutar de todas formas*. O desde PowerShell, antes de abrirlo:
   ```powershell
-  Unblock-File .\drop-v0.12.0-windows-x64.exe
+  Unblock-File .\drop-v0.13.0-windows-x64.exe
   ```
 
 Solo pasa la primera vez: una vez instalado, `drop update` se actualiza solo, comprobando la
@@ -541,33 +541,32 @@ npm install
 # Iniciar servidor local de desarrollo (http://localhost:3000)
 npm run dev
 
-# Ejecutar el CLI en modo desarrollo
+# Ejecutar el CLI en modo desarrollo (Rust)
 npm run cli -- send mi_archivo.zip
 
-# Ejecutar la suite de tests (levanta su propio servidor, no hace falta nada mas)
+# Ejecutar la suite de tests (Node + Rust CLI)
+cargo test --manifest-path cli-rs/Cargo.toml
 npm test
 
 # Benchmarks de velocidad
-npm run bench:cli   # Benchmark del motor TCP nativo (~110 MB/s)
-npm run bench       # Benchmark WebRTC en navegador (~15 MB/s)
-npm run bench:fanout # Benchmark de cadena multi-receptor
+npm run bench:cli     # Benchmark del motor TCP nativo del CLI Rust
+npm run bench:speed   # Benchmark CLI ↔ CLI (TCP directo y Relay)
+npm run bench         # Benchmark WebRTC en navegador (~15 MB/s)
+npm run bench:fanout  # Benchmark de cadena multi-receptor
 ```
 
-### Compilar ejecutables autónomos (Cross-Compilation)
-El script [`scripts/build-cross.mjs`](scripts/build-cross.mjs) permite compilar los binarios de todas las plataformas desde cualquier sistema operativo utilizando Node SEA (*Single Executable Application*):
+### Compilar el binario nativo del CLI (Rust)
+El cliente CLI está escrito en Rust (`cli-rs/`) y se compila como un ejecutable nativo autónomo sin dependencias externas en tiempo de ejecución:
 
 ```bash
-npm run build:exe     # Compila dist/drop-windows-x64.exe (Windows x64)
-npm run build:linux   # Compila dist/drop-linux-x64 (Linux x64)
-npm run build:arm     # Compila dist/drop-linux-arm64 (Linux ARM64 / Raspberry Pi)
-npm run build:macos   # Compila dist/drop-macos-arm64 (macOS Apple Silicon)
-npm run build:all     # Compila todas las plataformas a la vez
+npm run build:cli     # Compila cli-rs/target/release/drop(.exe) para tu plataforma actual
+npm run build:linux   # Compila binario estático musl x86_64 (requiere target rustup + musl-tools)
+npm run build:arm     # Compila binario estático musl ARM64 (Raspberry Pi, Oracle ARM)
+npm run build:macos   # Compila macOS Apple Silicon (aarch64-apple-darwin)
+npm run build:exe     # Compila Windows x64 (x86_64-pc-windows-msvc)
 ```
 
-Los binarios base de Node se descargan de nodejs.org y **se comprueban contra el
-`SHASUMS256.txt` que se publica junto a ellos** antes de inyectarles nada, también los que ya
-están en la caché local. Si un hash no cuadra, el fichero se borra y la compilación se detiene:
-ese binario es el que acaba en las releases.
+Consulta la comparativa técnica e histórica de la migración de Node.js SEA a Rust en [`docs/RUST-MIGRATION.md`](docs/RUST-MIGRATION.md).
 
 ---
 

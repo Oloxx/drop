@@ -6,7 +6,7 @@
 #
 # La matriz no es ceremonia: la suite arranca procesos, abre puertos y escribe
 # ficheros temporales, y eso es justo lo que se comporta distinto en Windows y en
-# macOS. El CLI se publica para las tres.
+# macOS. El CLI (Rust) y el servidor/web (Node) se prueban en las tres.
 
 name: CI
 
@@ -15,15 +15,15 @@ on:
   workflow_call:
   # En un push a main, deploy.yml ya llama a este workflow antes de desplegar.
   # Aqui quedan las rutas que no despliegan nada y que se quedarian sin probar:
-  # el CLI, la propia suite y los scripts de compilacion y firma.
+  # el CLI en Rust, la propia suite y los scripts de firma e instalacion.
   push:
     branches:
       - main
     paths:
-      - 'cli/**'
+      - 'cli-rs/**'
       - 'test/**'
       - 'scripts/**'
-      - 'sea-config.json'
+      - 'package.json'
       - '.github/workflows/ci.yml'
 
 jobs:
@@ -41,8 +41,22 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli-rs
 
       - run: npm ci
+
+      - name: Cargo clippy & tests
+        run: |
+          cargo clippy --manifest-path cli-rs/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path cli-rs/Cargo.toml
+
+      - name: Compilar binario release del CLI
+        run: cargo build --release --manifest-path cli-rs/Cargo.toml
 
       # La suite levanta su propio servidor en un puerto efimero y lo apaga al
       # acabar, asi que no hay nada que preparar antes.

@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { sasInput, sasWords, formatSas, dtlsFingerprints, SAS_WORDS } from '../public/shared/sas.js';
-import { deriveKey, sasFromKey } from '../cli/src/crypto.js';
+import { deriveRoomKey, sasFromKeyBytes } from '../public/shared/e2ee.js';
 import { WORDLIST } from '../public/shared/wordlist.js';
 
 const sha256Hex = (text) => crypto.createHash('sha256').update(text).digest('hex');
@@ -64,18 +64,18 @@ test('dtlsFingerprints saca los de un SDP y no repite', () => {
   assert.deepEqual(dtlsFingerprints(undefined), []);
 });
 
-test('la huella del CLI sale de la clave, y cambia con el codigo y con la sala', () => {
-  const key = deriveKey('4271-lemon-radar-tiger-orbit');
+test('la huella del CLI sale de la clave, y cambia con el codigo y con la sala', async () => {
+  const key = await deriveRoomKey('4271', 'lemon-radar-tiger-orbit');
 
   // Determinista: los dos CLI derivan la misma clave y ven la misma huella sin
   // intercambiar nada por el cable.
-  assert.equal(sasFromKey(key, '4271'), sasFromKey(deriveKey('4271-lemon-radar-tiger-orbit'), '4271'));
-  assert.equal(sasFromKey(key, '4271').split('-').length, SAS_WORDS);
+  assert.equal(sasFromKeyBytes(key, '4271'), sasFromKeyBytes(await deriveRoomKey('4271', 'lemon-radar-tiger-orbit'), '4271'));
+  assert.equal(sasFromKeyBytes(key, '4271').split('-').length, SAS_WORDS);
 
   // Otra sala con las mismas palabras no da la misma huella.
-  assert.notEqual(sasFromKey(key, '4271'), sasFromKey(key, '4272'));
+  assert.notEqual(sasFromKeyBytes(key, '4271'), sasFromKeyBytes(key, '4272'));
   // Y otro codigo tampoco.
-  assert.notEqual(sasFromKey(key, '4271'), sasFromKey(deriveKey('4271-lemon-radar-tiger-ocean'), '4271'));
+  assert.notEqual(sasFromKeyBytes(key, '4271'), sasFromKeyBytes(await deriveRoomKey('4271', 'lemon-radar-tiger-ocean'), '4271'));
 });
 
 test('sasWords rechaza un digest que no lo es', () => {

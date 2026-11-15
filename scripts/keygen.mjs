@@ -8,7 +8,7 @@
 //
 //   gh secret set DROP_SIGNING_KEY < ~/.drop-signing-key
 //
-// La publica si se imprime, porque es publica: va empotrada en `cli/src/cli.js`
+// La publica si se imprime, porque es publica: va empotrada en `cli-rs/src/cli.rs`
 // (PUBLIC_KEY) y en el README, para que cualquiera pueda comprobar una descarga
 // con `minisign -V`.
 //
@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { generateKeyPair } from '../cli/src/minisign.js';
+import { generateKeyPair } from './minisign.mjs';
 
 const target = process.argv[2] || path.join(os.homedir(), '.drop-signing-key');
 

@@ -5,14 +5,14 @@ if (-not (Test-Path $binDir)) {
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
 
-$sourceExe = (Get-ChildItem (Join-Path $PSScriptRoot "..\dist\drop*windows-x64.exe") -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
-if (-not $sourceExe -or -not (Test-Path $sourceExe)) {
-    $sourceExe = Join-Path $PSScriptRoot "..\dist\drop.exe"
-}
+$sourceExe = Join-Path $PSScriptRoot "..\cli-rs\target\release\drop.exe"
 if (-not (Test-Path $sourceExe)) {
-    Write-Host "Compilando binario de Windows primero..." -ForegroundColor Cyan
-    node "$PSScriptRoot\build-cross.mjs" win-x64
     $sourceExe = (Get-ChildItem (Join-Path $PSScriptRoot "..\dist\drop*windows-x64.exe") -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+}
+if (-not $sourceExe -or -not (Test-Path $sourceExe)) {
+    Write-Host "Compilando binario Rust de Windows primero..." -ForegroundColor Cyan
+    cargo build --release --manifest-path (Join-Path $PSScriptRoot "..\cli-rs\Cargo.toml")
+    $sourceExe = Join-Path $PSScriptRoot "..\cli-rs\target\release\drop.exe"
 }
 
 $destExe = Join-Path $binDir "drop.exe"

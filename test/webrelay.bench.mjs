@@ -25,11 +25,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { startServer, ROOT, CHROME_ARGS } from './helpers.mjs';
+import { startServer, CHROME_ARGS, cliSpawnTarget } from './helpers.mjs';
 
 const SIZE_MB = Number(process.env.SIZE_MB || 12);
 const HEADLESS = process.env.HEADED !== '1';
-const CLI = path.join(ROOT, 'cli', 'src', 'cli.js');
 
 const CHROME_PATHS = [
   process.env.CHROME_PATH,
@@ -50,7 +49,8 @@ const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 function runCli(args) {
-  const proc = spawn(process.execPath, [CLI, ...args], {
+  const [cmd, cmdArgs] = cliSpawnTarget(args);
+  const proc = spawn(cmd, cmdArgs, {
     env: { ...process.env, DROP_NO_UPNP: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -161,8 +161,10 @@ async function chromeToCli(srv, context, body, outDir) {
     // La web no ensena la huella del relay al emisor (no hay un sitio para ella
     // sin un receptor concreto), asi que se contrasta con el CLI calculandola
     // igual: misma clave, misma sala.
-    const { deriveKey, sasFromKey } = await import('../cli/src/crypto.js');
-    const expected = sasFromKey(deriveKey(code), code.slice(0, 4));
+    const { splitForKey } = await import('../public/shared/codes.js');
+    const { deriveRoomKey, sasFromKeyBytes } = await import('../public/shared/e2ee.js');
+    const { roomId, secret } = splitForKey(code);
+    const expected = sasFromKeyBytes(await deriveRoomKey(roomId, secret), roomId);
     if (receiverSas !== expected) throw new Error(`la huella no cuadra: CLI "${receiverSas}" vs esperada "${expected}"`);
     await page.close();
     report('Chrome -> drop recv (relay cifrado)', { handshake, seconds, bytes: body.length, sas: receiverSas });

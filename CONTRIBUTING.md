@@ -6,7 +6,7 @@ convenciones sigue el repositorio.
 
 ## Montar el entorno
 
-Solo hace falta **Node.js >= 18** (el CI y los binarios usan la 22).
+Hace falta **Node.js >= 18** (para el servidor, la web y la suite de integración) y **Rust (`cargo` estable)** si vas a compilar o tocar el CLI (`cli-rs/`).
 
 ```bash
 git clone https://github.com/Oloxx/drop.git
@@ -19,9 +19,10 @@ npm run dev        # http://localhost:3000, recarga sola al guardar
 No hay base de datos, ni servicios externos, ni claves que pedir: las salas viven en memoria
 del proceso y los archivos nunca pasan por el servidor.
 
-Para probar el CLI sin compilar nada:
+Para compilar o probar el CLI en Rust:
 
 ```bash
+npm run build:cli  # compila el binario release en cli-rs/target/release/drop
 npm run cli -- send fichero.zip
 npm run cli -- recv 4271-lemon-radar-tiger-orbit
 ```
@@ -98,11 +99,10 @@ un push a `main` despliega a producción.
 
 **Dependencias.** La web hace **cero peticiones a terceros** y así se queda: la fuente está
 servida desde `public/fonts/`, no hay CDN ni analítica. En el servidor hay dos dependencias
-(`express` y `ws`) y en el CLI ninguna. Añadir una tiene que justificarse; casi siempre la
-respuesta es la biblioteca estándar de Node.
+(`express` y `ws`) y el CLI en Rust genera un binario estático sin dependencias de ejecución. Añadir una dependencia al servidor tiene que justificarse.
 
 **Antes de tocar el protocolo o la cadena de reenvío**, lee las cabeceras de
-[`public/app.js`](public/app.js) y [`cli/src/transfer.js`](cli/src/transfer.js). Documentan las
+[`public/app.js`](public/app.js) y [`cli-rs/src/transfer.rs`](cli-rs/src/transfer.rs). Documentan las
 decisiones que parecen simplificables y no lo son -- por qué los trozos y los mensajes de
 control van por canales distintos, por qué un relay tiene que volver a trocear lo que reenvía --
 y cada una está ahí porque romperla costó una tarde.

@@ -34,15 +34,15 @@ The code has two halves with separate roles: **`4271` identifies the room** and 
 
 ---
 
-## 📥 Downloads (Version v0.12.0)
+## 📥 Downloads (Version v0.13.0)
 
-Standalone executables (no Node.js required) on the [v0.12.0 Release](https://github.com/Oloxx/drop/releases/tag/v0.12.0):
+Standalone executables (no Node.js required) on the [v0.13.0 Release](https://github.com/Oloxx/drop/releases/tag/v0.13.0):
 
-* **Windows (x64):** [`drop-v0.12.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe)
-* **Linux (x64):** [`drop-v0.12.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-v0.12.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-linux-arm64.tar.gz) *(Raspberry Pi, Oracle ARM VPS, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-v0.12.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-* **macOS (Intel):** [`drop-v0.12.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-macos-x64.tar.gz)
+* **Windows (x64):** [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe)
+* **Linux (x64):** [`drop-v0.13.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-x64.tar.gz)
+* **Linux (ARM64):** [`drop-v0.13.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-arm64.tar.gz) *(Raspberry Pi, Oracle ARM VPS, AWS Graviton)*
+* **macOS (Apple Silicon):** [`drop-v0.13.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
+* **macOS (Intel):** [`drop-v0.13.0-macos-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-x64.tar.gz)
 
 ### Verify your download
 
@@ -57,7 +57,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 ```powershell
 # Windows (PowerShell)
-Get-FileHash drop-v0.12.0-windows-x64.exe -Algorithm SHA256
+Get-FileHash drop-v0.13.0-windows-x64.exe -Algorithm SHA256
 ```
 
 `drop update` checks both the minisign signature and the SHA-256 hash automatically before replacing the executable.
@@ -83,15 +83,15 @@ Upgrade via `brew upgrade drop` or `scoop update drop` (the CLI detects package-
 
 ### Manual installation
 
-- **Windows:** download [`drop-v0.12.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe) and double-click it (installs to `%LOCALAPPDATA%\Programs\drop\` and adds it to `PATH`), or install from terminal via `curl.exe`:
+- **Windows:** download [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe) and double-click it (installs to `%LOCALAPPDATA%\Programs\drop\` and adds it to `PATH`), or install from terminal via `curl.exe`:
   ```powershell
-  curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-windows-x64.exe
-  .\drop-v0.12.0-windows-x64.exe
+  curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe
+  .\drop-v0.13.0-windows-x64.exe
   ```
 - **Linux / macOS:**
   ```bash
-  curl -LO https://github.com/Oloxx/drop/releases/download/v0.12.0/drop-v0.12.0-linux-x64.tar.gz
-  tar -xzf drop-v0.12.0-linux-x64.tar.gz && ./drop-v0.12.0-linux-x64 install
+  curl -LO https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-x64.tar.gz
+  tar -xzf drop-v0.13.0-linux-x64.tar.gz && ./drop-v0.13.0-linux-x64 install
   ```
 
 > **macOS Gatekeeper & Windows SmartScreen:** Binaries are signed with the project's minisign key, not paid Apple/Microsoft certificates. Downloading with `curl`/`curl.exe` or a package manager avoids browser quarantine warnings. If downloaded via browser, clear quarantine with `xattr -d com.apple.quarantine ./drop-*` (macOS) or `Unblock-File .\drop-*.exe` (PowerShell).
@@ -167,14 +167,17 @@ All four combinations (`Web ↔ Web`, `CLI ↔ CLI`, `CLI → Web`, `Web → CLI
 
 ## 💻 Local Development & Self-Hosting
 
-Requires **Node.js >= 18** (CI and release binaries target Node 22):
+Requires **Node.js >= 18** (signaling server & web tests) and **Rust / Cargo** (to compile the native CLI in `cli-rs/`):
 
 ```bash
 npm install
 npm run dev        # local signaling server on http://localhost:3000
-npm test           # runs full test suite (starts ephemeral server automatically)
-npm run build:all  # builds standalone SEA binaries for Windows, Linux, macOS
+npm run build:cli  # builds native Rust CLI binary (cli-rs/target/release/drop)
+cargo test --manifest-path cli-rs/Cargo.toml
+npm test           # runs full integration & browser test suite
 ```
+
+See the full Rust vs. previous Node.js SEA comparison and benchmarks in [docs/RUST-MIGRATION.md](docs/RUST-MIGRATION.md).
 
 To self-host with automatic HTTPS (Caddy) and `coturn` TURN:
 

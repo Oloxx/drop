@@ -38,7 +38,7 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       que sirve la descarga como respuesta HTTP en streaming, desde la v0.9.0. Probado en
       Chrome; falta pasarlo por Firefox y Safari/iOS de verdad (ver el punto de abajo).
 - [x] **CLI a CLI por WAN** (#11): además de UPnP y la IP vista por el servidor de señalización,
-      `cli/src/stun.js` consulta servidores STUN (RFC 5389) en paralelo para descubrir la IP
+      `cli-rs/src/stun.rs` consulta servidores STUN (RFC 5389) en paralelo para descubrir la IP
       pública IPv4 incluso cuando la señalización entra por IPv6 o UPnP no responde, y el README
       documenta honestamente la velocidad real en cada ruta (LAN, WAN directo, relay y WebRTC).
 - [x] **Tuberías** (#29): `drop send -` desde stdin con tamaño desconocido (`size: null` en el
@@ -72,7 +72,7 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 
 ## Distribución del CLI
 
-- [x] **macOS firmado** (#24): el build quita la firma, inyecta el blob SEA y vuelve a firmar
+- [x] **macOS firmado** (#24): tras migrar el CLI a Rust, el build firma el binario nativo con `codesign --sign - --force`
       ad hoc, así que el binario arranca en arm64; `build:macos-x64` existe. **Sin notarizar, a
       propósito:** el Apple Developer Program cuesta dinero cada año. El README explica cómo
       pasar Gatekeeper y recomienda descargar con `curl`, que no marca el archivo.
@@ -85,10 +85,10 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       se autoinstala ni se autoactualiza. Quedan **winget** (un pull request a
       `microsoft/winget-pkgs` por versión) y **npm**.
 - [ ] **`drop update` probado contra una release real** en las tres plataformas antes de cada
-      release (hoy está cubierto por tests unitarios de `minisign.js` y `shasums.js`, no por un
+      release (hoy está cubierto por tests unitarios de `cli-rs/src/minisign.rs`, no por un
       flujo de extremo a extremo).
 - [x] **Autocompletado de shell** (`drop completion bash|zsh|fish|powershell`, en
-      `cli/src/completion.js`) y `drop --help` completo: `test/version.test.mjs` saca del parser
+      `cli-rs/src/completion.rs`) y `drop --help` completo: `test/version.test.mjs` saca del parser
       todos los flags y falla si alguno falta en la ayuda o en la tabla del autocompletado.
 
 ## Seguridad
