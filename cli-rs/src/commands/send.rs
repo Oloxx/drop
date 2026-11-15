@@ -680,10 +680,11 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
             match map_port(tcp_port, pref, MapPortOptions::default()).await {
                 MapOutcome::Mapped(m) => {
                     let res = m.as_result();
+                    let proto = m.protocol_label();
                     *res_slot.lock().await = Some(res.clone());
                     *map_slot.lock().await = Some(m);
                     println!(
-                        "\n  {GREEN}✔ Puerto mapeado por UPnP:{RESET} {CYAN}:{}{RESET} {DIM}(WAN: {}){RESET}",
+                        "\n  {GREEN}✔ Puerto mapeado por {proto}:{RESET} {CYAN}:{}{RESET} {DIM}(WAN: {}){RESET}",
                         res.external_port.unwrap_or(tcp_port),
                         res.public_ip.as_deref().unwrap_or("detectada")
                     );

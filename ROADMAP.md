@@ -39,8 +39,10 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       Chrome; falta pasarlo por Firefox y Safari/iOS de verdad (ver el punto de abajo).
 - [x] **CLI a CLI por WAN** (#11): además de UPnP y la IP vista por el servidor de señalización,
       `cli-rs/src/stun.rs` consulta servidores STUN (RFC 5389) en paralelo para descubrir la IP
-      pública IPv4 incluso cuando la señalización entra por IPv6 o UPnP no responde, y el README
-      documenta honestamente la velocidad real en cada ruta (LAN, WAN directo, relay y WebRTC).
+      pública IPv4 incluso cuando la señalización entra por IPv6 o UPnP no responde,
+      `cli-rs/src/natpmp.rs` añade respaldo automático por NAT-PMP (RFC 6886) en `map_port` cuando
+      UPnP no responde o falla, y el README documenta honestamente la velocidad real en cada ruta
+      (LAN, WAN directo, relay y WebRTC).
 - [x] **Tuberías** (#29): `drop send -` desde stdin con tamaño desconocido (`size: null` en el
       manifiesto, protocolo 4). Hecho en la v0.9.0; `--stdout` ya existía.
 - [ ] **Safari de escritorio y iOS probados de verdad** con transferencia web completa (SCTP,
@@ -81,9 +83,11 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       minisign del `SHA256SUMS` sigue siendo la que dice quién publicó el binario.
 - [ ] **Gestores de paquetes** (#40). Hechos **Homebrew** (`Oloxx/homebrew-tap`) y **Scoop**
       (`Oloxx/scoop-bucket`): se regeneran solos tras comprobar la firma del `SHA256SUMS` y
-      se prueban instalando en macOS, Linux y Windows. Y `drop` instalado por un gestor ya no
-      se autoinstala ni se autoactualiza. Quedan **winget** (un pull request a
-      `microsoft/winget-pkgs` por versión) y **npm**.
+      se prueban instalando en macOS, Linux y Windows. Y `cli-rs/src/pkgmgr.rs` ya detecta
+      **Homebrew**, **Scoop** y **WinGet** (`WinGet\Packages` / `WinGet\Links`) para evitar
+      que `drop` instalado por un gestor se autoinstale o se autoactualice. Quedan
+      **winget** (publicar/automatizar el PR a `microsoft/winget-pkgs` por versión) y
+      decidir **npm**.
 - [ ] **`drop update` probado contra una release real** en las tres plataformas antes de cada
       release (hoy está cubierto por tests unitarios de `cli-rs/src/minisign.rs`, no por un
       flujo de extremo a extremo).
@@ -97,12 +101,15 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
       enlazado desde [`SECURITY.md`](SECURITY.md), con qué ve el servidor y TURN, el coste
       contra fuerza bruta de `scrypt`, qué protege el SAS y qué queda fuera de cobertura.
 - [x] **Revisión externa o pasada formal sobre la criptografía**: pasada formal sobre
-      `crypto.js`, `e2ee.js`, `scrypt.js`, `sas.js`, `sha256.js` y `minisign.js` (comparación
-      en tiempo constante `verifyProof`, validación de parámetros en `scrypt.js`/`e2ee.js` y
-      vectores oficiales FIPS 180-4, RFC 4231, RFC 6070 y RFC 7914 en `test/e2ee.test.mjs`).
+      [`public/shared/`](public/shared/) (`e2ee.js`, `scrypt.js`, `sas.js`, `sha256.js`) y
+      [`cli-rs/src/`](cli-rs/src/) (`crypto.rs`, `minisign.rs`, `shared/sas.rs`) —comparación
+      en tiempo constante `verifyProof`, validación de parámetros en `scrypt` / `e2ee`, y
+      vectores oficiales FIPS 180-4, RFC 4231, RFC 6070 y RFC 7914 en
+      [`test/e2ee.test.mjs`](test/e2ee.test.mjs) y
+      [`cli-rs/tests/shared_vectors_test.rs`](cli-rs/tests/shared_vectors_test.rs)—.
       Sigue sin auditoría externa pagada, documentado en `SECURITY.md` y `docs/THREAT-MODEL.md`.
 - [x] **`SECURITY.md`** con cómo reportar, qué versiones tienen soporte y el modelo de
-      amenazas en corto. Desde la v0.8.0; el documento largo del punto de arriba sigue pendiente.
+      amenazas completo enlazado en [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).
 - [x] **Comprobar que el servidor sirve el código del repositorio.** No por release sino por
       commit, porque la web se despliega desde `main`: `/version` dice el commit (lo pone el
       despliegue) y `drop verify-web` compara cada archivo servido con el árbol de `public/` de

@@ -12,6 +12,8 @@ Las notas de cada release, con los binarios, están en
 ## [Sin publicar]
 
 ### Añadido
+- **Respaldo automático NAT-PMP (RFC 6886, #11):** [`cli-rs/src/natpmp.rs`](cli-rs/src/natpmp.rs) e integración en [`cli-rs/src/upnp.rs`](cli-rs/src/upnp.rs) para mapear, renovar y limpiar puertos TCP mediante NAT-PMP (`gw:5351`) cuando UPnP IGD no responde o falla.
+- **Detección de WinGet en el gestor de paquetes (#40):** [`cli-rs/src/pkgmgr.rs`](cli-rs/src/pkgmgr.rs) detecta binarios en rutas `WinGet\Packages` / `WinGet\Links` para bloquear `drop update` / `drop install` / `drop uninstall` y sugerir `winget upgrade Oloxx.drop`.
 - **Descubrimiento LAN por multicast IPv6 (#37):** [`cli-rs/src/discovery.rs`](cli-rs/src/discovery.rs) anuncia y escucha pings `drop-lan` en `ff02::1:42424` en paralelo al broadcast IPv4, con soporte de conexión TCP para direcciones link-local con zona (`fe80::...%scope_id`) en [`connect_host`](cli-rs/src/discovery.rs).
 
 ### Seguridad

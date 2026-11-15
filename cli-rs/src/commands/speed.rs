@@ -58,10 +58,11 @@ pub async fn run_speed_host(options: Options) -> i32 {
             match map_port(tcp_port, pref, opts).await {
                 MapOutcome::Mapped(m) => {
                     let res = m.as_result();
+                    let proto = m.protocol_label();
                     *r_slot.lock().await = Some(res.clone());
                     *m_slot.lock().await = Some(m);
                     println!(
-                        "  {GREEN}✔ Puerto mapeado por UPnP en router:{RESET} {CYAN}:{}{RESET} {DIM}(IP WAN: {}){RESET}\n",
+                        "  {GREEN}✔ Puerto mapeado por {proto} en router:{RESET} {CYAN}:{}{RESET} {DIM}(IP WAN: {}){RESET}\n",
                         res.external_port.unwrap_or(tcp_port),
                         res.public_ip.as_deref().unwrap_or("detectada")
                     );

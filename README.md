@@ -398,7 +398,7 @@ carpetas enteras puede usar el CLI (`drop recv` retoma el `.part` comprobado con
 | Ruta | Qué ocurre | Velocidad típica |
 |---|---|---|
 | **CLI ↔ CLI en LAN** | Broadcast UDP IPv4 / multicast IPv6 + TCP directo por IP privada | **100–115 MB/s** (satura Gigabit / Wi-Fi 6) |
-| **CLI ↔ CLI por WAN directo** | IPv6 global, UPnP o puerto abierto con `-p` (IP pública vía UPnP / STUN / servidor) | Limitada por tu subida/bajada real de internet |
+| **CLI ↔ CLI por WAN directo** | IPv6 global, UPnP / NAT-PMP o puerto abierto con `-p` (IP pública vía UPnP / NAT-PMP / STUN / servidor) | Limitada por tu subida/bajada real de internet |
 | **CLI ↔ CLI por WAN sin ruta (CGNAT / sin UPnP) o CLI ↔ Web** | Relay cifrado (AES-256-GCM) por el WebSocket del servidor | Depende del VPS y de `DROP_RELAY_LIMIT` (sin límite fijo salvo el que ponga la instancia; en un VPS compartido suele acotarse a unos pocos MB/s por sala) |
 | **Web ↔ Web** | WebRTC DataChannel directo (o por TURN si hay NAT simétrico) | **~15 MB/s** directo por límite de SCTP del navegador; por TURN depende de la red y del servidor |
 

@@ -57,9 +57,12 @@ firma o con firma que no cuadra con la clave pública embebida en el binario.
   servidor malicioso puede dar el código bueno a quien pregunta y el malo a un navegador concreto.
 - **PAKE.** No hay SPAKE2/CPace: el código de cuatro palabras protege por entropía y coste de
   derivación, no por un intercambio autenticado. Implementarlo a mano sin auditar sería peor.
-- **Auditoría externa.** `crypto.js`, `e2ee.js`, `scrypt.js`, `sas.js` y `sha256.js` combinan primitivas
-  de Node y WebCrypto con implementaciones propias verificadas contra vectores oficiales
-  (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) en [`test/e2ee.test.mjs`](test/e2ee.test.mjs),
+- **Auditoría externa.** Los módulos criptográficos en [`public/shared/`](public/shared/)
+  (`e2ee.js`, `scrypt.js`, `sas.js`, `sha256.js`) y [`cli-rs/src/`](cli-rs/src/) (`crypto.rs`,
+  `minisign.rs`, `shared/sas.rs`) combinan primitivas estándar de Rust, Node y WebCrypto
+  verificadas contra vectores oficiales (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) en
+  [`test/e2ee.test.mjs`](test/e2ee.test.mjs) y
+  [`cli-rs/tests/shared_vectors_test.rs`](cli-rs/tests/shared_vectors_test.rs),
   pero sin auditoría externa independiente pagada.
 - **Metadatos.** El servidor y quien mire la red ven cuándo, entre qué IPs y cuántos bytes.
 - **El otro extremo.** Quien tiene las cuatro palabras tiene los archivos; drop no puede

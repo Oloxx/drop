@@ -1,4 +1,4 @@
-// Modulo UPnP (IGD) para mapeo automatico de puertos TCP en routers residenciales.
+// Modulo UPnP (IGD) y respaldo NAT-PMP (RFC 6886) para mapeo automatico de puertos TCP en routers residenciales.
 
 use std::collections::HashSet;
 use std::env;
@@ -19,6 +19,10 @@ use tokio::time::timeout;
 use url::Url;
 
 use crate::discovery::get_local_ips;
+use crate::natpmp::{
+    NatPmpRouter, build_map_tcp_request, has_explicit_gateway_override, map_natpmp_port,
+    probe_natpmp, probe_natpmp_on, unmap_natpmp_sync,
+};
 
 #[derive(Debug, Clone)]
 pub struct UpnpRouter {
@@ -38,18 +42,39 @@ pub struct UpnpResult {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+enum MappingBackend {
+    Upnp {
+        control_url: String,
+        service_type: String,
+        internal_port: u16,
+        lease_sec: u32,
+    },
+    NatPmp {
+        gateway: SocketAddr,
+        internal_port: u16,
+        lease_sec: u32,
+    },
+}
+
 pub struct UpnpMapping {
     pub external_port: u16,
     pub public_ip: Option<String>,
     pub router_ip: String,
     pub client_lan_ip: String,
-    pub control_url: String,
-    pub service_type: String,
+    backend: MappingBackend,
     unmapped: Arc<AtomicBool>,
     renew_task: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl UpnpMapping {
+    pub fn protocol_label(&self) -> &'static str {
+        match self.backend {
+            MappingBackend::Upnp { .. } => "UPnP",
+            MappingBackend::NatPmp { .. } => "NAT-PMP",
+        }
+    }
+
     pub fn as_result(&self) -> UpnpResult {
         UpnpResult {
             success: true,
@@ -65,28 +90,44 @@ impl UpnpMapping {
         if self.unmapped.load(Ordering::SeqCst) {
             return false;
         }
-        let soap = build_add_port_mapping_soap(
-            &self.service_type,
-            self.external_port,
-            self.external_port,
-            &self.client_lan_ip,
-            "drop-p2p",
-            7200,
-        );
-        let Ok(client) = Client::builder().timeout(Duration::from_secs(5)).build() else {
-            return false;
-        };
-        let Ok(res) = client
-            .post(&self.control_url)
-            .header("Content-Type", "text/xml; charset=\"utf-8\"")
-            .header("SOAPAction", format!("\"{}#AddPortMapping\"", self.service_type))
-            .body(soap)
-            .send()
-            .await
-        else {
-            return false;
-        };
-        res.status().is_success()
+        match &self.backend {
+            MappingBackend::Upnp {
+                control_url,
+                service_type,
+                internal_port,
+                lease_sec,
+            } => {
+                let soap = build_add_port_mapping_soap(
+                    service_type,
+                    self.external_port,
+                    *internal_port,
+                    &self.client_lan_ip,
+                    "drop-p2p",
+                    *lease_sec,
+                );
+                let Ok(client) = Client::builder().timeout(Duration::from_secs(5)).build() else {
+                    return false;
+                };
+                let Ok(res) = client
+                    .post(control_url)
+                    .header("Content-Type", "text/xml; charset=\"utf-8\"")
+                    .header("SOAPAction", format!("\"{service_type}#AddPortMapping\""))
+                    .body(soap)
+                    .send()
+                    .await
+                else {
+                    return false;
+                };
+                res.status().is_success()
+            }
+            MappingBackend::NatPmp {
+                gateway,
+                internal_port,
+                lease_sec,
+            } => map_natpmp_port(*gateway, *internal_port, self.external_port, *lease_sec, 1500)
+                .await
+                .is_ok(),
+        }
     }
 
     pub async fn unmap(&self) {
@@ -96,28 +137,63 @@ impl UpnpMapping {
         if let Some(h) = self.renew_task.lock().await.take() {
             h.abort();
         }
-        let soap = build_delete_port_mapping_soap(&self.service_type, self.external_port);
-        if let Ok(client) = Client::builder().timeout(Duration::from_secs(3)).build() {
-            let _ = client
-                .post(&self.control_url)
-                .header("Content-Type", "text/xml; charset=\"utf-8\"")
-                .header(
-                    "SOAPAction",
-                    format!("\"{}#DeletePortMapping\"", self.service_type),
-                )
-                .body(soap)
-                .send()
-                .await;
+        match &self.backend {
+            MappingBackend::Upnp {
+                control_url,
+                service_type,
+                ..
+            } => {
+                let soap = build_delete_port_mapping_soap(service_type, self.external_port);
+                if let Ok(client) = Client::builder().timeout(Duration::from_secs(3)).build() {
+                    let _ = client
+                        .post(control_url)
+                        .header("Content-Type", "text/xml; charset=\"utf-8\"")
+                        .header(
+                            "SOAPAction",
+                            format!("\"{service_type}#DeletePortMapping\""),
+                        )
+                        .body(soap)
+                        .send()
+                        .await;
+                }
+            }
+            MappingBackend::NatPmp {
+                gateway,
+                internal_port,
+                ..
+            } => {
+                if let Ok(sock) = UdpSocket::bind("0.0.0.0:0").await
+                    && sock.connect(*gateway).await.is_ok()
+                {
+                    let pkt = build_map_tcp_request(*internal_port, 0, 0);
+                    let _ = sock.send(&pkt).await;
+                }
+            }
         }
     }
 
-    /// Borrado sincrono rapido por socket HTTP para usar en señales/salidas sin runtime async.
+    /// Borrado sincrono rapido por socket para usar en señales/salidas sin runtime async.
     pub fn unmap_sync(&self) {
         if self.unmapped.swap(true, Ordering::SeqCst) {
             return;
         }
-        let soap = build_delete_port_mapping_soap(&self.service_type, self.external_port);
-        send_delete_port_mapping_sync(&self.control_url, &self.service_type, &soap);
+        match &self.backend {
+            MappingBackend::Upnp {
+                control_url,
+                service_type,
+                ..
+            } => {
+                let soap = build_delete_port_mapping_soap(service_type, self.external_port);
+                send_delete_port_mapping_sync(control_url, service_type, &soap);
+            }
+            MappingBackend::NatPmp {
+                gateway,
+                internal_port,
+                ..
+            } => {
+                unmap_natpmp_sync(*gateway, *internal_port);
+            }
+        }
     }
 }
 
@@ -406,6 +482,7 @@ pub struct MapPortOptions {
     pub max_retries: usize,
     pub discover_timeout_ms: u64,
     pub router: Option<UpnpRouter>,
+    pub natpmp_gateway: Option<SocketAddr>,
 }
 
 impl Default for MapPortOptions {
@@ -417,6 +494,7 @@ impl Default for MapPortOptions {
             max_retries: 10,
             discover_timeout_ms: 4500,
             router: None,
+            natpmp_gateway: None,
         }
     }
 }
@@ -426,38 +504,212 @@ pub enum MapOutcome {
     Failed(UpnpResult),
 }
 
+fn failed_map(reason: impl Into<String>) -> MapOutcome {
+    MapOutcome::Failed(UpnpResult {
+        success: false,
+        external_port: None,
+        public_ip: None,
+        router_ip: None,
+        client_lan_ip: None,
+        reason: Some(reason.into()),
+    })
+}
+
+async fn spawn_renew_task(mapping: &Arc<UpnpMapping>, auto_renew: bool, lease_sec: u32) {
+    if !auto_renew || lease_sec == 0 {
+        return;
+    }
+    let weak = Arc::downgrade(mapping);
+    let renew_interval = Duration::from_millis(((lease_sec as u64) * 1000 / 2).max(1000));
+    let retry_delay = Duration::from_millis((((lease_sec as u64) * 1000) / 4).clamp(1000, 60_000));
+    let handle = tokio::spawn(async move {
+        let mut next_delay = renew_interval;
+        loop {
+            tokio::time::sleep(next_delay).await;
+            let Some(m) = weak.upgrade() else {
+                break;
+            };
+            if m.unmapped.load(Ordering::SeqCst) {
+                break;
+            }
+            next_delay = if m.renew().await {
+                renew_interval
+            } else {
+                retry_delay
+            };
+        }
+    });
+    *mapping.renew_task.lock().await = Some(handle);
+}
+
+async fn discover_upnp_and_natpmp(
+    discover_timeout_ms: u64,
+) -> (Option<UpnpRouter>, Option<NatPmpRouter>) {
+    let upnp_fut = discover_router(discover_timeout_ms);
+    let pmp_fut = probe_natpmp(discover_timeout_ms.min(1200));
+    tokio::pin!(upnp_fut);
+    tokio::pin!(pmp_fut);
+
+    tokio::select! {
+        upnp = &mut upnp_fut => {
+            if upnp.is_some() {
+                (upnp, None)
+            } else {
+                (None, pmp_fut.await)
+            }
+        }
+        pmp = &mut pmp_fut => {
+            if pmp.is_some() {
+                // Si NAT-PMP ya respondio, damos una ventana corta a UPnP para priorizarlo si existe.
+                let grace = Duration::from_millis(discover_timeout_ms.min(800));
+                let upnp = timeout(grace, &mut upnp_fut).await.unwrap_or(None);
+                (upnp, pmp)
+            } else {
+                (upnp_fut.await, None)
+            }
+        }
+    }
+}
+
+async fn map_natpmp_via_router(
+    router: NatPmpRouter,
+    internal_port: u16,
+    preferred_external_port: Option<u16>,
+    options: &MapPortOptions,
+) -> MapOutcome {
+    // En RFC 6886 lifetime = 0 significa eliminar el mapeo; usamos 7200s si se pidio 0.
+    let requested_lease = if options.lease_sec == 0 {
+        7200
+    } else {
+        options.lease_sec
+    };
+    let requested_ext = preferred_external_port.unwrap_or(internal_port);
+    let mut res = map_natpmp_port(
+        router.gateway,
+        internal_port,
+        requested_ext,
+        requested_lease,
+        1500,
+    )
+    .await;
+    if requested_ext != 0 && !matches!(res, Ok(ref m) if m.external_port != 0) {
+        res = map_natpmp_port(router.gateway, internal_port, 0, requested_lease, 1500).await;
+    }
+
+    let mapped = match res {
+        Ok(m) if m.external_port != 0 => m,
+        Ok(_) => return failed_map("NAT-PMP returned external port 0"),
+        Err(e) => return failed_map(e),
+    };
+
+    let effective_lease = if options.lease_sec == 0 {
+        0
+    } else if mapped.lifetime_sec > 0 {
+        mapped.lifetime_sec
+    } else {
+        requested_lease
+    };
+    let stored_lease = if effective_lease == 0 {
+        requested_lease
+    } else {
+        effective_lease
+    };
+
+    let mapping = Arc::new(UpnpMapping {
+        external_port: mapped.external_port,
+        public_ip: Some(router.public_ip.to_string()),
+        router_ip: router.gateway.ip().to_string(),
+        client_lan_ip: router.client_lan_ip,
+        backend: MappingBackend::NatPmp {
+            gateway: router.gateway,
+            internal_port,
+            lease_sec: stored_lease,
+        },
+        unmapped: Arc::new(AtomicBool::new(false)),
+        renew_task: Mutex::new(None),
+    });
+    spawn_renew_task(&mapping, options.auto_renew, effective_lease).await;
+    MapOutcome::Mapped(mapping)
+}
+
 pub async fn map_port(
     internal_port: u16,
     preferred_external_port: Option<u16>,
     options: MapPortOptions,
 ) -> MapOutcome {
     if env::var_os("DROP_NO_UPNP").is_some_and(|v| !v.is_empty()) {
-        return MapOutcome::Failed(UpnpResult {
-            success: false,
-            external_port: None,
-            public_ip: None,
-            router_ip: None,
-            client_lan_ip: None,
-            reason: Some("UPnP disabled by environment".to_string()),
-        });
+        return failed_map("UPnP disabled by environment");
     }
 
-    let router = match options.router {
-        Some(r) => r,
-        None => match discover_router(options.discover_timeout_ms).await {
-            Some(r) => r,
-            None => {
-                return MapOutcome::Failed(UpnpResult {
-                    success: false,
-                    external_port: None,
-                    public_ip: None,
-                    router_ip: None,
-                    client_lan_ip: None,
-                    reason: Some("No UPnP router found".to_string()),
-                });
+    if let Some(router) = options.router.clone() {
+        let outcome =
+            map_upnp_via_router(router, internal_port, preferred_external_port, &options).await;
+        if let MapOutcome::Mapped(_) = outcome {
+            return outcome;
+        }
+        if let Some(gw) = options.natpmp_gateway
+            && let Some(pmp) = probe_natpmp_on(gw, options.discover_timeout_ms).await
+            && let ok @ MapOutcome::Mapped(_) =
+                map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await
+        {
+            return ok;
+        }
+        return outcome;
+    }
+
+    if let Some(gw) = options.natpmp_gateway {
+        return match probe_natpmp_on(gw, options.discover_timeout_ms).await {
+            Some(pmp) => {
+                map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await
             }
-        },
-    };
+            None => failed_map("No NAT-PMP router found on configured gateway"),
+        };
+    }
+
+    if has_explicit_gateway_override() {
+        return match probe_natpmp(options.discover_timeout_ms).await {
+            Some(pmp) => {
+                map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await
+            }
+            None => failed_map("No NAT-PMP router found on DROP_NATPMP_GATEWAY"),
+        };
+    }
+
+    let (upnp_router, mut pmp_router) =
+        discover_upnp_and_natpmp(options.discover_timeout_ms).await;
+
+    if let Some(router) = upnp_router {
+        match map_upnp_via_router(router, internal_port, preferred_external_port, &options).await {
+            ok @ MapOutcome::Mapped(_) => return ok,
+            failed => {
+                if pmp_router.is_none() {
+                    pmp_router = probe_natpmp(800).await;
+                }
+                if let Some(pmp) = pmp_router
+                    && let ok @ MapOutcome::Mapped(_) =
+                        map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options)
+                            .await
+                {
+                    return ok;
+                }
+                return failed;
+            }
+        }
+    }
+
+    if let Some(pmp) = pmp_router {
+        return map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await;
+    }
+
+    failed_map("No UPnP or NAT-PMP router found")
+}
+
+async fn map_upnp_via_router(
+    router: UpnpRouter,
+    internal_port: u16,
+    preferred_external_port: Option<u16>,
+    options: &MapPortOptions,
+) -> MapOutcome {
 
     let client = match Client::builder().timeout(Duration::from_secs(5)).build() {
         Ok(c) => c,
@@ -570,41 +822,21 @@ pub async fn map_port(
     };
 
     let public_ip = get_router_external_ip(&router.control_url, &router.service_type).await;
-    let unmapped = Arc::new(AtomicBool::new(false));
     let mapping = Arc::new(UpnpMapping {
         external_port: ext_port,
         public_ip,
         router_ip: router.router_ip,
         client_lan_ip: router.client_lan_ip,
-        control_url: router.control_url,
-        service_type: router.service_type,
-        unmapped: unmapped.clone(),
+        backend: MappingBackend::Upnp {
+            control_url: router.control_url,
+            service_type: router.service_type,
+            internal_port,
+            lease_sec: if lease_sec == 0 { 7200 } else { lease_sec },
+        },
+        unmapped: Arc::new(AtomicBool::new(false)),
         renew_task: Mutex::new(None),
     });
 
-    if options.auto_renew && lease_sec > 0 {
-        let weak = Arc::downgrade(&mapping);
-        let renew_interval = Duration::from_millis(((lease_sec as u64) * 1000 / 2).max(1000));
-        let retry_delay = Duration::from_millis((((lease_sec as u64) * 1000) / 4).clamp(1000, 60_000));
-        let handle = tokio::spawn(async move {
-            let mut next_delay = renew_interval;
-            loop {
-                tokio::time::sleep(next_delay).await;
-                let Some(m) = weak.upgrade() else {
-                    break;
-                };
-                if m.unmapped.load(Ordering::SeqCst) {
-                    break;
-                }
-                next_delay = if m.renew().await {
-                    renew_interval
-                } else {
-                    retry_delay
-                };
-            }
-        });
-        *mapping.renew_task.lock().await = Some(handle);
-    }
-
+    spawn_renew_task(&mapping, options.auto_renew, lease_sec).await;
     MapOutcome::Mapped(mapping)
 }

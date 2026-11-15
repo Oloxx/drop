@@ -35,6 +35,14 @@ pub fn package_manager_of(exec_path: &Path) -> Option<PackageManager> {
         });
     }
 
+    if p.contains("/microsoft/winget/packages/") || p.contains("/microsoft/winget/links/") {
+        return Some(PackageManager {
+            name: "WinGet",
+            upgrade: "winget upgrade Oloxx.drop",
+            uninstall: "winget uninstall Oloxx.drop",
+        });
+    }
+
     if p.contains("/scoop/apps/") || p.contains("/scoop/shims/") || contains_digits_segment(&p) {
         return Some(PackageManager {
             name: "Scoop",

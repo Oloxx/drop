@@ -5,6 +5,7 @@ pub mod crypto;
 pub mod discovery;
 pub mod listen;
 pub mod minisign;
+pub mod natpmp;
 pub mod pkgmgr;
 pub mod select;
 pub mod shared;

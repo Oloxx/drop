@@ -1,6 +1,7 @@
 // Pruebas unitarias y de integracion de red: listen, discovery, stun, upnp, signaling y pkgmgr.
 
 use std::collections::HashSet;
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,6 +17,11 @@ use drop::discovery::{
     start_broadcasting_on,
 };
 use drop::listen::{explain_listen_error, listen_any_family};
+use drop::natpmp::{
+    NatPmpMapResponse, build_map_tcp_request, build_public_address_request,
+    parse_bsd_default_route, parse_map_tcp_response, parse_proc_net_route,
+    parse_public_address_response,
+};
 use drop::pkgmgr::package_manager_of;
 use drop::shared::protocol::FileEntry;
 use drop::signaling::{get_signaling_url, translate_error};
@@ -49,6 +55,21 @@ fn test_pkgmgr_detection() {
             .unwrap()
             .name,
         "Scoop"
+    );
+    let winget_pkg = package_manager_of(Path::new(
+        "C:\\Users\\alex\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Oloxx.drop_Microsoft.Winget.Source_8wekyb3d8bbwe\\drop.exe",
+    ))
+    .unwrap();
+    assert_eq!(winget_pkg.name, "WinGet");
+    assert_eq!(winget_pkg.upgrade, "winget upgrade Oloxx.drop");
+    assert_eq!(winget_pkg.uninstall, "winget uninstall Oloxx.drop");
+    assert_eq!(
+        package_manager_of(Path::new(
+            "C:\\Users\\alex\\AppData\\Local\\Microsoft\\WinGet\\Links\\drop.exe",
+        ))
+        .unwrap()
+        .name,
+        "WinGet"
     );
     assert!(package_manager_of(Path::new("/usr/local/bin/drop")).is_none());
 }
@@ -363,6 +384,7 @@ async fn test_upnp_map_port_conflict_718_and_permanent_725_and_unmap() {
         MapOutcome::Failed(res) => panic!("UPnP mapping failed: {:?}", res.reason),
     };
 
+    assert_eq!(mapping.protocol_label(), "UPnP");
     assert_eq!(mapping.external_port, 5001);
     assert_eq!(mapping.public_ip.as_deref(), Some("203.0.113.77"));
     assert_eq!(add_calls.load(Ordering::SeqCst), 3);
@@ -629,4 +651,206 @@ async fn test_lan_discovery_ipv6_multicast_roundtrip() {
         // Entorno sin ruta/soporte de multicast IPv6 en loopback ni NICs; no debe paniquear ni romper IPv4.
         srv.abort();
     }
+}
+
+#[test]
+fn test_natpmp_packet_builders_and_parsers() {
+    assert_eq!(build_public_address_request(), [0, 0]);
+
+    let pub_resp = [0, 128, 0, 0, 0, 0, 0, 42, 198, 51, 100, 7];
+    assert_eq!(
+        parse_public_address_response(&pub_resp).unwrap(),
+        Ipv4Addr::new(198, 51, 100, 7)
+    );
+    assert!(parse_public_address_response(&pub_resp[..11]).is_err());
+    let mut pub_err = pub_resp;
+    pub_err[3] = 3;
+    assert!(parse_public_address_response(&pub_err).is_err());
+
+    let req = build_map_tcp_request(5000, 5001, 7200);
+    assert_eq!(&req[..2], &[0, 2]);
+    assert_eq!(u16::from_be_bytes([req[4], req[5]]), 5000);
+    assert_eq!(u16::from_be_bytes([req[6], req[7]]), 5001);
+    assert_eq!(u32::from_be_bytes([req[8], req[9], req[10], req[11]]), 7200);
+
+    let mut map_resp = [0u8; 16];
+    map_resp[0] = 0;
+    map_resp[1] = 130;
+    map_resp[8..10].copy_from_slice(&5000u16.to_be_bytes());
+    map_resp[10..12].copy_from_slice(&51234u16.to_be_bytes());
+    map_resp[12..16].copy_from_slice(&3600u32.to_be_bytes());
+    assert_eq!(
+        parse_map_tcp_response(&map_resp, 5000).unwrap(),
+        NatPmpMapResponse {
+            internal_port: 5000,
+            external_port: 51234,
+            lifetime_sec: 3600,
+        }
+    );
+    assert!(parse_map_tcp_response(&map_resp, 5999).is_err());
+    assert!(parse_map_tcp_response(&map_resp[..15], 5000).is_err());
+}
+
+#[test]
+fn test_natpmp_route_table_parsers() {
+    let gw_primary = u32::from_ne_bytes([192, 168, 1, 1]);
+    let gw_subnet = u32::from_ne_bytes([10, 0, 0, 1]);
+    let proc_route = format!(
+        "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
+         eth0\t00000000\t{gw_primary:08X}\t0003\t0\t0\t100\t00000000\t0\t0\t0\n\
+         eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n\
+         eth1\t00000000\t{gw_primary:08X}\t0003\t0\t0\t200\t00000000\t0\t0\t0\n\
+         wg0\t0000000A\t{gw_subnet:08X}\t0003\t0\t0\t50\t000000FF\t0\t0\t0\n"
+    );
+    assert_eq!(
+        parse_proc_net_route(&proc_route),
+        vec![Ipv4Addr::new(192, 168, 1, 1)]
+    );
+
+    let bsd_route = "\
+   route to: default\n\
+destination: default\n\
+       mask: default\n\
+    gateway: 192.168.50.1\n\
+  interface: en0\n";
+    assert_eq!(
+        parse_bsd_default_route(bsd_route),
+        Some(Ipv4Addr::new(192, 168, 50, 1))
+    );
+    assert_eq!(parse_bsd_default_route("gateway: 0.0.0.0\n"), None);
+}
+
+#[tokio::test]
+async fn test_natpmp_map_renew_unmap_and_upnp_fallback() {
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let gw_addr = udp.local_addr().unwrap();
+    let map_calls = Arc::new(AtomicUsize::new(0));
+    let unmap_calls = Arc::new(AtomicUsize::new(0));
+    let map_calls_srv = map_calls.clone();
+    let unmap_calls_srv = unmap_calls.clone();
+
+    let natpmp_srv = tokio::spawn(async move {
+        let mut buf = [0u8; 64];
+        loop {
+            let (n, peer) = match udp.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                Err(_) => break,
+            };
+            if n < 2 || buf[0] != 0 {
+                continue;
+            }
+            match buf[1] {
+                0 => {
+                    let mut resp = [0u8; 12];
+                    resp[0] = 0;
+                    resp[1] = 128;
+                    resp[8..12].copy_from_slice(&[203, 0, 113, 88]);
+                    let _ = udp.send_to(&resp, peer).await;
+                }
+                2 if n >= 12 => {
+                    let int_port = u16::from_be_bytes([buf[4], buf[5]]);
+                    let req_ext = u16::from_be_bytes([buf[6], buf[7]]);
+                    let lifetime = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+                    let mut resp = [0u8; 16];
+                    resp[0] = 0;
+                    resp[1] = 130;
+                    resp[8..10].copy_from_slice(&int_port.to_be_bytes());
+                    if lifetime == 0 {
+                        unmap_calls_srv.fetch_add(1, Ordering::SeqCst);
+                    } else if req_ext == 5000 {
+                        // Simula puerto externo ocupado en el primer intento para verificar reintento con 0.
+                        resp[2..4].copy_from_slice(&4u16.to_be_bytes());
+                        let _ = udp.send_to(&resp, peer).await;
+                        continue;
+                    } else {
+                        map_calls_srv.fetch_add(1, Ordering::SeqCst);
+                        let granted_ext = if req_ext == 0 { 51234 } else { req_ext };
+                        resp[10..12].copy_from_slice(&granted_ext.to_be_bytes());
+                        resp[12..16].copy_from_slice(&lifetime.to_be_bytes());
+                    }
+                    let _ = udp.send_to(&resp, peer).await;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // 1) Mapeo directo por NAT-PMP con reintento automático tras código de error cuando ext=5000 falla.
+    let mapping = match map_port(
+        5000,
+        Some(5000),
+        MapPortOptions {
+            auto_renew: false,
+            discover_timeout_ms: 1000,
+            natpmp_gateway: Some(gw_addr),
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        MapOutcome::Mapped(m) => m,
+        MapOutcome::Failed(res) => panic!("NAT-PMP mapping failed: {:?}", res.reason),
+    };
+    assert_eq!(mapping.protocol_label(), "NAT-PMP");
+    assert_eq!(mapping.external_port, 51234);
+    assert_eq!(mapping.public_ip.as_deref(), Some("203.0.113.88"));
+    assert_eq!(map_calls.load(Ordering::SeqCst), 1);
+
+    assert!(mapping.renew().await);
+    assert_eq!(map_calls.load(Ordering::SeqCst), 2);
+
+    mapping.unmap().await;
+    for _ in 0..20 {
+        if unmap_calls.load(Ordering::SeqCst) >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(unmap_calls.load(Ordering::SeqCst), 1);
+
+    // 2) Respaldo automático a NAT-PMP cuando el router UPnP falla al mapear.
+    let failing_upnp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upnp_port = failing_upnp.local_addr().unwrap().port();
+    let upnp_srv = tokio::spawn(async move {
+        if let Ok((mut stream, _)) = failing_upnp.accept().await {
+            let mut tmp = [0u8; 2048];
+            let _ = stream.read(&mut tmp).await;
+            let body = "error 501";
+            let resp = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+        }
+    });
+
+    let fallback = match map_port(
+        6000,
+        Some(51235),
+        MapPortOptions {
+            auto_renew: false,
+            max_retries: 0,
+            discover_timeout_ms: 1000,
+            router: Some(UpnpRouter {
+                control_url: format!("http://127.0.0.1:{upnp_port}/ctl"),
+                service_type: "urn:schemas-upnp-org:service:WANIPConnection:1".into(),
+                router_ip: "127.0.0.1".into(),
+                client_lan_ip: "127.0.0.1".into(),
+            }),
+            natpmp_gateway: Some(gw_addr),
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        MapOutcome::Mapped(m) => m,
+        MapOutcome::Failed(res) => panic!("Fallback to NAT-PMP failed: {:?}", res.reason),
+    };
+    assert_eq!(fallback.protocol_label(), "NAT-PMP");
+    assert_eq!(fallback.external_port, 51235);
+    fallback.unmap().await;
+
+    upnp_srv.abort();
+    natpmp_srv.abort();
 }
