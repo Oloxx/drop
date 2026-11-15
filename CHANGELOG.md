@@ -12,6 +12,7 @@ Las notas de cada release, con los binarios, están en
 ## [Sin publicar]
 
 ### Añadido
+- **Automatización y publicación en WinGet (#40):** [`scripts/winget.mjs`](scripts/winget.mjs) verifica `SHA256SUMS.minisig` antes de generar el manifiesto WinGet 1.28.0 (`Oloxx.drop`) y abrir la PR en `microsoft/winget-pkgs`, integrado en [`.github/workflows/release.yml`](.github/workflows/release.yml) con `winget validate` en Windows (`WINGET_TOKEN` opcional) y detección ampliada en [`cli-rs/src/pkgmgr.rs`](cli-rs/src/pkgmgr.rs) para rutas de usuario y máquina (`%ProgramFiles%\WinGet\Packages`).
 - **Servidor web y de señalización propio en el CLI (`drop serve`, #39):** [`cli-rs/src/commands/serve.rs`](cli-rs/src/commands/serve.rs) y [`cli-rs/build.rs`](cli-rs/build.rs) embeben `public/` dentro del binario nativo y añaden `drop serve [-p <puerto>] [-H <dir>]` con soporte HTTP (`/config`, `/healthz`, `/version`, rutas limpias y cabeceras de seguridad CSP) y servidor WebSocket de señalización y relay cifrado para trabajar en redes aisladas o autoalojado con un solo ejecutable.
 - **Descubrimiento LAN por mDNS / DNS-SD (#38):** [`cli-rs/src/mdns.rs`](cli-rs/src/mdns.rs) anuncia `_drop._tcp.local` (`PTR`, `SRV`, `TXT` con `h=<roomHash>` y `p=<puerto>`, sin filtrar el secreto de 4 palabras) y consulta en paralelo al broadcast/multicast UDP de [`cli-rs/src/discovery.rs`](cli-rs/src/discovery.rs), con degradación limpia si el puerto `5353` no se puede enlazar.
 - **Respaldo automático NAT-PMP (RFC 6886, #11):** [`cli-rs/src/natpmp.rs`](cli-rs/src/natpmp.rs) e integración en [`cli-rs/src/upnp.rs`](cli-rs/src/upnp.rs) para mapear, renovar y limpiar puertos TCP mediante NAT-PMP (`gw:5351`) cuando UPnP IGD no responde o falla.
@@ -28,6 +29,7 @@ Las notas de cada release, con los binarios, están en
 
 ### Eliminado
 - **Compilación y releases para `macos-x64` (macOS Intel):** retirado de [`.github/workflows/release.yml`](.github/workflows/release.yml), [`package.json`](package.json) y enlaces de descarga para centrarse en macOS Apple Silicon (`macos-arm64`), Windows x64 y Linux x64/ARM64.
+- **Publicación del CLI en npm (#40):** descartada tras migrar el CLI a binario nativo estático en Rust (`cli-rs/`) sin dependencia de Node.js; `package.json` conserva `"private": true` y la distribución se cubre con Homebrew, Scoop, WinGet y binarios firmados.
 
 ## [0.13.0] — 2026-11-15
 

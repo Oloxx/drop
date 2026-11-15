@@ -256,3 +256,46 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
+
+  # ------------------------------------------------------------------- WinGet
+  # Genera los manifiestos desde el SHA256SUMS firmado con Minisign, los valida
+  # con el `winget` oficial en Windows y abre la PR en microsoft/winget-pkgs
+  # si existe el secret WINGET_TOKEN (PAT con permiso public_repo sobre el fork).
+  winget:
+    name: WinGet (microsoft/winget-pkgs)
+    needs: publicar
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Generar y validar manifiesto WinGet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/winget.mjs "$env:GITHUB_REF_NAME" --out winget-dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ver = $env:GITHUB_REF_NAME.TrimStart('v', 'V')
+          winget validate --manifest "winget-dist/manifests/o/Oloxx/drop/$ver" --verbose
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifest
+          path: winget-dist/manifests
+          retention-days: 7
+
+      - name: Enviar PR a microsoft/winget-pkgs
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          DROP_NO_GH: '1'
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_TOKEN)) {
+            Write-Host "::notice::Falta el secret WINGET_TOKEN (PAT con permiso public_repo para actualizar el fork winget-pkgs); manifiesto validado, PR omitida."
+            exit 0
+          }
+          node scripts/winget.mjs "$env:GITHUB_REF_NAME" --out winget-dist --submit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -83,16 +83,19 @@ brew install oloxx/tap/drop
 ```
 
 ```powershell
+# Windows, con WinGet (paquete oficial en microsoft/winget-pkgs)
+winget install Oloxx.drop
+
 # Windows, con Scoop
 scoop bucket add oloxx https://github.com/Oloxx/scoop-bucket
 scoop install oloxx/drop
 ```
 
-Se actualizan con `brew upgrade drop` y `scoop update drop`, no con `drop update`: el binario es
-del gestor, y desde la v0.10.0 `drop` lo detecta y te dice qué orden usar.
-Ninguno de los dos provoca avisos de Gatekeeper o SmartScreen, y los dos manifiestos se generan
+Se actualizan con `brew upgrade drop`, `winget upgrade Oloxx.drop` y `scoop update drop`, no con `drop update`: el binario es
+del gestor, y `drop` lo detecta por su ruta para decirte qué orden usar.
+Ninguno provoca avisos de Gatekeeper o SmartScreen, y los tres manifiestos se generan
 solo después de comprobar la firma minisign del `SHA256SUMS` de la release
-([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket)).
+([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket), [`scripts/winget.mjs`](scripts/winget.mjs)).
 
 ### Windows
 Simplemente **descarga [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe) y haz doble clic sobre él**.

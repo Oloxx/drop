@@ -1,4 +1,4 @@
-// Deteccion de gestor de paquetes (Homebrew o Scoop) por la ruta real del binario.
+// Deteccion de gestor de paquetes (Homebrew, Scoop o WinGet) por la ruta real del binario.
 
 use std::fs;
 use std::path::Path;
@@ -35,7 +35,9 @@ pub fn package_manager_of(exec_path: &Path) -> Option<PackageManager> {
         });
     }
 
-    if p.contains("/microsoft/winget/packages/") || p.contains("/microsoft/winget/links/") {
+    // WinGet instala en %LOCALAPPDATA%\Microsoft\WinGet\{Packages,Links} (usuario)
+    // o %ProgramFiles%\WinGet\Packages (sistema).
+    if p.contains("/winget/packages/") || p.contains("/winget/links/") {
         return Some(PackageManager {
             name: "WinGet",
             upgrade: "winget upgrade Oloxx.drop",

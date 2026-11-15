@@ -73,12 +73,15 @@ brew install oloxx/tap/drop
 ```
 
 ```powershell
+# Windows via WinGet (microsoft/winget-pkgs)
+winget install Oloxx.drop
+
 # Windows via Scoop
 scoop bucket add oloxx https://github.com/Oloxx/scoop-bucket
 scoop install oloxx/drop
 ```
 
-Upgrade via `brew upgrade drop` or `scoop update drop` (the CLI detects package-manager installs and points you to the manager instead of self-updating). Both manifests are regenerated automatically only after verifying the release `SHA256SUMS.minisig` signature.
+Upgrade via `brew upgrade drop`, `winget upgrade Oloxx.drop`, or `scoop update drop` (the CLI detects package-manager installs and points you to the manager instead of self-updating). All manifests are generated only after verifying the release `SHA256SUMS.minisig` signature ([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket), [`scripts/winget.mjs`](scripts/winget.mjs)).
 
 ### Manual installation
 

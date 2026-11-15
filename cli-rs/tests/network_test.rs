@@ -75,6 +75,14 @@ fn test_pkgmgr_detection() {
         .name,
         "WinGet"
     );
+    assert_eq!(
+        package_manager_of(Path::new(
+            "C:\\Program Files\\WinGet\\Packages\\Oloxx.drop_Microsoft.Winget.Source_8wekyb3d8bbwe\\drop.exe",
+        ))
+        .unwrap()
+        .name,
+        "WinGet"
+    );
     assert!(package_manager_of(Path::new("/usr/local/bin/drop")).is_none());
 }
 

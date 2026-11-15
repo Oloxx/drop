@@ -147,6 +147,10 @@ no puede comprobar la máquina va en esta lista, en este orden:
    `SHA256SUMS`, regeneran el manifiesto e instalan de verdad. Para no esperar:
    `gh workflow run update.yml -R Oloxx/homebrew-tap` (y lo mismo con `scoop-bucket`). Si uno se
    pone en rojo, la release no llega a ese gestor hasta arreglarlo.
+10. **WinGet (`Oloxx.drop` en `microsoft/winget-pkgs`):** el job `winget` de `release.yml` genera
+    los manifiestos desde el `SHA256SUMS` verificado con Minisign, ejecuta `winget validate` en
+    Windows y abre la PR automáticamente si el repositorio tiene el secret `WINGET_TOKEN` (PAT con
+    permiso `public_repo` para el fork). Manualmente: `node scripts/winget.mjs vX.Y.Z --submit`.
 
 ## Seguridad
 

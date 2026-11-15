@@ -86,13 +86,13 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [x] **Windows sin Authenticode, a propósito** (#57): un certificado cuesta dinero cada año. El
       README explica el aviso de SmartScreen, `Unblock-File` y la descarga con `curl.exe`. La firma
       minisign del `SHA256SUMS` sigue siendo la que dice quién publicó el binario.
-- [ ] **Gestores de paquetes** (#40). Hechos **Homebrew** (`Oloxx/homebrew-tap`) y **Scoop**
-      (`Oloxx/scoop-bucket`): se regeneran solos tras comprobar la firma del `SHA256SUMS` y
-      se prueban instalando en macOS, Linux y Windows. Y `cli-rs/src/pkgmgr.rs` ya detecta
-      **Homebrew**, **Scoop** y **WinGet** (`WinGet\Packages` / `WinGet\Links`) para evitar
-      que `drop` instalado por un gestor se autoinstale o se autoactualice. Quedan
-      **winget** (publicar/automatizar el PR a `microsoft/winget-pkgs` por versión) y
-      decidir **npm**.
+- [x] **Gestores de paquetes** (#40). Cubiertos **Homebrew** (`Oloxx/homebrew-tap`), **Scoop**
+      (`Oloxx/scoop-bucket`) y **WinGet** (`Oloxx.drop` en `microsoft/winget-pkgs` mediante
+      [`scripts/winget.mjs`](scripts/winget.mjs) y el job `winget` de `release.yml`): todos
+      verifican primero la firma Minisign del `SHA256SUMS` antes de leer hashes, y
+      [`cli-rs/src/pkgmgr.rs`](cli-rs/src/pkgmgr.rs) detecta los tres para bloquear la
+      autoinstalación y la autoactualización. **npm** queda descartado tras la migración del CLI
+      a binario nativo en Rust (`cli-rs/`).
 - [ ] **`drop update` probado contra una release real** en las tres plataformas antes de cada
       release (hoy está cubierto por tests unitarios de `cli-rs/src/minisign.rs`, no por un
       flujo de extremo a extremo).
