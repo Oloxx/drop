@@ -51,7 +51,7 @@ function runCli(args, { stdin = 'ignore' } = {}) {
     }, ms);
     check();
   });
-  proc.exited = new Promise((resolve) => proc.on('exit', (code) => resolve(code)));
+  proc.exited = new Promise((resolve) => proc.on('close', (code) => resolve(code)));
   return proc;
 }
 

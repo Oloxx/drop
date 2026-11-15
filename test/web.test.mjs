@@ -254,7 +254,7 @@ test('web -> CLI: un drop recv cortado sigue desde su .part', { skip: !CHROME &&
     p.out = '';
     p.stdout.on('data', (d) => { p.out += strip(String(d)); });
     p.stderr.on('data', (d) => { p.out += strip(String(d)); });
-    p.exited = new Promise((resolve) => p.on('exit', resolve));
+    p.exited = new Promise((resolve) => p.on('close', resolve));
     t.after(() => p.kill('SIGKILL'));
     return p;
   };

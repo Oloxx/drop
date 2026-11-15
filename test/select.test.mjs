@@ -63,7 +63,7 @@ function runCli(args) {
       reject(new Error(`no apareció ${re} en la salida:\n${proc.output}`));
     }, ms);
   });
-  proc.exited = new Promise((resolve) => proc.on('exit', (code) => resolve(code)));
+  proc.exited = new Promise((resolve) => proc.on('close', (code) => resolve(code)));
   return proc;
 }
 

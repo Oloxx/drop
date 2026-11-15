@@ -33,7 +33,7 @@ function runCli(args, { env = {}, stdin = 'ignore' } = {}) {
     }, ms);
     check();
   });
-  proc.exited = new Promise((resolve) => proc.on('exit', (code) => resolve(code)));
+  proc.exited = new Promise((resolve) => proc.on('close', (code) => resolve(code)));
   return proc;
 }
 
@@ -121,7 +121,7 @@ test('--text envía un fragmento y --stdout lo vuelca limpio por la tubería', {
     let err = '';
     receiver.stdout.on('data', (d) => out.push(d));
     receiver.stderr.on('data', (d) => { err += stripAnsi(d.toString()); });
-    const exitCode = await new Promise((resolve) => receiver.on('exit', resolve));
+    const exitCode = await new Promise((resolve) => receiver.on('close', resolve));
 
     assert.equal(exitCode, 0, err);
     // stdout lleva SOLO el contenido, byte a byte; todo lo demas fue a stderr.

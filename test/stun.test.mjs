@@ -88,7 +88,7 @@ test('`drop send` incluye en `cli-offer` la IP descubierta por STUN sin UPnP', a
       if (m) { clearTimeout(timer); resolve(m[1]); }
     });
     sender.stderr.on('data', (d) => { out += d.toString(); });
-    sender.on('exit', (c) => { clearTimeout(timer); reject(new Error(`sender salio (${c}):\n${out}`)); });
+    sender.on('close', (c) => { clearTimeout(timer); reject(new Error(`sender salio (${c}):\n${out}`)); });
   });
 
   const roomId = code.split('-')[0];

@@ -56,7 +56,7 @@ function runVerifyWebCli(url, githubApi) {
     let out = '';
     p.stdout.on('data', (d) => { out += d; });
     p.stderr.on('data', (d) => { out += d; });
-    p.on('exit', (code) => resolve({ code, out: out.replace(/\x1b\[[0-9;]*m/g, '') }));
+    p.on('close', (code) => resolve({ code, out: out.replace(/\x1b\[[0-9;]*m/g, '') }));
   });
 }
 

@@ -77,7 +77,7 @@ export async function startServer(env = {}) {
     };
     proc.stdout.on('data', check);
     proc.on('error', (err) => { clearTimeout(timer); reject(err); });
-    proc.on('exit', (code) => {
+    proc.on('close', (code) => {
       clearTimeout(timer);
       reject(new Error(`el servidor murio con codigo ${code}:\n${output}`));
     });
@@ -241,7 +241,7 @@ export function spawnCli(args, extraEnv = {}) {
       }, ms);
       check();
     }),
-    exited: new Promise((resolve) => proc.on('exit', (code) => resolve(code))),
+    exited: new Promise((resolve) => proc.on('close', (code) => resolve(code))),
     kill: () => { try { proc.kill('SIGKILL'); } catch {} },
   };
 }
