@@ -19,10 +19,12 @@ import { ROOT } from './helpers.mjs';
 import { generateKeyPair, signContent } from '../scripts/minisign.mjs';
 import {
   PUBLIC_KEY,
+  WINGET_WARNING_EXIT_CODE,
   buildManifests,
   generateWingetManifests,
   parseSums,
   submitWingetPr,
+  validateWingetManifest,
 } from '../scripts/winget.mjs';
 
 function makeTempDir(prefix) {
@@ -147,8 +149,8 @@ test('generateWingetManifests exige firma Minisign valida antes de escribir fich
     if (process.platform === 'win32') {
       const hasWinget = spawnSync('winget', ['--version'], { encoding: 'utf8' }).status === 0;
       if (hasWinget) {
-        const val = spawnSync('winget', ['validate', '--manifest', res.manifestDir], { encoding: 'utf8' });
-        assert.equal(val.status, 0, `winget validate fallo:\n${val.stdout}\n${val.stderr}`);
+        const val = validateWingetManifest(res.manifestDir);
+        assert.equal(val.ok, true);
       }
     }
 
@@ -335,4 +337,73 @@ test('submitWingetPr crea rama limpia con los 3 manifiestos y evita PR duplicada
   } finally {
     server.close();
   }
+});
+
+test('validateWingetManifest solo tolera aviso de URL de esquema 1.12.0 en winget antiguo', () => {
+  // 1. Exito estricto a la primera.
+  const calls1 = [];
+  const ok = validateWingetManifest('C:/dummy', {
+    spawnFn: (cmd, args) => {
+      calls1.push([cmd, args]);
+      return { status: 0, stdout: 'Manifest validation succeeded.\n', stderr: '' };
+    },
+  });
+  assert.equal(ok.usedIgnoreWarnings, false);
+  assert.equal(calls1.length, 1);
+
+  // 2. Winget < 1.12: unico aviso esperado de SchemaHeader -> reintenta con --ignore-warnings y pasa.
+  const calls2 = [];
+  const legacyWarningOutput = [
+    'Manifest validation succeeded with warnings.',
+    'Manifest Warning: The schema header URL does not match the expected pattern. Value: # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json Line: 1, Column: 25 File: Oloxx.drop.installer.yaml',
+    'Manifest Warning: The schema header URL does not match the expected pattern. Value: # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json Line: 1, Column: 25 File: Oloxx.drop.locale.en-US.yaml',
+    'Manifest Warning: The schema header URL does not match the expected pattern. Value: # yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json Line: 1, Column: 25 File: Oloxx.drop.yaml',
+  ].join('\n');
+  const compat = validateWingetManifest('C:/dummy', {
+    verbose: true,
+    spawnFn: (cmd, args) => {
+      calls2.push([cmd, args]);
+      if (calls2.length === 1) {
+        return { status: WINGET_WARNING_EXIT_CODE, stdout: legacyWarningOutput, stderr: '' };
+      }
+      return { status: 0, stdout: 'Manifest validation succeeded.\n', stderr: '' };
+    },
+  });
+  assert.equal(compat.usedIgnoreWarnings, true);
+  assert.deepEqual(calls2[0][1], ['validate', '--manifest', 'C:/dummy', '--verbose']);
+  assert.deepEqual(calls2[1][1], ['validate', '--manifest', 'C:/dummy', '--verbose', '--ignore-warnings']);
+
+  // 3. Cualquier otro aviso debe fallar sin reintentar.
+  let calls3 = 0;
+  assert.throws(
+    () => validateWingetManifest('C:/dummy', {
+      spawnFn: () => {
+        calls3++;
+        return {
+          status: WINGET_WARNING_EXIT_CODE,
+          stdout: `${legacyWarningOutput}\nManifest Warning: Unexpected warning`,
+          stderr: '',
+        };
+      },
+    }),
+    /winget validate fallo/,
+  );
+  assert.equal(calls3, 1);
+
+  // 4. Error de esquema aunque venga acompanado de avisos debe fallar sin reintentar.
+  let calls4 = 0;
+  assert.throws(
+    () => validateWingetManifest('C:/dummy', {
+      spawnFn: () => {
+        calls4++;
+        return {
+          status: 2316632105,
+          stdout: `Manifest Error: Schema Error.\n${legacyWarningOutput}`,
+          stderr: '',
+        };
+      },
+    }),
+    /winget validate fallo/,
+  );
+  assert.equal(calls4, 1);
 });

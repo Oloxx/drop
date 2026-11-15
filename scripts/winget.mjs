@@ -6,8 +6,8 @@
 // `./minisign.mjs` (`verifySignature`).
 //
 // Uso:
-//   node scripts/winget.mjs [tag] [--out <dir>] [--from-dist <dir>] [--date AAAA-MM-DD] [--submit]
-import { execFileSync } from 'node:child_process';
+//   node scripts/winget.mjs [tag] [--out <dir>] [--from-dist <dir>] [--date AAAA-MM-DD] [--validate] [--verbose] [--submit]
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -48,7 +48,7 @@ export function parseSums(text) {
 }
 
 /**
- * Construye los tres ficheros YAML del manifiesto multiarchivo WinGet (`1.28.0`).
+ * Construye los tres ficheros YAML del manifiesto multiarchivo WinGet (`1.12.0`).
  */
 export function buildManifests({ version, sha256, releaseDate, tag }) {
   const ver = String(version || '').replace(/^v/i, '');
@@ -332,6 +332,79 @@ function buildPrBody({ version, isNewPackage }) {
   ].join('\n');
 }
 
+export const WINGET_WARNING_EXIT_CODE = 2316632104;
+
+function escapeRegExp(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isOnlyOutdatedSchemaHeaderWarning(output, schemaVersion = SCHEMA_VERSION) {
+  if (/^\s*Manifest Error:/m.test(output)) return false;
+  const warnings = [...String(output || '').matchAll(/^\s*Manifest Warning:\s*(.+)$/gm)].map((m) => m[1].trim());
+  if (warnings.length === 0) return false;
+
+  const verRe = escapeRegExp(schemaVersion);
+  const expectedWarning = new RegExp(
+    `^The schema header URL does not match the expected pattern\\.\\s+Value:\\s+# yaml-language-server: \\$schema=https://aka\\.ms/winget-manifest\\.(?:version|installer|defaultLocale|locale)\\.${verRe}\\.schema\\.json(?:\\s|$)`,
+  );
+  return warnings.every((line) => expectedWarning.test(line));
+}
+
+/**
+ * Valida un directorio de manifiestos con `winget validate --manifest`.
+ *
+ * Las imagenes antiguas de Windows (p. ej. `windows-latest` con winget < 1.12)
+ * validan el esquema completo pero devuelven el codigo `2316632104` porque la URL
+ * `# yaml-language-server: $schema=...1.12.0.schema.json` no esta en su tabla
+ * empotrada. Solo en ese caso exacto reintenta con `--ignore-warnings`, que
+ * mantiene activa la validacion estricta de errores (`ThrowOnWarning = false`).
+ */
+export function validateWingetManifest(manifestDir, {
+  verbose = false,
+  schemaVersion = SCHEMA_VERSION,
+  spawnFn = spawnSync,
+} = {}) {
+  const args = ['validate', '--manifest', manifestDir];
+  if (verbose) args.push('--verbose');
+
+  const first = spawnFn('winget', args, { encoding: 'utf8' });
+  if (first.error) {
+    throw new Error(`No se pudo ejecutar winget validate: ${first.error.message}`);
+  }
+
+  const status = first.status === null ? -1 : (first.status >>> 0);
+  if (status === 0) {
+    return {
+      ok: true,
+      usedIgnoreWarnings: false,
+      stdout: first.stdout || '',
+      stderr: first.stderr || '',
+    };
+  }
+
+  const combined = [first.stdout, first.stderr].filter(Boolean).join('\n');
+  if (status === WINGET_WARNING_EXIT_CODE && isOnlyOutdatedSchemaHeaderWarning(combined, schemaVersion)) {
+    const retry = spawnFn('winget', [...args, '--ignore-warnings'], { encoding: 'utf8' });
+    if (retry.error) {
+      throw new Error(`No se pudo ejecutar winget validate --ignore-warnings: ${retry.error.message}`);
+    }
+    const retryStatus = retry.status === null ? -1 : (retry.status >>> 0);
+    if (retryStatus !== 0) {
+      const retryCombined = [retry.stdout, retry.stderr].filter(Boolean).join('\n');
+      throw new Error(`winget validate --ignore-warnings fallo (codigo ${retryStatus}):\n${retryCombined}`);
+    }
+    return {
+      ok: true,
+      usedIgnoreWarnings: true,
+      stdout: retry.stdout || '',
+      stderr: retry.stderr || '',
+      warningsOutput: combined,
+    };
+  }
+
+  throw new Error(`winget validate fallo (codigo ${status}):\n${combined}`);
+}
+
 /**
  * Crea o actualiza el fork `<usuario>/winget-pkgs`, sube exclusivamente los 3 YAML
  * en una rama dedicada y abre la Pull Request en `microsoft/winget-pkgs`.
@@ -540,13 +613,17 @@ export async function submitWingetPr(manifest, opts = {}) {
 }
 
 export function parseCliArgs(argv) {
-  const opts = { submit: false };
+  const opts = { submit: false, validate: false, verbose: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') {
       opts.help = true;
     } else if (arg === '--submit') {
       opts.submit = true;
+    } else if (arg === '--validate') {
+      opts.validate = true;
+    } else if (arg === '--verbose') {
+      opts.verbose = true;
     } else if (arg === '--out') {
       opts.outDir = argv[++i];
       if (!opts.outDir) throw new Error('--out necesita un directorio.');
@@ -589,11 +666,18 @@ if (isMain) {
   try {
     const opts = parseCliArgs(process.argv.slice(2));
     if (opts.help) {
-      console.log('Uso: node scripts/winget.mjs [tag] [--out <dir>] [--from-dist <dir>] [--date AAAA-MM-DD] [--submit]');
+      console.log('Uso: node scripts/winget.mjs [tag] [--out <dir>] [--from-dist <dir>] [--date AAAA-MM-DD] [--validate] [--verbose] [--submit]');
       process.exit(0);
     }
     const manifest = await generateWingetManifests(opts);
     console.log(`Manifiestos WinGet ${manifest.version} generados (Minisign OK) en ${manifest.manifestDir}`);
+    if (opts.validate) {
+      const val = validateWingetManifest(manifest.manifestDir, { verbose: opts.verbose });
+      if (val.stdout.trim()) console.log(val.stdout.trim());
+      if (val.usedIgnoreWarnings) {
+        console.log('Aviso: winget local antiguo solo emitio aviso de URL de esquema 1.12.0; validacion completa verificada con --ignore-warnings.');
+      }
+    }
     if (opts.submit) {
       const result = await submitWingetPr(manifest, opts);
       if (result.skipped) {
