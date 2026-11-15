@@ -10,13 +10,14 @@ use rand::RngCore;
 use serde_json::{Value, json};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::cli::Options;
 use crate::commands::{ask_tty_confirm, log_out, print_sas_and_wait_prompt};
 use crate::crypto::{derive_key, proof_from_key, sas_from_key, unseal_frame};
-use crate::discovery::{get_candidate_ips, listen_for_lan, probe_candidate_ips, rank_candidates};
+use crate::discovery::{
+    connect_host, get_candidate_ips, listen_for_lan, probe_candidate_ips, rank_candidates,
+};
 use crate::shared::codes::{Lang, parse_code};
 use crate::shared::protocol::PROTOCOL_VERSION;
 use crate::signaling::{WsEvent, connect_signaling, join_room, translate_error};
@@ -141,7 +142,7 @@ async fn attempt_receive(
         })
     };
 
-    // 1. Descubierta local LAN (UDP broadcast)
+    // 1. Descubierta local LAN (broadcast UDP IPv4 + multicast IPv6)
     if !force_relay && let Some((host, port)) = listen_for_lan(code, 1200).await {
         log_out(
             to_stdout,
@@ -149,7 +150,7 @@ async fn attempt_receive(
         );
         if let Ok(Ok(stream)) = timeout(
             Duration::from_millis(2500),
-            TcpStream::connect((host.as_str(), port)),
+            connect_host(&host, port),
         )
         .await
         {

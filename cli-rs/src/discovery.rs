@@ -1,13 +1,13 @@
-// Descubrimiento en LAN por broadcast UDP y candidatos IPv4/IPv6 + Happy Eyeballs.
+// Descubrimiento en LAN por broadcast UDP IPv4, multicast IPv6 y candidatos + Happy Eyeballs.
 
 use std::collections::HashSet;
 use std::env;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::Duration;
 
 use if_addrs::{IfAddr, get_if_addrs};
 use sha2::{Digest, Sha256};
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -16,6 +16,7 @@ use tokio::time::{interval, timeout};
 use crate::shared::codes::split_for_key;
 
 pub const BROADCAST_PORT: u16 = 42424;
+pub const MULTICAST_V6: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
 /// Etiqueta de sala que viaja en broadcast UDP: primeros 16 hex de SHA-256(roomId).
 pub fn room_hash(code: &str) -> String {
@@ -225,6 +226,80 @@ impl Drop for Broadcaster {
     }
 }
 
+pub fn ipv6_multicast_ifindices() -> Vec<u32> {
+    let Ok(addrs) = get_if_addrs() else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    let mut nic = Vec::new();
+    let mut lo = Vec::new();
+    for iface in addrs {
+        if let IfAddr::V6(_) = iface.addr
+            && let Some(idx) = iface.index
+            && idx != 0
+            && seen.insert(idx)
+        {
+            if iface.is_loopback() {
+                lo.push(idx);
+            } else {
+                nic.push(idx);
+            }
+        }
+    }
+    nic.extend(lo);
+    nic
+}
+
+/// Convierte la dirección de origen UDP en un host conectable por TCP (conserva `%scope_id` en link-local IPv6).
+pub fn format_peer_host(rinfo: SocketAddr) -> String {
+    match rinfo {
+        SocketAddr::V4(v4) => v4.ip().to_string(),
+        SocketAddr::V6(v6) => {
+            if let Some(v4) = v6.ip().to_ipv4_mapped() {
+                return v4.to_string();
+            }
+            if v6.ip().is_unicast_link_local() && v6.scope_id() != 0 {
+                return format!("{}%{}", v6.ip(), v6.scope_id());
+            }
+            v6.ip().to_string()
+        }
+    }
+}
+
+pub fn parse_lan_packet(
+    data: &[u8],
+    rinfo: SocketAddr,
+    expected_hash: &str,
+) -> Option<(String, u16)> {
+    let val = serde_json::from_slice::<serde_json::Value>(data).ok()?;
+    if val.get("t").and_then(|v| v.as_str()) != Some("drop-lan") {
+        return None;
+    }
+    if val.get("h").and_then(|v| v.as_str()) != Some(expected_hash) {
+        return None;
+    }
+    let port = val.get("p").and_then(|v| v.as_u64())?;
+    if !(1..=65535).contains(&port) {
+        return None;
+    }
+    Some((format_peer_host(rinfo), port as u16))
+}
+
+/// Conecta TCP aceptando tanto IPv4/IPv6 literales como link-local IPv6 con zona (`fe80::1%5`).
+pub async fn connect_host(host: &str, port: u16) -> std::io::Result<TcpStream> {
+    let stream = if host.contains(':') {
+        if let Ok(addr) = format!("[{host}]:{port}").parse::<SocketAddr>() {
+            TcpStream::connect(addr).await?
+        } else {
+            TcpStream::connect((host, port)).await?
+        }
+    } else {
+        TcpStream::connect((host, port)).await?
+    };
+    let _ = stream.set_nodelay(true);
+    Ok(stream)
+}
+
 fn create_reusable_udp4(bind_port: u16) -> std::io::Result<UdpSocket> {
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_reuse_address(true)?;
@@ -240,33 +315,93 @@ fn create_reusable_udp4(bind_port: u16) -> std::io::Result<UdpSocket> {
     UdpSocket::from_std(std_sock)
 }
 
+fn create_reusable_udp6(bind_port: u16) -> std::io::Result<UdpSocket> {
+    let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    sock.set_only_v6(true)?;
+    sock.set_reuse_address(true)?;
+    #[cfg(all(unix, not(target_os = "android")))]
+    {
+        let _ = sock.set_reuse_port(true);
+    }
+    let _ = sock.set_multicast_loop_v6(true);
+    let _ = sock.set_multicast_hops_v6(1);
+    sock.set_nonblocking(true)?;
+    let addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, bind_port, 0, 0));
+    sock.bind(&addr.into())?;
+    let std_sock: std::net::UdpSocket = sock.into();
+    UdpSocket::from_std(std_sock)
+}
+
+fn join_v6_multicast(sock: &UdpSocket, ifindices: &[u32]) {
+    let mut joined = false;
+    for &idx in ifindices {
+        if sock.join_multicast_v6(&MULTICAST_V6, idx).is_ok() {
+            joined = true;
+        }
+    }
+    if !joined {
+        let _ = sock.join_multicast_v6(&MULTICAST_V6, 0);
+    }
+}
+
+async fn send_v6_multicast(
+    sock: &UdpSocket,
+    payload: &[u8],
+    udp_port: u16,
+    ifindices: &[u32],
+) {
+    let sock_ref = SockRef::from(sock);
+    if ifindices.is_empty() {
+        let target = SocketAddr::V6(SocketAddrV6::new(MULTICAST_V6, udp_port, 0, 0));
+        let _ = sock.send_to(payload, target).await;
+        return;
+    }
+    for &idx in ifindices {
+        let _ = sock_ref.set_multicast_if_v6(idx);
+        let target = SocketAddr::V6(SocketAddrV6::new(MULTICAST_V6, udp_port, 0, idx));
+        let _ = sock.send_to(payload, target).await;
+    }
+}
+
 pub fn start_broadcasting(code: &str, tcp_port: u16) -> Broadcaster {
+    start_broadcasting_on(code, tcp_port, BROADCAST_PORT)
+}
+
+pub fn start_broadcasting_on(code: &str, tcp_port: u16, udp_port: u16) -> Broadcaster {
     let hash = room_hash(code);
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
 
     let handle = tokio::spawn(async move {
-        let Ok(sock) = create_reusable_udp4(0) else {
+        let v4_sock = create_reusable_udp4(0).ok();
+        let v6_sock = create_reusable_udp6(0).ok();
+        if v4_sock.is_none() && v6_sock.is_none() {
             return;
-        };
+        }
         let payload = serde_json::json!({
             "t": "drop-lan",
             "h": hash,
             "p": tcp_port,
         })
         .to_string();
-        let targets: Vec<SocketAddr> = get_broadcast_addresses()
+        let v4_targets: Vec<SocketAddr> = get_broadcast_addresses()
             .into_iter()
             .filter_map(|ip| ip.parse::<Ipv4Addr>().ok())
-            .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, BROADCAST_PORT)))
+            .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, udp_port)))
             .collect();
+        let v6_ifindices = ipv6_multicast_ifindices();
 
         let mut tick = interval(Duration::from_millis(600));
         loop {
             tokio::select! {
                 _ = &mut stop_rx => break,
                 _ = tick.tick() => {
-                    for &target in &targets {
-                        let _ = sock.send_to(payload.as_bytes(), target).await;
+                    if let Some(ref sock) = v4_sock {
+                        for &target in &v4_targets {
+                            let _ = sock.send_to(payload.as_bytes(), target).await;
+                        }
+                    }
+                    if let Some(ref sock) = v6_sock {
+                        send_v6_multicast(sock, payload.as_bytes(), udp_port, &v6_ifindices).await;
                     }
                 }
             }
@@ -279,31 +414,92 @@ pub fn start_broadcasting(code: &str, tcp_port: u16) -> Broadcaster {
     }
 }
 
+async fn recv_matching_lan(sock: &UdpSocket, expected_hash: &str) -> Option<(String, u16)> {
+    let mut buf = [0u8; 2048];
+    loop {
+        let Ok((n, rinfo)) = sock.recv_from(&mut buf).await else {
+            return None;
+        };
+        if let Some(hit) = parse_lan_packet(&buf[..n], rinfo, expected_hash) {
+            return Some(hit);
+        }
+    }
+}
+
+pub struct LanListener {
+    v4: Option<UdpSocket>,
+    v6: Option<UdpSocket>,
+}
+
+impl LanListener {
+    pub fn bind(udp_port: u16) -> Option<Self> {
+        let v4 = create_reusable_udp4(udp_port).ok();
+        let v6 = Self::bind_v6_socket(udp_port).ok();
+        if v4.is_none() && v6.is_none() {
+            return None;
+        }
+        Some(Self { v4, v6 })
+    }
+
+    pub fn bind_v6(udp_port: u16) -> Option<Self> {
+        let v6 = Self::bind_v6_socket(udp_port).ok()?;
+        Some(Self {
+            v4: None,
+            v6: Some(v6),
+        })
+    }
+
+    fn bind_v6_socket(udp_port: u16) -> std::io::Result<UdpSocket> {
+        let sock = create_reusable_udp6(udp_port)?;
+        let ifindices = ipv6_multicast_ifindices();
+        join_v6_multicast(&sock, &ifindices);
+        Ok(sock)
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        self.v6
+            .as_ref()
+            .or(self.v4.as_ref())
+            .and_then(|s| s.local_addr().ok())
+            .map(|a| a.port())
+    }
+
+    pub async fn accept(&self, code: &str, timeout_ms: u64) -> Option<(String, u16)> {
+        let hash = room_hash(code);
+        let recv_loop = async {
+            match (&self.v4, &self.v6) {
+                (Some(s4), Some(s6)) => {
+                    let mut f4 = std::pin::pin!(recv_matching_lan(s4, &hash));
+                    let mut f6 = std::pin::pin!(recv_matching_lan(s6, &hash));
+                    tokio::select! {
+                        res = &mut f4 => match res {
+                            Some(hit) => Some(hit),
+                            None => f6.await,
+                        },
+                        res = &mut f6 => match res {
+                            Some(hit) => Some(hit),
+                            None => f4.await,
+                        },
+                    }
+                }
+                (Some(s4), None) => recv_matching_lan(s4, &hash).await,
+                (None, Some(s6)) => recv_matching_lan(s6, &hash).await,
+                (None, None) => None,
+            }
+        };
+
+        (timeout(Duration::from_millis(timeout_ms), recv_loop).await)
+            .ok()
+            .flatten()
+    }
+}
+
 pub async fn listen_for_lan(code: &str, timeout_ms: u64) -> Option<(String, u16)> {
     if env::var_os("DROP_NO_LAN").is_some_and(|v| !v.is_empty()) {
         return None;
     }
-    let sock = create_reusable_udp4(BROADCAST_PORT).ok()?;
-    let hash = room_hash(code);
-    let mut buf = [0u8; 2048];
-
-    let recv_loop = async {
-        loop {
-            let Ok((n, rinfo)) = sock.recv_from(&mut buf).await else {
-                return None;
-            };
-            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&buf[..n])
-                && val.get("t").and_then(|v| v.as_str()) == Some("drop-lan")
-                && val.get("h").and_then(|v| v.as_str()) == Some(hash.as_str())
-                && let Some(port) = val.get("p").and_then(|v| v.as_u64())
-                && (1..=65535).contains(&port)
-            {
-                return Some((rinfo.ip().to_string(), port as u16));
-            }
-        }
-    };
-
-    (timeout(Duration::from_millis(timeout_ms), recv_loop).await).unwrap_or(None)
+    let listener = LanListener::bind(BROADCAST_PORT)?;
+    listener.accept(code, timeout_ms).await
 }
 
 /// Happy Eyeballs: sondea IPs escalonadas (`min(i * 100, 300) ms`) y devuelve el primer TCP valido.

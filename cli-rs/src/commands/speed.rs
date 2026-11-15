@@ -6,13 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 
 use crate::cli::Options;
 use crate::discovery::{
-    Broadcaster, get_candidate_ips, is_local_address, listen_for_lan, plain_address,
+    Broadcaster, connect_host, get_candidate_ips, is_local_address, listen_for_lan, plain_address,
     probe_candidate_ips, rank_candidates, start_broadcasting,
 };
 use crate::listen::listen_any_family;
@@ -322,7 +321,7 @@ pub async fn run_speed_guest(input: &str, options: Options) -> i32 {
             print!("\r\x1b[K");
             let desc = format!("Directa TCP (LAN - {host}:{port})");
             println!("  {GREEN}✔ Anfitrión encontrado en red local:{RESET} {desc}\n");
-            if let Ok(stream) = TcpStream::connect((host.as_str(), port)).await {
+            if let Ok(stream) = connect_host(&host, port).await {
                 let mut ch = SpeedChannel::from_tcp(stream, &parsed.code, false, desc);
                 if ch
                     .send_control(&json!({ "k": "hello", "room": parsed.room_id }))

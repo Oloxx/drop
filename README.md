@@ -397,7 +397,7 @@ carpetas enteras puede usar el CLI (`drop recv` retoma el `.part` comprobado con
 
 | Ruta | Qué ocurre | Velocidad típica |
 |---|---|---|
-| **CLI ↔ CLI en LAN** | Broadcast UDP + TCP directo por IP privada | **100–115 MB/s** (satura Gigabit / Wi-Fi 6) |
+| **CLI ↔ CLI en LAN** | Broadcast UDP IPv4 / multicast IPv6 + TCP directo por IP privada | **100–115 MB/s** (satura Gigabit / Wi-Fi 6) |
 | **CLI ↔ CLI por WAN directo** | IPv6 global, UPnP o puerto abierto con `-p` (IP pública vía UPnP / STUN / servidor) | Limitada por tu subida/bajada real de internet |
 | **CLI ↔ CLI por WAN sin ruta (CGNAT / sin UPnP) o CLI ↔ Web** | Relay cifrado (AES-256-GCM) por el WebSocket del servidor | Depende del VPS y de `DROP_RELAY_LIMIT` (sin límite fijo salvo el que ponga la instancia; en un VPS compartido suele acotarse a unos pocos MB/s por sala) |
 | **Web ↔ Web** | WebRTC DataChannel directo (o por TURN si hay NAT simétrico) | **~15 MB/s** directo por límite de SCTP del navegador; por TURN depende de la red y del servidor |
@@ -429,7 +429,7 @@ tras `send`.
 ## ⚙️ ¿Cómo funciona por dentro?
 
 ### 1. Transferencia Nativa CLI (TCP + AES-256-GCM)
-* **Descubrimiento LAN instantáneo:** Emite pings por broadcast UDP (puerto `42424`). En la misma red Wi-Fi o cable, los equipos se encuentran en **< 10 milisegundos** y transfieren por IP privada local sin salir a internet.
+* **Descubrimiento LAN instantáneo:** Emite pings por broadcast UDP IPv4 y multicast IPv6 (`ff02::1`, puerto `42424`). En la misma red Wi-Fi o cable, los equipos se encuentran en **< 10 milisegundos** y transfieren por IP privada local sin salir a internet.
 * **Sockets TCP Directos:** Utiliza `socket.setNoDelay(true)` con búferes de lectura/escritura de 2–4 MB en streaming continuo.
 * **Cifrado E2EE nativo:** Cifrado simétrico AES-256-GCM con aceleración hardware `AES-NI`. La clave
   sale de las cuatro palabras del código pasadas por `scrypt` (ver abajo), nunca del identificador de sala.

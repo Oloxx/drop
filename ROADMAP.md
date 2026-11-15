@@ -27,10 +27,10 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [x] **Reanudación en todas las combinaciones que puedan** (#58): Web→CLI sigue desde el
       `.part` con el prefijo comprobado; explicado en el README junto con el motivo por el que el
       receptor web (Service Worker / Blob) empieza de cero entre sesiones.
-- [x] Decidir si **IPv6** (#37) entra en las rutas directas antes de congelar el formato de
-      `cli-offer`. Decidido y hecho en la v0.9.0: las IPv6 van en `ips` como cadenas sueltas,
-      sin campo de familia, y el emisor escucha en las dos. Lo que queda de #37 (multicast IPv6
-      en el descubrimiento local) no toca la oferta, así que puede ir después.
+- [x] **IPv6 en rutas directas y descubrimiento LAN** (#37): desde la v0.9.0 las IPv6 entran
+      en `ips` y el emisor escucha en dual-stack; completado el descubrimiento local por multicast
+      UDP IPv6 (`ff02::1`, puerto `42424`) en [`cli-rs/src/discovery.rs`](cli-rs/src/discovery.rs)
+      en paralelo al broadcast IPv4.
 
 ## Robustez de lo que ya existe
 

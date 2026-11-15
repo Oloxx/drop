@@ -149,7 +149,7 @@ All four combinations (`Web ↔ Web`, `CLI ↔ CLI`, `CLI → Web`, `Web → CLI
 
 | Path | How it connects | Typical speed |
 |---|---|---|
-| **CLI ↔ CLI on LAN** | UDP broadcast + direct TCP over private IP | **100–115 MB/s** (saturates Gigabit / Wi-Fi 6) |
+| **CLI ↔ CLI on LAN** | UDP broadcast / IPv6 multicast + direct TCP over private IP | **100–115 MB/s** (saturates Gigabit / Wi-Fi 6) |
 | **CLI ↔ CLI over WAN (direct)** | Global IPv6, UPnP, or forwarded `-p` port (public IP discovered via UPnP / STUN / server) | Limited by your upload/download ISP bandwidth |
 | **CLI ↔ CLI over WAN (relay) or CLI ↔ Web** | End-to-end encrypted (`AES-256-GCM`) WebSocket relay via server | Depends on VPS bandwidth and `DROP_RELAY_LIMIT` |
 | **Web ↔ Web** | WebRTC DataChannel direct (or TURN on strict NATs) | **~15 MB/s** direct (browser SCTP limit); TURN depends on server |

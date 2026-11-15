@@ -10,8 +10,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 use drop::discovery::{
-    get_candidate_ips, get_local_ipv6s, is_link_local_v6, is_local_address, is_unique_local_v6,
-    plain_address, probe_candidate_ips, rank_candidates, room_hash,
+    LanListener, connect_host, format_peer_host, get_candidate_ips, get_local_ipv6s,
+    ipv6_multicast_ifindices, is_link_local_v6, is_local_address, is_unique_local_v6,
+    parse_lan_packet, plain_address, probe_candidate_ips, rank_candidates, room_hash,
+    start_broadcasting_on,
 };
 use drop::listen::{explain_listen_error, listen_any_family};
 use drop::pkgmgr::package_manager_of;
@@ -537,4 +539,94 @@ async fn test_ipv6_candidates_and_loopback_transfer() {
     assert_eq!(hex::encode(Sha256::digest(std::fs::read(out_dir.join("v6.bin")).unwrap())), expected_sha);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_lan_packet_parser_ipv4_and_ipv6_scopes() {
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+
+    let code = "4271-lemon-radar-tiger-orbit";
+    let h = room_hash(code);
+    let payload = format!(r#"{{"t":"drop-lan","h":"{h}","p":44123}}"#);
+
+    let r_v4 = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 9), 42424));
+    assert_eq!(
+        parse_lan_packet(payload.as_bytes(), r_v4, &h),
+        Some(("192.168.1.9".into(), 44123))
+    );
+
+    let r_mapped = SocketAddr::V6(SocketAddrV6::new(
+        "::ffff:192.168.1.9".parse::<Ipv6Addr>().unwrap(),
+        42424,
+        0,
+        0,
+    ));
+    assert_eq!(format_peer_host(r_mapped), "192.168.1.9");
+
+    let r_ula = SocketAddr::V6(SocketAddrV6::new(
+        "fd00::1234".parse::<Ipv6Addr>().unwrap(),
+        42424,
+        0,
+        3,
+    ));
+    assert_eq!(
+        parse_lan_packet(payload.as_bytes(), r_ula, &h),
+        Some(("fd00::1234".into(), 44123))
+    );
+
+    let r_ll = SocketAddr::V6(SocketAddrV6::new(
+        "fe80::abc:def".parse::<Ipv6Addr>().unwrap(),
+        42424,
+        0,
+        7,
+    ));
+    assert_eq!(
+        parse_lan_packet(payload.as_bytes(), r_ll, &h),
+        Some(("fe80::abc:def%7".into(), 44123))
+    );
+
+    let wrong_hash = r#"{"t":"drop-lan","h":"deadbeefdeadbeef","p":44123}"#;
+    assert!(parse_lan_packet(wrong_hash.as_bytes(), r_ula, &h).is_none());
+    assert!(parse_lan_packet(br#"{"t":"drop-lan","h":"x","p":0}"#, r_v4, "x").is_none());
+    assert!(parse_lan_packet(br#"{"t":"other","h":"x","p":100}"#, r_v4, "x").is_none());
+    assert!(parse_lan_packet(b"not json", r_v4, &h).is_none());
+
+    let ifindices = ipv6_multicast_ifindices();
+    let unique_ifindices: HashSet<u32> = ifindices.iter().copied().collect();
+    assert_eq!(ifindices.len(), unique_ifindices.len(), "ifindices duplicados: {ifindices:?}");
+    assert!(!ifindices.contains(&0), "ifindex 0 invalido en lista");
+}
+
+#[tokio::test]
+async fn test_lan_discovery_ipv6_multicast_roundtrip() {
+    let Some(listener) = LanListener::bind_v6(0) else {
+        return;
+    };
+    let udp_port = listener.port().expect("puerto UDP IPv6");
+    let tcp_listener = match listen_any_family(0) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let tcp_port = tcp_listener.local_addr().unwrap().port();
+    let srv = tokio::spawn(async move {
+        let _ = tcp_listener.accept().await;
+    });
+
+    let code = "5512-coral-amber-tulip-spark";
+    let mut bc = start_broadcasting_on(code, tcp_port, udp_port);
+    // Un codigo de otra sala no debe resolverse sobre el mismo canal multicast.
+    assert!(listener.accept("9999-coral-amber-tulip-spark", 120).await.is_none());
+    let hit = listener.accept(code, 2000).await;
+    bc.stop();
+
+    if let Some((host, discovered_port)) = hit {
+        assert_eq!(discovered_port, tcp_port);
+        assert!(host.contains(':'), "debia descubrir direccion IPv6: {host}");
+        let conn = connect_host(&host, discovered_port).await;
+        assert!(conn.is_ok(), "fallo al conectar TCP tras descubrir {host}:{discovered_port}: {conn:?}");
+        srv.await.unwrap();
+    } else {
+        // Entorno sin ruta/soporte de multicast IPv6 en loopback ni NICs; no debe paniquear ni romper IPv4.
+        srv.abort();
+    }
 }

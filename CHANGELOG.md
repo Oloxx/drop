@@ -11,6 +11,9 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+### Añadido
+- **Descubrimiento LAN por multicast IPv6 (#37):** [`cli-rs/src/discovery.rs`](cli-rs/src/discovery.rs) anuncia y escucha pings `drop-lan` en `ff02::1:42424` en paralelo al broadcast IPv4, con soporte de conexión TCP para direcciones link-local con zona (`fe80::...%scope_id`) en [`connect_host`](cli-rs/src/discovery.rs).
+
 ### Seguridad
 - **Validación de `X-Forwarded-For` y proxies de confianza (#59):** [`server/index.js`](server/index.js) ignora `X-Forwarded-For` por defecto y solo extrae la IP real del cliente (de derecha a izquierda) cuando el socket entra desde `DROP_TRUST_PROXY` (`loopback,private` en [docker-compose.yml](docker-compose.yml)), mientras que [Caddyfile](Caddyfile) sobrescribe la cabecera con `{remote_host}`.
 - **Restricción de peers en `coturn` (#60):** añadidas reglas `--denied-peer-ip` en [docker-compose.yml](docker-compose.yml) para bloquear retransmisiones hacia loopback, redes privadas RFC 1918/CGNAT, link-local y metadatos cloud (`169.254.0.0/16`).
