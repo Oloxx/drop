@@ -2,6 +2,7 @@
 
 use std::env;
 use std::fs;
+#[cfg(windows)]
 use std::path::PathBuf;
 
 #[cfg(not(windows))]

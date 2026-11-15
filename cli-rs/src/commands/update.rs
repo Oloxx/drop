@@ -3,7 +3,9 @@
 use std::env;
 use std::fs;
 use std::io::{self, Cursor, IsTerminal, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 

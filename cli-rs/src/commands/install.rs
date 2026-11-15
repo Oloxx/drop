@@ -5,7 +5,9 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-use crate::ui::{BOLD, CYAN, DIM, GREEN, RED, RESET, YELLOW};
+use crate::ui::{BOLD, CYAN, DIM, GREEN, RED, RESET};
+#[cfg(windows)]
+use crate::ui::YELLOW;
 
 pub fn home_dir() -> PathBuf {
     #[cfg(windows)]

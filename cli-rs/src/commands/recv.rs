@@ -193,7 +193,7 @@ async fn attempt_receive(
 
     let offer = wait_for_offer(&mut client.events).await?;
     if offer.v != Some(PROTOCOL_VERSION as u64) {
-        client.sender.close();
+        client.sender.close_and_wait().await;
         return Err(TransferError::new(
             "PROTOCOL_VERSION",
             format!(
@@ -211,7 +211,7 @@ async fn attempt_receive(
         let local_ips = get_candidate_ips();
         let ranked = rank_candidates(&offer.ips, &local_ips);
         if let Some((stream, ip)) = probe_candidate_ips(&ranked, offer.port, 2500).await {
-            client.sender.close();
+            client.sender.close_and_wait().await;
             log_out(
                 to_stdout,
                 &format!(
@@ -240,7 +240,7 @@ async fn attempt_receive(
     }
 
     if options.direct_only {
-        client.sender.close();
+        client.sender.close_and_wait().await;
         return Err(TransferError::new(
             "DIRECT_ONLY",
             "No fue posible establecer conexión directa TCP y se especificó --direct-only.",
@@ -279,7 +279,7 @@ async fn attempt_receive(
             None,
             &json!({ "type": "cli-error", "message": "Cancelado por el receptor" }),
         );
-        client.sender.close();
+        client.sender.close_and_wait().await;
         return Err(TransferError::new("CANCELLED", "Cancelado por el usuario"));
     }
 
@@ -295,7 +295,7 @@ async fn attempt_receive(
         Some(make_resume_cb(to_stdout)),
     )
     .await;
-    client.sender.close();
+    client.sender.close_and_wait().await;
     res
 }
 

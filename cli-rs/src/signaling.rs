@@ -3,6 +3,7 @@
 use std::env;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -60,6 +61,7 @@ pub struct SignalingSender {
     tx: mpsc::UnboundedSender<(Message, usize)>,
     queued_bytes: Arc<AtomicUsize>,
     queued_tx: watch::Sender<usize>,
+    writer_done: watch::Sender<bool>,
 }
 
 impl SignalingSender {
@@ -116,6 +118,12 @@ impl SignalingSender {
     pub fn close(&self) {
         let _ = self.tx.send((Message::Close(None), 0));
     }
+
+    pub async fn close_and_wait(&self) {
+        let mut rx = self.writer_done.subscribe();
+        self.close();
+        let _ = tokio::time::timeout(Duration::from_secs(2), rx.wait_for(|&done| done)).await;
+    }
 }
 
 pub struct SignalingClient {
@@ -147,9 +155,11 @@ pub async fn connect_signaling(server_url: &str) -> Result<SignalingClient, Stri
     let (ev_tx, ev_rx) = mpsc::unbounded_channel::<WsEvent>();
     let queued_bytes = Arc::new(AtomicUsize::new(0));
     let (queued_tx, _queued_rx) = watch::channel(0usize);
+    let (writer_done_tx, _writer_done_rx) = watch::channel(false);
 
     let qb_writer = Arc::clone(&queued_bytes);
     let qt_writer = queued_tx.clone();
+    let wd_writer = writer_done_tx.clone();
     tokio::spawn(async move {
         while let Some((msg, len)) = out_rx.recv().await {
             let is_close = matches!(msg, Message::Close(_));
@@ -167,6 +177,7 @@ pub async fn connect_signaling(server_url: &str) -> Result<SignalingClient, Stri
         qb_writer.store(0, Ordering::SeqCst);
         let _ = qt_writer.send(0);
         let _ = sink.close().await;
+        let _ = wd_writer.send(true);
     });
 
     tokio::spawn(async move {
@@ -199,6 +210,7 @@ pub async fn connect_signaling(server_url: &str) -> Result<SignalingClient, Stri
             tx: out_tx,
             queued_bytes,
             queued_tx,
+            writer_done: writer_done_tx,
         },
         events: ev_rx,
         public_ip: None,

@@ -1752,6 +1752,7 @@ pub async fn receive_from_relay(
                                 }
                                 let _ = ws_sender
                                     .send_signal(None, &json!({ "type": "cli-complete" }));
+                                let _ = timeout(Duration::from_secs(2), ws_sender.drain()).await;
                                 break;
                             }
                             _ => {}

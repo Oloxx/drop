@@ -993,7 +993,9 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                         if let Some(guest_id) = msg.get("guestId").and_then(|v| v.as_u64()) {
                             pending_proofs.remove(&guest_id);
                             guest_picks.remove(&guest_id);
-                            if let Some(gs) = guest_streams.lock().await.remove(&guest_id) {
+                            if let Some(gs) = guest_streams.lock().await.remove(&guest_id)
+                                && !gs.completed.load(Ordering::SeqCst)
+                            {
                                 *gs.cancel_reason.lock().await =
                                     Some("El receptor se desconectó".to_string());
                                 gs.cancelled.store(true, Ordering::SeqCst);
@@ -1204,7 +1206,7 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
         b.stop();
     }
     if let Some(ws) = ws_sender_opt {
-        ws.close();
+        ws.close_and_wait().await;
     }
     if let Some(m) = upnp_mapping_slot.lock().await.take() {
         let _ = timeout(Duration::from_secs(2), m.unmap()).await;
