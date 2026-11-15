@@ -402,7 +402,15 @@ carpetas enteras puede usar el CLI (`drop recv` retoma el `.part` comprobado con
 | **CLI ↔ CLI por WAN sin ruta (CGNAT / sin UPnP) o CLI ↔ Web** | Relay cifrado (AES-256-GCM) por el WebSocket del servidor | Depende del VPS y de `DROP_RELAY_LIMIT` (sin límite fijo salvo el que ponga la instancia; en un VPS compartido suele acotarse a unos pocos MB/s por sala) |
 | **Web ↔ Web** | WebRTC DataChannel directo (o por TURN si hay NAT simétrico) | **~15 MB/s** directo por límite de SCTP del navegador; por TURN depende de la red y del servidor |
 
-#### 5. Comandos de gestión del CLI
+#### 5. Servidor local propio (`drop serve`)
+El propio binario `drop` lleva embebida la web (`public/`) y el servidor WebSocket de señalización y relay: sirve para transferir entre ordenadores y navegadores de tu red local sin internet y sin instalar Node.js:
+```bash
+drop serve                  # escucha en el puerto 3000 en todas las interfaces (0.0.0.0 y ::)
+drop serve -p 8080 -H 127.0.0.1
+```
+El resto de equipos solo tienen que abrir la URL LAN que imprime al arrancar en el navegador o apuntar el CLI con `-s http://<ip-local>:3000` (o `DROP_SERVER=http://<ip-local>:3000`).
+
+#### 6. Comandos de gestión del CLI
 ```bash
 drop update       # Comprueba y actualiza automáticamente a la última versión de GitHub
 drop install      # Instala drop en el sistema y lo añade al PATH

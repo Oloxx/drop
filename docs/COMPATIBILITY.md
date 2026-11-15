@@ -24,7 +24,7 @@ sección 1 cambia de forma incompatible. Lo que no está en la lista no es prome
   lista BIP-39 inglesa, en el fragmento del enlace (`/#<código>`), con la tolerancia de siempre al
   teclearlo (mayúsculas, espacios, prefijos de cuatro letras). Un código que vale en una 1.x vale
   en todas.
-- **La interfaz del CLI:** las órdenes (`send`, `recv`, `speed`, `update`, `install`,
+- **La interfaz del CLI:** las órdenes (`send`, `recv`, `speed`, `serve`, `update`, `install`,
   `uninstall`, `completion`, `verify-web`) y los flags que salen en `drop --help` siguen existiendo y
   significando lo mismo; el código de salida es `0` cuando todo ha ido bien y distinto de `0` si
   no; con `--stdout` (o `-o -`) por la salida estándar solo sale el contenido de los archivos.

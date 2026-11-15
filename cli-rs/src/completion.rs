@@ -4,6 +4,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("send", "Envía archivos, carpetas o stdin (-)"),
     ("recv", "Recibe con un código o enlace"),
     ("speed", "Mide la velocidad entre dos CLI"),
+    ("serve", "Levanta el servidor web y de señalización local"),
     ("update", "Instala la última versión"),
     ("install", "Instala drop en el sistema"),
     ("uninstall", "Desinstala drop"),
@@ -35,8 +36,10 @@ pub const FLAGS: &[FlagSpec] = &[
     FlagSpec { flag: "--no-qr", cmds: &["send"], desc: "No pinta el QR", arg: None },
     FlagSpec { flag: "--yes", cmds: &["send"], desc: "No pide confirmación por receptor", arg: None },
     FlagSpec { flag: "-y", cmds: &["send"], desc: "No pide confirmación por receptor", arg: None },
-    FlagSpec { flag: "--port", cmds: &["send", "speed"], desc: "Puerto TCP local", arg: Some("text") },
-    FlagSpec { flag: "-p", cmds: &["send", "speed"], desc: "Puerto TCP local", arg: Some("text") },
+    FlagSpec { flag: "--port", cmds: &["send", "speed", "serve"], desc: "Puerto TCP local", arg: Some("text") },
+    FlagSpec { flag: "-p", cmds: &["send", "speed", "serve"], desc: "Puerto TCP local", arg: Some("text") },
+    FlagSpec { flag: "--host", cmds: &["serve"], desc: "Dirección de escucha", arg: Some("text") },
+    FlagSpec { flag: "-H", cmds: &["serve"], desc: "Dirección de escucha", arg: Some("text") },
     FlagSpec { flag: "--limit", cmds: &["send", "recv"], desc: "Límite de ancho de banda (500K, 10M)", arg: Some("text") },
     FlagSpec { flag: "--relay", cmds: &["send", "recv", "speed"], desc: "Fuerza el relay por el servidor", arg: None },
     FlagSpec { flag: "--direct-only", cmds: &["speed"], desc: "Solo TCP directo", arg: None },
@@ -96,7 +99,7 @@ _drop() {{
   done
   case "$prev" in
     -o|--out) COMPREPLY=( $(compgen -d -- "$cur") ); return ;;
-    -s|--server|--text|--name|--expire|--limit|--only|-p|--port|-t|--time) return ;;
+    -s|--server|--text|--name|--expire|--limit|--only|-p|--port|-H|--host|-t|--time) return ;;
     completion) COMPREPLY=( $(compgen -W "{shells_w}" -- "$cur") ); return ;;
   esac
   if [[ -z "$cmd" ]]; then

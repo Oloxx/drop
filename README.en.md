@@ -136,10 +136,13 @@ Interrupted transfers leave `.part` files and automatically resume after SHA-256
 
 ```bash
 drop speed [code]                 # measure RTT and throughput between two CLI peers
+drop serve [-p port] [-H host]    # run standalone signaling + embedded web server (default port 3000)
 drop verify-web [url]             # verify served public/ files match the repo commit in /version
 drop update                       # self-update with minisign + SHA-256 verification
 drop completion bash|zsh|fish|powershell
 ```
+
+Running `drop serve` embeds the static `public/` web UI inside the native binary, allowing air-gapped LAN transfers (CLI or browser, by pointing peers to `-s http://<lan-ip>:3000`) with zero Node.js or external runtime dependencies.
 
 ---
 

@@ -3,6 +3,7 @@
 pub mod install;
 pub mod recv;
 pub mod send;
+pub mod serve;
 pub mod speed;
 pub mod uninstall;
 pub mod update;

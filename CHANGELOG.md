@@ -12,6 +12,7 @@ Las notas de cada release, con los binarios, están en
 ## [Sin publicar]
 
 ### Añadido
+- **Servidor web y de señalización propio en el CLI (`drop serve`, #39):** [`cli-rs/src/commands/serve.rs`](cli-rs/src/commands/serve.rs) y [`cli-rs/build.rs`](cli-rs/build.rs) embeben `public/` dentro del binario nativo y añaden `drop serve [-p <puerto>] [-H <dir>]` con soporte HTTP (`/config`, `/healthz`, `/version`, rutas limpias y cabeceras de seguridad CSP) y servidor WebSocket de señalización y relay cifrado para trabajar en redes aisladas o autoalojado con un solo ejecutable.
 - **Descubrimiento LAN por mDNS / DNS-SD (#38):** [`cli-rs/src/mdns.rs`](cli-rs/src/mdns.rs) anuncia `_drop._tcp.local` (`PTR`, `SRV`, `TXT` con `h=<roomHash>` y `p=<puerto>`, sin filtrar el secreto de 4 palabras) y consulta en paralelo al broadcast/multicast UDP de [`cli-rs/src/discovery.rs`](cli-rs/src/discovery.rs), con degradación limpia si el puerto `5353` no se puede enlazar.
 - **Respaldo automático NAT-PMP (RFC 6886, #11):** [`cli-rs/src/natpmp.rs`](cli-rs/src/natpmp.rs) e integración en [`cli-rs/src/upnp.rs`](cli-rs/src/upnp.rs) para mapear, renovar y limpiar puertos TCP mediante NAT-PMP (`gw:5351`) cuando UPnP IGD no responde o falla.
 - **Detección de WinGet en el gestor de paquetes (#40):** [`cli-rs/src/pkgmgr.rs`](cli-rs/src/pkgmgr.rs) detecta binarios en rutas `WinGet\Packages` / `WinGet\Links` para bloquear `drop update` / `drop install` / `drop uninstall` y sugerir `winget upgrade Oloxx.drop`.

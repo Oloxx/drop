@@ -68,6 +68,7 @@ pub fn format_help() -> String {
   drop recv <código-o-enlace>           Recibe los archivos
   drop recv <código> --stdout           Escribe lo recibido en la salida estándar
   drop speed [código-o-enlace]          Mide la velocidad de transferencia entre 2 clientes CLI
+  drop serve [-p <puerto>] [-H <dir>]   Levanta el servidor web y de señalización local
   drop verify-web [url]                 Comprueba que una web de drop sirve el código del repositorio
   drop update                           Busca e instala la última versión disponible
   drop install                          Instala drop en el sistema y lo añade al PATH
@@ -76,7 +77,8 @@ pub fn format_help() -> String {
 
 {BOLD}OPCIONES:{RESET}
   -t, --time <segundos>  Duración de cada fase del test de velocidad (por defecto: 5s)
-  -p, --port <puerto>    Puerto TCP local para escucha (por defecto: aleatorio)
+  -p, --port <puerto>    Puerto TCP local para escucha (por defecto: aleatorio; 3000 en 'serve')
+  -H, --host <dir>       Dirección de escucha para 'drop serve' (por defecto: 0.0.0.0 y ::)
   -s, --server <url>     Servidor de señalización (por defecto: {default_srv})
   -o, --out <directorio> Directorio de destino para descargas (por defecto: actual)
   --stdout               Vuelca lo recibido a stdout en vez de a disco (también -o -);
@@ -132,6 +134,8 @@ pub fn format_help() -> String {
   drop speed
   drop speed 4271-lemon-radar-tiger-orbit
   drop speed 4271-lemon-radar-tiger-orbit -t 10
+  drop serve
+  drop serve -p 8080 -H 127.0.0.1
   drop update
   drop verify-web https://drop.oloxx.dev
   eval "$(drop completion bash)"        # o zsh; fish y powershell en la ayuda del script
@@ -179,6 +183,8 @@ pub struct Options {
     pub out: Option<String>,
     pub time: u64,
     pub port: u16,
+    pub port_explicit: bool,
+    pub host: Option<String>,
     pub direct_only: bool,
     pub relay: bool,
     pub overwrite: bool,
@@ -202,6 +208,8 @@ impl Default for Options {
             out: None,
             time: 5,
             port: 0,
+            port_explicit: false,
+            host: None,
             direct_only: false,
             relay: false,
             overwrite: false,
@@ -431,6 +439,14 @@ pub async fn run_cli(argv: Vec<String>) {
                 ));
             };
             options.port = port;
+            options.port_explicit = true;
+            i += 2;
+        } else if arg == "-H" || arg == "--host" {
+            let val = require_val(i + 1, arg);
+            if val.is_empty() {
+                die_msg("--host necesita una dirección IP.");
+            }
+            options.host = Some(val);
             i += 2;
         } else if arg == "-t" || arg == "--time" {
             let raw = require_val(i + 1, arg);
@@ -535,6 +551,20 @@ pub async fn run_cli(argv: Vec<String>) {
             } else {
                 crate::commands::speed::run_speed_guest(&rest.join(" "), options).await
             };
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        "serve" => {
+            if !rest.is_empty() {
+                die_with_help(&format!("Argumento inesperado en serve: {}", rest.join(" ")));
+            }
+            let port = if options.port_explicit {
+                options.port
+            } else {
+                3000
+            };
+            let code = crate::commands::serve::run_serve(options.host.as_deref(), port).await;
             if code != 0 {
                 process::exit(code);
             }

@@ -114,7 +114,7 @@ function runCli(args) {
 }
 
 test('--help funciona también detrás de cualquier suborden', () => {
-  for (const cmd of ['verify-web', 'update', 'completion', 'install', 'uninstall']) {
+  for (const cmd of ['serve', 'verify-web', 'update', 'completion', 'install', 'uninstall']) {
     const res = runCli([cmd, '--help']);
     assert.equal(res.status, 0, `${cmd} --help debería salir con 0`);
     assert.match(res.stdout, /USO:/);

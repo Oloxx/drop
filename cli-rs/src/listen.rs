@@ -1,7 +1,7 @@
 // Arranque de servidores TCP dual-stack IPv6/IPv4 con mensajes legibles.
 
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::TcpListener;
@@ -83,4 +83,41 @@ pub fn listen_any_family(port: u16) -> Result<TcpListener, ListenError> {
             raw: err,
         }),
     }
+}
+
+/// Escucha en una dirección concreta (`--host`), o en todas si es `None` o `::`.
+pub fn listen_on_addr(host: Option<&str>, port: u16) -> Result<TcpListener, ListenError> {
+    let Some(raw_host) = host.map(str::trim).filter(|s| !s.is_empty()) else {
+        return listen_any_family(port);
+    };
+    let clean = raw_host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(raw_host);
+    if clean == "::" {
+        return listen_any_family(port);
+    }
+    let ip: IpAddr = if clean.eq_ignore_ascii_case("localhost") {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        match clean.parse::<IpAddr>() {
+            Ok(ip) => ip,
+            Err(_) => {
+                return Err(ListenError {
+                    raw: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Dirección inválida: {raw_host}"),
+                    ),
+                    message: format!(
+                        "Dirección de escucha no válida para --host: \"{raw_host}\". Usa una IP como 0.0.0.0, 127.0.0.1 o ::1."
+                    ),
+                });
+            }
+        }
+    };
+
+    bind_socket(SocketAddr::new(ip, port), false).map_err(|e| ListenError {
+        message: explain_listen_error(&e, port),
+        raw: e,
+    })
 }

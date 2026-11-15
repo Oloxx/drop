@@ -137,10 +137,11 @@ Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versió
 - [x] **README en inglés** además del español: [`README.en.md`](README.en.md) enlazado desde
       [`README.md`](README.md) y comprobado en `test/version.test.mjs` para que los enlaces de
       descarga no se queden atrás.
+- [x] **Servidor web y de señalización embebido** (#39): [`cli-rs/src/commands/serve.rs`](cli-rs/src/commands/serve.rs)
+      implementa `drop serve [-p <puerto>] [-H <dir>]` con los archivos de `public/` embebidos en
+      compilación ([`cli-rs/build.rs`](cli-rs/build.rs)), `/config`, `/healthz`, `/version`,
+      cabeceras de seguridad y el servidor WebSocket de señalización y relay sin depender de Node.
 - [x] **Checklist de release** en `CONTRIBUTING.md` ("Publicar una versión"). Desde la v0.8.0.
-- [ ] **Cerrar o descartar** cada issue abierto con `P3` que no entre: #39
-      (servidor de señalización embebido). Una 1.0 con quince issues de "algún día" abiertos
-      no dice nada; una con pocos puntos decididos, sí.
 
 ## Lo que la 1.0 no necesita
 
