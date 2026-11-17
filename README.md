@@ -1,126 +1,149 @@
-**Español** | [English](README.en.md)
+<div align="center">
 
-# Drop 📦⚡
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg">
+  <img alt="drop logo" src="docs/assets/logo-dark.svg" width="230">
+</picture>
 
-Transferencia de archivos P2P cifrada de extremo a extremo, sin cuentas y sin límites de tamaño.
+<p>
+  <strong>End-to-end encrypted peer-to-peer file transfer</strong> — from a browser or terminal.<br>
+  No accounts, no cloud storage, no file size limits.
+</p>
 
-Los archivos viajan **directamente entre dispositivos**: el servidor actúa exclusivamente como señalizador para que ambos extremos se encuentren.
+<p>
+  <a href="https://github.com/Oloxx/drop/releases/latest"><img src="https://img.shields.io/github/v/release/Oloxx/drop?style=flat-square&color=22c55e&labelColor=111113" alt="Latest release"></a>
+  <a href="https://github.com/Oloxx/drop/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Oloxx/drop/ci.yml?branch=main&style=flat-square&label=CI&labelColor=111113" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-f4f4f5?style=flat-square&labelColor=111113" alt="Apache 2.0 License"></a>
+</p>
 
-```
-  Tú                     Servidor                   Receptor
-  │  1. Crear sala ──────► (devuelve "4271")            ▲
-  │     + sorteas las palabras aquí mismo               │
-  │                                                     │
-  │  2. Dictas 4271-lemon-radar-tiger-orbit ────────────┤ 3. Lo teclea, o abre el enlace
-  │◄── 4. Señalización (SDP/ICE o IPs locales) ────────►│
-  │                                                     │
-  │  5. TRANSFERENCIA P2P DIRECTA CIFRADA (E2EE) ──────►│
-  └─────────────────────────────────────────────────────┘
-```
+<p>
+  <a href="https://drop.oloxx.dev"><strong>Try Live Web App</strong></a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#installation">Install</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#architecture--security">Security</a> ·
+  <a href="#self-hosting--development">Self-Hosting</a>
+</p>
 
-El código tiene dos mitades con papeles distintos: **`4271` identifica la sala** y es lo
-único que viaja al servidor; **las cuatro palabras son el secreto** del que sale la clave
-de cifrado y no salen nunca de tu equipo. Detalle completo en
-[Modelo de seguridad del código](#-modelo-de-seguridad-del-código).
+<p><strong>English</strong> · <a href="README.es.md">Español</a></p>
+
+</div>
 
 ---
 
-## 🚀 Dos Modos de Uso
+## Quick Start
 
-| Característica | 🌐 Drop Web | 💻 Drop CLI (`drop`) |
+### Option 1 · Browser (zero install)
+
+Open **[`drop.oloxx.dev`](https://drop.oloxx.dev)** — drop, select, or paste (`Ctrl+V` / `Cmd+V`) files, screenshots, or text, then share the one-time code, link, or QR.
+
+### Option 2 · Terminal CLI (full line speed)
+
+```bash
+# Install via Homebrew (macOS / Linux) or WinGet / Scoop (Windows)
+brew install oloxx/tap/drop      # or: winget install Oloxx.drop
+```
+
+```bash
+# Send a file, folder, or clipboard
+drop send movie.mkv
+
+# Receive on another machine (or from the browser)
+drop recv 4271-lemon-radar-tiger-orbit
+```
+
+### Web vs. CLI at a Glance
+
+| | Web ([`drop.oloxx.dev`](https://drop.oloxx.dev)) | Terminal CLI (`drop`) |
 |---|---|---|
-| **Ideal para** | Amigos, móviles, tablets, envíos rápidos | Archivos gigantes (ISOs, backups, vídeos) |
-| **Instalación** | **Cero**. Solo abrir el navegador | **Auto-instalable** (1 clic) sin dependencias |
-| **Protocolo** | WebRTC DataChannel | Sockets TCP directos + LAN UDP + UPnP/STUN |
-| **Velocidad** | ~15 MB/s (límite SCTP del navegador) | **100–115 MB/s** en LAN; por WAN según ruta (ver abajo) |
-| **Compatibilidad** | Con otro navegador y con el CLI | Con otro CLI y con el navegador (las cuatro combinaciones, ver [Interoperabilidad](#4-interoperabilidad-total-cli--web-browser)) |
+| **Best for** | Phones, tablets, quick browser transfers | Large files (ISOs, backups, videos, folder trees) |
+| **Install** | Zero — open in any modern browser | Single static binary (~5.4 MB, zero runtime deps) |
+| **Transport** | WebRTC DataChannel (or TURN) | Direct TCP + LAN UDP/mDNS + UPnP/NAT-PMP/STUN (or E2EE relay) |
+| **Typical speed** | ~15 MB/s (browser SCTP limit) | **100–115 MB/s** on LAN; WAN bound by ISP link |
+| **Interoperability** | Talks to Web and CLI | Talks to CLI and Web (all 4 combinations) |
+| **Self-hosting** | Docker Compose / Node.js | Built-in `drop serve` (embedded web UI + WebSocket relay) |
 
 ---
 
-## 📥 Descargas (Versión v0.13.0)
+## How It Works
 
-Descarga directa de los binarios autónomos (sin necesidad de tener Node.js instalado) desde la [Release v0.13.0](https://github.com/Oloxx/drop/releases/tag/v0.13.0):
+* **Direct by default:** Peers exchange files directly over WebRTC DataChannels (browser) or direct TCP (CLI, with < 10 ms LAN discovery via IPv4 broadcast, IPv6 multicast, and mDNS). When NATs block direct sockets, traffic flows through a relay using end-to-end AES-256-GCM encryption — the server only forwards ciphertext.
+* **Zero server secrets:** The share code separates routing from cryptography. Only the 4-digit room number touches the signaling server; the four BIP-39 words derive the encryption key locally and **never leave your device**.
+* **Multi-receiver without extra uplink:** Browser transfers form a cut-through fanout chain (`Sender → A → B → C`) so sending to 5 people uploads only one copy from your connection.
+* **Verifiable builds & web assets:** Every release is signed with Minisign and SHA-256, and `drop verify-web` lets you check byte-for-byte that any web instance matches GitHub's `public/` tree.
 
-* **Windows (x64):** [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe)
-* **Linux (x64):** [`drop-v0.13.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-x64.tar.gz)
-* **Linux (ARM64):** [`drop-v0.13.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-arm64.tar.gz) *(Raspberry Pi, VPS Oracle ARM, AWS Graviton)*
-* **macOS (Apple Silicon):** [`drop-v0.13.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz) *(M1, M2, M3, M4)*
-
-
-### Verificar la descarga
-
-Cada release publica un `SHA256SUMS` con el hash de todos los binarios y un `SHA256SUMS.minisig` con su firma. Son dos comprobaciones distintas y conviene hacer las dos: el hash dice que el binario ha llegado entero, la firma dice que lo publicó quien tiene la clave del proyecto.
-
-**1. La firma** (a partir de la v0.5.2), con [minisign](https://jedisct1.github.io/minisign/):
-
-```bash
-minisign -Vm SHA256SUMS -P RWQqNnfqvCrj+eavJ9njz2vCoHaC8YnLqjsvNBMndz3hBroQLpou7+Kp
+```text
+  Sender                 Server                     Receiver
+  │  1. Create room ─────► (returns "4271")            ▲
+  │     + draw 4 words locally                         │
+  │                                                    │
+  │  2. Share 4271-lemon-radar-tiger-orbit ────────────┤ 3. Enter code or open link
+  │◄── 4. Signaling (SDP/ICE or local/STUN IPs) ──────►│
+  │                                                    │
+  │  5. DIRECT E2EE P2P TRANSFER ─────────────────────►│
+  └────────────────────────────────────────────────────┘
 ```
-
-Esa clave pública es la del proyecto; la privada solo la usa el workflow de release. Si `minisign` responde `Signature and comment signature verified`, el `SHA256SUMS` es auténtico.
-
-**2. El hash** del binario que has bajado:
-
-```bash
-# Linux / macOS
-sha256sum -c SHA256SUMS --ignore-missing
-
-# Windows (PowerShell)
-Get-FileHash drop-v0.13.0-windows-x64.exe -Algorithm SHA256
-```
-
-`drop update` hace las dos por su cuenta antes de sustituir el ejecutable y aborta si algo no cuadra. Con una release anterior a la v0.5.2, que no lleva firma, avisa y exige `--allow-unsigned` para seguir: así, borrar la firma no basta para que se conforme con el hash.
 
 ---
 
-## 🛠️ Instalación en el Sistema
+## Installation
 
-### Con un gestor de paquetes (recomendado)
+### Package Managers (Recommended)
 
 ```bash
-# macOS y Linux, con Homebrew
+# macOS & Linux (Homebrew)
 brew install oloxx/tap/drop
 ```
 
 ```powershell
-# Windows, con WinGet (paquete oficial en microsoft/winget-pkgs)
+# Windows (WinGet — microsoft/winget-pkgs)
 winget install Oloxx.drop
 
-# Windows, con Scoop
+# Windows (Scoop)
 scoop bucket add oloxx https://github.com/Oloxx/scoop-bucket
 scoop install oloxx/drop
 ```
 
-Se actualizan con `brew upgrade drop`, `winget upgrade Oloxx.drop` y `scoop update drop`, no con `drop update`: el binario es
-del gestor, y `drop` lo detecta por su ruta para decirte qué orden usar.
-Ninguno provoca avisos de Gatekeeper o SmartScreen, y los tres manifiestos se generan
-solo después de comprobar la firma minisign del `SHA256SUMS` de la release
-([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket), [`scripts/winget.mjs`](scripts/winget.mjs)).
+Managed installations upgrade through your package manager (`brew upgrade drop`, `winget upgrade Oloxx.drop`, or `scoop update drop`) rather than `drop update` — `drop` detects its install path and guides you automatically. All manifests are updated only after verifying the release `SHA256SUMS.minisig` signature ([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket), [`scripts/winget.mjs`](scripts/winget.mjs)).
 
-### Windows
-Simplemente **descarga [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe) y haz doble clic sobre él**.
-1. Se abrirá una ventana que lo copiará automáticamente a tu carpeta de programas (`%LOCALAPPDATA%\Programs\drop\`).
-2. Añadirá de forma automática y permanente la ruta a tu variable de entorno `PATH`.
-3. Ya podrás abrir cualquier terminal (**PowerShell, CMD o Windows Terminal**) y usar directamente el comando `drop`.
+### Direct Downloads (`v0.13.0`)
 
-### Linux / macOS
-Descarga el archivo correspondiente, extráelo y ejecútalo con `install`:
+Standalone static binaries with zero external dependencies (no Node.js or Visual C++ Redistributable) from the [v0.13.0 Release](https://github.com/Oloxx/drop/releases/tag/v0.13.0):
+
+| Platform | Binary | Install |
+|---|---|---|
+| **Windows (x64)** | [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe) | Double-click or run `install` (copies to `%LOCALAPPDATA%\Programs\drop\` & adds to `PATH`) |
+| **Linux (x64)** | [`drop-v0.13.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-x64.tar.gz) | `tar -xzf drop-v0.13.0-linux-x64.tar.gz && ./drop-v0.13.0-linux-x64 install` |
+| **Linux (ARM64)** | [`drop-v0.13.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-arm64.tar.gz) | `tar -xzf drop-v0.13.0-linux-arm64.tar.gz && ./drop-v0.13.0-linux-arm64 install` |
+| **macOS (Apple Silicon)** | [`drop-v0.13.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz) | `tar -xzf drop-v0.13.0-macos-arm64.tar.gz && ./drop-v0.13.0-macos-arm64 install` |
+
+<details>
+<summary><strong>Verify downloads with Minisign & SHA-256</strong></summary>
+
+Every release includes `SHA256SUMS` and its Ed25519 signature `SHA256SUMS.minisig`. Checking both confirms who published the release and that the binary arrived intact:
+
 ```bash
-tar -xzf drop-v0.13.0-linux-x64.tar.gz
-./drop-v0.13.0-linux-x64 install
+# 1. Verify signature (releases v0.5.2+) with minisign
+minisign -Vm SHA256SUMS -P RWQqNnfqvCrj+eavJ9njz2vCoHaC8YnLqjsvNBMndz3hBroQLpou7+Kp
+
+# 2. Verify binary checksum (Linux / macOS)
+sha256sum -c SHA256SUMS --ignore-missing
 ```
-*(O muévelo manualmente a tu ruta del sistema: `sudo mv drop-linux-x64 /usr/local/bin/drop && chmod +x /usr/local/bin/drop`)*
 
-### Avisos de macOS y Windows
+```powershell
+# 2. Verify binary checksum (Windows PowerShell)
+Get-FileHash drop-v0.13.0-windows-x64.exe -Algorithm SHA256
+```
 
-Los binarios van firmados con la clave del proyecto (ver [Verificar la descarga](#verificar-la-descarga)),
-pero **no** con un certificado de Apple ni de Microsoft: esos cuestan dinero cada año y drop no los
-paga. Por eso, si descargas el binario **con el navegador**, el sistema avisa la primera vez. No
-es que esté dañado: es que no lo firmó alguien que el sistema conozca. Comprueba la firma y el
-hash como dice arriba y sigue así:
+`drop update` automatically runs both Minisign and SHA-256 verification before replacing the executable and aborts on any mismatch (`--allow-unsigned` is required for pre-`v0.5.2` releases).
 
-**Lo más cómodo: descárgalo desde la terminal.** Ni `curl` ni `drop update` marcan el archivo como
-"bajado de Internet", así que no sale ningún aviso:
+</details>
+
+<details>
+<summary><strong>macOS Gatekeeper & Windows SmartScreen warnings</strong></summary>
+
+Releases are signed with the project's Minisign key rather than paid Apple Developer or Microsoft Authenticode certificates, so browser-downloaded binaries trigger an OS quarantine prompt on first run. Downloading via `curl` / `curl.exe` (or installing via Homebrew / WinGet / Scoop) avoids quarantine flags completely:
 
 ```bash
 # macOS (Apple Silicon)
@@ -129,301 +152,84 @@ tar -xzf drop-v0.13.0-macos-arm64.tar.gz && ./drop-v0.13.0-macos-arm64 install
 ```
 
 ```powershell
-# Windows (curl.exe viene con Windows 10 y 11)
+# Windows (curl.exe is preinstalled on Windows 10 & 11)
 curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe
 .\drop-v0.13.0-windows-x64.exe
 ```
 
-**Si ya lo bajaste con el navegador:**
+If already downloaded in a browser:
+- **macOS:** run `xattr -d com.apple.quarantine ./drop-v0.13.0-macos-arm64`, or open **System Settings → Privacy & Security → Open Anyway**.
+- **Windows:** click **More info → Run anyway** in SmartScreen, or run `Unblock-File .\drop-v0.13.0-windows-x64.exe` in PowerShell.
 
-* **macOS** dice que *no se puede verificar el desarrollador* y no lo abre. Quítale la marca de
-  descarga y ya arranca:
-  ```bash
-  xattr -d com.apple.quarantine ./drop-v0.13.0-macos-arm64
-  ```
-  O sin terminal: ábrelo una vez, cierra el aviso y ve a *Ajustes del Sistema → Privacidad y
-  seguridad → Abrir igualmente*.
-* **Windows** enseña *"Windows protegió su PC"* (SmartScreen). Pulsa *Más información →
-  Ejecutar de todas formas*. O desde PowerShell, antes de abrirlo:
-  ```powershell
-  Unblock-File .\drop-v0.13.0-windows-x64.exe
-  ```
-
-Solo pasa la primera vez: una vez instalado, `drop update` se actualiza solo, comprobando la
-firma, y no vuelve a salir ningún aviso.
+</details>
 
 ---
 
-## 📖 Guía de Uso
+## Usage
 
-### Modo 1: Desde la Web (Navegador)
+### Web App (`https://drop.oloxx.dev`)
 
-> Web en producción: **[https://drop.oloxx.dev](https://drop.oloxx.dev)**
+1. **Send:** Drop, browse, or paste (`Ctrl+V` / `Cmd+V`) files, screenshots, or text (`clipboard.txt`) and click **open channel**. Share the code, direct link (`#code`), or locally rendered **qr** ([`public/shared/qr.js`](public/shared/qr.js)). Keep the tab open until transfers finish; multiple receivers can join the same channel.
+2. **Receive:** Open the link or paste the code under **receive · enter a code**. Uncheck files to skip or enable **download as .zip** (auto-enabled for 4+ files or CLI folder trees, streaming ZIP64 via [`public/shared/zip.js`](public/shared/zip.js)).
+   * **< 32 MB:** buffered in memory (`Blob`) and saved after SHA-256 passes.
+   * **>= 32 MB or streamed `.zip`:** written directly to disk via the Service Worker ([`public/sw.js`](public/sw.js)) with constant RAM usage; if SHA-256 fails on completion, the HTTP download stream is aborted cleanly.
+3. **Speed test (`/speed`):** Open [`https://drop.oloxx.dev/speed`](https://drop.oloxx.dev/speed) between two browsers to check RTT, bidirectional throughput, and direct vs. TURN path.
 
-1. **Enviar:**
-   * Abre la web, arrastra tus archivos (o selecciónalos) y pulsa **open channel**.
-   * Comparte el **código** (ej. `4271-lemon-radar-tiger-orbit`), que se puede dictar por teléfono,
-     o el enlace equivalente (`https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit`).
-   * Para un móvil, pulsa **qr**: enfoca la pantalla con la cámara y se abre el enlace, sin
-     teclear nada ni pasárselo por otra aplicación. El QR se genera en la propia página
-     ([`public/shared/qr.js`](public/shared/qr.js)): sigue sin haber peticiones a terceros.
-   * Mantén la pestaña abierta mientras se transfieren los archivos.
-2. **Recibir:**
-   * El receptor abre el enlace en su navegador, **o** entra en la web y teclea el código
-     en el campo *«…or receive: type the code you were given»*.
-   * Cuando llegan varios archivos, puedes descargarlos uno a uno o marcar **download as .zip**
-     (marcado por defecto a partir de 4 archivos, o al recibir una carpeta enviada desde el CLI)
-     para empaquetarlos al vuelo en un único `.zip`.
-   * Pulsa **receive**. Dónde acaban los bytes depende del tamaño del envío:
+### Terminal CLI (`drop`)
 
-     | Ruta | Cuándo | Memoria |
-     |---|---|---|
-     | Descarga en streaming por *Service Worker* ([`public/sw.js`](public/sw.js)) | Archivos o `.zip` a partir de 32 MB o sin tamaño conocido | Constante: el navegador escribe a Descargas según llega |
-     | Descarga normal (Blob) | Archivos o `.zip` pequeños, o si el worker no está (contexto no seguro, navegador antiguo) | El archivo entero en RAM hasta el final |
+| Command | Purpose |
+|---|---|
+| `drop send <paths...>` | Send files, folders, `--text`, `--clipboard`, or `stdin` (`-`) |
+| `drop recv <code\|url>` | Receive files with selective globs, atomic `.part` writes, and resume |
+| `drop speed [code\|url]` | Measure RTT, bidirectional speed, and path (direct vs. relay) |
+| `drop serve` | Run an offline/LAN web UI + WebSocket signaling & relay server |
+| `drop verify-web [url]` | Verify a live Drop web server against GitHub commit blobs |
+| `drop update` | Self-update from GitHub Releases with Minisign + SHA-256 verification |
+| `drop install` / `uninstall` | Install or remove binary from user `PATH` |
+| `drop completion <shell>` | Print shell completions (`bash`, `zsh`, `fish`, `powershell`) |
 
-     En ambas se verifica el SHA-256 al terminar; por el worker, si no cuadra, la descarga
-     se aborta y el navegador la marca como fallida en vez de dejar un archivo corrupto. El
-     worker no cachea nada y solo atiende su propia URL de descarga.
-3. **Test de velocidad P2P (`/speed`):**
-   * Abre `https://drop.oloxx.dev/speed` para medir latencia (RTT), velocidad simétrica de subida/bajada y si la ruta es directa o rebotada por TURN.
-
----
-
-### Modo 2: Desde la Terminal (`drop` a máxima velocidad)
-
-#### 1. Enviar archivos (`drop send`)
-Abre cualquier terminal y pasa los archivos que quieras enviar:
-```bash
-# Enviar un archivo
-drop send pelicula.mkv
-
-# Enviar múltiples archivos a la vez
-drop send foto1.jpg foto2.jpg documento.pdf "C:\Descargas\backup.iso"
-
-# Enviar una carpeta entera: llega con su árbol (fotos/verano/playa.jpg)
-drop send fotos/
-```
-
-Al enviar una carpeta viaja la ruta relativa de cada archivo y el receptor la recrea dentro de
-su directorio de destino. Los enlaces simbólicos se saltan y las carpetas vacías no viajan (no
-tienen bytes que verificar). El receptor acepta esas rutas **solo hacia abajo**: un manifiesto
-con `../` no degrada al nombre suelto, corta la transferencia.
-
-Salida en terminal:
-```text
-Preparando envío: 1 archivo(s) · 5.8 GB
-
-  ✔ Canal abierto.
-  Código:  4271-lemon-radar-tiger-orbit
-  Enlace:  https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
-  Huella:  beef-grit-two (el receptor tiene que ver esta misma por TCP directo)
-
-  Díctaselo tal cual, o pásale el enlace. En el otro equipo:
-    drop recv 4271-lemon-radar-tiger-orbit
-
-  █▀▀▀▀▀█ ▄▀ ▀▄█ █▀▀▀▀▀█
-  █ ███ █ ▀▄▀▄ ▄  █ ███ █     (el QR del enlace, para abrirlo
-  █ ▀▀▀ █ █ ▀ ▄▀█ █ ▀▀▀ █      desde el móvil con la cámara)
-  ▀▀▀▀▀▀▀ ▀ █ ▀ ▀ ▀▀▀▀▀▀▀
-  Escanéalo con el móvil para abrir el enlace. (--no-qr lo quita)
-
-  Esperando a que el receptor se conecte...
-```
-
-El QR solo se pinta cuando la salida es una terminal (en un log o una tubería no lo lee
-nadie) y va con los colores forzados, fondo blanco y tinta negra, para que la cámara vea la
-polaridad normal tanto en un tema oscuro como en uno claro. `--no-qr` o `DROP_NO_QR=1` lo
-quitan.
-
-Cuando alguien se conecta, `drop` pregunta antes de servir nada:
-
-```text
-  Alguien quiere descargar: 192.168.1.42 (TCP directo)
-  Huella de la sesión: beef-grit-two (tiene que coincidir con la que ve el receptor)
-  ¿Le dejas descargar? (S/n):
-```
-
-Hasta que respondas que sí (basta con pulsar Enter) no sale del equipo ni el nombre
-de los archivos. Con `--yes` (o `-y`) no pregunta, y en un script sin terminal
-interactiva se autoriza solo: bloquear ahí sería colgar el proceso esperando una
-tecla que no va a llegar.
-Qué es la huella y qué detecta, en
-[Modelo de seguridad del código](#-modelo-de-seguridad-del-código).
-
-**Acotar la ventana.** Un canal abierto sigue sirviendo a quien tenga el código hasta que lo
-cierras; con códigos que se dictan (y se oyen de paso) conviene poder decir "esto es para
-una descarga" o "esto caduca en diez minutos":
+#### Sending (`drop send`)
 
 ```bash
-drop send backup.tar --once          # se cierra tras la primera descarga completa
-drop send backup.tar --expire 10m    # caduca solo: 90s, 10m, 2h (un número suelto son minutos)
-drop send backup.tar --once --expire 10m
+drop send movie.mkv                          # single file
+drop send a.jpg b.pdf photos/                # multiple files & entire folder trees
+drop send movie.mkv --limit 10M --once       # cap bandwidth (500K, 10M, 1.5G) & exit after 1 download
+drop send backup.tar -y --expire 30m --no-qr # auto-accept peers, close room in 30m, hide terminal QR
+drop send --text "wifi password"             # send text as message.txt
+drop send --clipboard                        # send OS clipboard as clipboard.txt
+tar czf - src/ | drop send - --name src.tgz  # stream stdin (single receiver, implies --once)
 ```
 
-Ninguno de los dos corta una descarga a medias: al caducar se deja de aceptar receptores
-nuevos y el proceso sale cuando termina la que esté en curso. El servidor libera la sala en
-ese momento, porque la sala vive lo que vive la conexión del emisor.
+* Folder transfers preserve relative paths and skip symlinks and empty directories; receivers strictly reject traversal segments (`../`).
+* Before sending any metadata or file bytes, `drop` shows the peer IP, transport, and 3-word session fingerprint (`SAS`) and prompts `(S/n)` unless `-y` / `--yes` is passed (or `stdin` is non-interactive).
 
-**Límite de ancho de banda.** El motor TCP satura Gigabit a propósito, lo cual está muy bien
-salvo cuando hay alguien más usando la línea:
+#### Receiving (`drop recv`)
 
 ```bash
-drop send pelicula.mkv --limit 10M      # 500K, 10M, 1.5G: bytes por segundo, en base 1024
-drop recv 4271-lemon-radar-tiger-orbit --limit 2M
-```
-
-Vale en los dos lados. En el emisor es un solo cubo para todos los receptores (lo que sale de
-este equipo); en el receptor frena la lectura, y el emisor se frena solo por contrapresión (TCP)
-o por los acuses (relay). La barra y el ETA salen del caudal real, así que siguen siendo ciertos.
-
-**Texto y portapapeles.** Para mandar un fragmento sin crear un archivo antes:
-
-```bash
-drop send --text "la clave del wifi es ..."     # viaja como message.txt
-drop send --clipboard                            # el portapapeles, como clipboard.txt
-drop recv 4271-lemon-radar-tiger-orbit --stdout  # lo recibido, a stdout (también: -o -)
-drop recv 4271-lemon-radar-tiger-orbit --stdout | pbcopy
-```
-
-El portapapeles se lee con las herramientas del sistema (`Get-Clipboard`, `pbpaste`,
-`wl-paste`/`xclip`/`xsel`) y si no hay ninguna se dice cuál instalar. Con `--stdout` los
-mensajes y el progreso se van a stderr, y el contenido se vuelca solo cuando el SHA-256 ha
-cuadrado: una tubería no se puede rebobinar.
-
-**Tuberías.** `drop send -` lee de la entrada estándar y lo manda según llega, sin pasar por un
-archivo temporal ni saber cuánto va a ocupar:
-
-```bash
-tar czf - proyecto/ | drop send - --name proyecto.tgz   # sin --name llega como "stdin"
-drop recv 4271-lemon-radar-tiger-orbit -o - | tar xzf -
-pg_dump base | gzip | drop send - --name base.sql.gz
-```
-
-Como no hay total, la barra enseña solo los bytes que van saliendo y la velocidad. Y como lo
-leído de una tubería no se puede volver a leer, el envío es de **un solo receptor**: el canal se
-cierra al terminar (como con `--once`), no hay reanudación, y si el receptor se cae a medias el
-emisor sale con error para que vuelvas a lanzar la tubería. En la web el archivo aparece con
-tamaño `stream` y baja igual, verificado al final.
-
-#### 2. Recibir archivos (`drop recv`)
-En otro ordenador con `drop` instalado:
-```bash
-# Usando el código que te han dictado
 drop recv 4271-lemon-radar-tiger-orbit
-
-# Da igual cómo lo teclees: mayúsculas, espacios en vez de guiones o prefijos de
-# 4 letras. Todo esto es el mismo código:
-drop recv "4271 LEMON Radar tiger orbit"
-drop recv 4271-lemo-rada-tige-orbi
-
-# O pegando el enlace web completo
+drop recv "4271 LEMON Radar tiger orbit"     # spaces, mixed case, or 4-letter word prefixes accepted
 drop recv https://drop.oloxx.dev/#4271-lemon-radar-tiger-orbit
-
-# Opcional: especificar carpeta de destino (-o o --out)
-drop recv 4271-lemon-radar-tiger-orbit -o D:\Descargas
-
-# Opcional: sobrescribir los archivos que ya existan en el destino
-drop recv 4271-lemon-radar-tiger-orbit --overwrite
-
-# Opcional: no reanudar una descarga cortada, empezar de cero
-drop recv 4271-lemon-radar-tiger-orbit --no-resume
-
-# Opcional: bajar solo parte del envío (patrones separados por comas)
-drop recv 4271-lemon-radar-tiger-orbit --only "*.jpg,*.png"
-drop recv 4271-lemon-radar-tiger-orbit --only "fotos/**"
+drop recv 4271-lemon-radar-tiger-orbit -o ./downloads --only "*.jpg,photos/**"
+drop recv 4271-lemon-radar-tiger-orbit --overwrite --limit 2M --no-resume
+drop recv 4271-lemon-radar-tiger-orbit --stdout | tar xzf -
 ```
 
-**Solo parte del envío.** Con `--only` se piden al emisor únicamente los archivos que casen, y
-el resto ni viaja. Un patrón sin `/` se compara con el nombre, esté en la carpeta que esté
-(`*.jpg`); con `/`, con el final de la ruta (`fotos/*.jpg` coge `viaje/fotos/a.jpg`); con `/`
-delante, desde la raíz del envío (`/fotos/**`). `*` no cruza carpetas y `**` sí. No distingue
-mayúsculas. Si no casa nada, `drop recv` no descarga y enseña qué trae el envío. En la web es lo
-mismo con casillas: cada archivo de la oferta tiene la suya y **receive** baja lo marcado.
+* **Atomic & safe:** downloads write to `<name>.part` and rename only after SHA-256 verification. Existing files are preserved as `name (2).ext` unless `--overwrite` is set.
+* **Automatic resume:** interrupted transfers verify the `.part` prefix SHA-256 against the sender (CLI or Web) and resume from that byte offset (`--no-resume` starts fresh).
+* **Piping (`--stdout` / `-o -`):** progress prints to `stderr`, and verified bytes emit to `stdout` after SHA-256 confirmation.
 
-**Qué pasa si el archivo ya existe:** por defecto no se pisa nada. Cada archivo se
-escribe primero como `nombre.ext.part` y solo pasa a llamarse `nombre.ext` cuando su
-SHA-256 cuadra; si ese nombre ya está ocupado, el archivo nuevo se guarda como
-`nombre (2).ext`. Con `--overwrite` se reemplaza el archivo existente. Una transferencia
-que se corta a medias no deja nada con el nombre definitivo.
+#### Standalone Server, Speed Test & Integrity Check
 
-**Si se corta a medias, se reanuda.** El `.part` se queda en disco con lo que llegó, y el
-siguiente `drop recv` con el mismo código sigue desde ahí en vez de empezar de cero, tanto
-por TCP directo como por relay. Antes de aceptarlo, el emisor comprueba que ese prefijo es
-de verdad el principio de su archivo (compara el SHA-256 de los primeros bytes): si el
-`.part` era de otra cosa, el archivo se descarga entero a `nombre (2).ext` y el `.part` no
-se toca. Con `--no-resume` un `.part` cuenta como nombre ocupado y se empieza de cero. Da igual
-que el emisor sea otro `drop` o una pestaña: los dos comprueban el prefijo.
-
-> **Compatibilidad:** desde la versión 0.5.0 el manifiesto lleva un número de versión de
-> protocolo, así que un receptor 0.5.0+ **rechaza** con un mensaje explícito a un emisor
-> 0.4.2 o anterior en lugar de escribir archivos corruptos. La reanudación de descargas
-> sube el protocolo a la versión 3: un `drop` 0.6.x y uno posterior se rechazan mutuamente. La
-> selección de archivos (`--only`) lo sube a la 5, y ahí se queda: a partir de la 1.0 cualquier
-> `drop` 1.x habla con cualquier otro y con la web ([política de compatibilidad](docs/COMPATIBILITY.md)).
-> Si ves un error de versión, actualiza `drop` en los dos equipos con `drop update`.
-
-#### 3. Test de velocidad entre terminales (`drop speed`)
-Mide la latencia (RTT), velocidad simétrica de subida/bajada y ruta de red (TCP directa o Relay) entre dos clientes CLI:
 ```bash
-# En el primer equipo (Anfitrión)
-drop speed
+drop serve                                   # embedded static web + WS relay on port 3000 (0.0.0.0 & ::)
+drop serve -p 8080 -H 127.0.0.1              # pass -s http://<lan-ip>:8080 (or DROP_SERVER) to peers
 
-# En el segundo equipo (Invitado)
-drop speed <código>
+drop speed                                   # host bidirectional CLI speed test (--direct-only, --relay, -t <s>)
+drop verify-web https://drop.oloxx.dev       # verify served public/ files match /version commit (uses GITHUB_TOKEN if set)
 ```
 
-#### 4. Interoperabilidad total (CLI ↔ Web Browser)
-Cualquiera recibe de cualquiera, en las cuatro combinaciones:
-
-| Emisor → Receptor | Camino | Cifrado | Reanuda un corte |
-|---|---|---|---|
-| Web → Web | WebRTC DataChannel, directo o por TURN | DTLS | No (empieza de cero; dentro de la misma sesión sí retoma si cae un eslabón de la cadena) |
-| CLI → CLI | TCP directo (LAN, UPnP, STUN, IPv4 o IPv6) o, si no hay ruta, relay por el servidor | AES-256-GCM con la clave del código | Sí, por TCP y por relay (`drop recv` con el mismo código). No con `drop send -`: una tubería no se rebobina |
-| CLI → Web | Relay por el servidor (el navegador no habla el TCP del CLI) | AES-256-GCM con la clave del código | No (como Web → Web) |
-| Web → CLI | Relay por el servidor (el CLI no habla WebRTC) | AES-256-GCM con la clave del código | Sí: el `.part` sigue desde donde se quedó, igual que entre dos CLI |
-
-**Por qué el navegador no reanuda un corte entre sesiones.** Al descargar en el navegador (ya sea por
-Blob o en streaming por *Service Worker*), la pestaña no tiene acceso para inspeccionar ni añadir
-bytes a un archivo previo en la carpeta de Descargas. Quien necesite reanudar cortes o enviar
-carpetas enteras puede usar el CLI (`drop recv` retoma el `.part` comprobado con SHA-256).
-
-* Si envías con `drop send` y el destinatario **no tiene la terminal**, abre el enlace en **Chrome,
-  Edge, Firefox o Safari**, o entra en la web y teclea el código: verá los archivos y el botón
-  **receive**.
-* Si el canal se abre **desde la web** y el receptor prefiere la terminal, `drop recv <código>`
-  funciona igual: el CLI se presenta como tal al entrar en la sala y la página le sirve por el
-  relay, cifrado, en vez de mandarle una oferta WebRTC.
-* Por el relay los bytes pasan por el servidor, pero cifrados con la clave que sale de las cuatro
-  palabras: el servidor reenvía ruido. Ver [¿Cómo funciona por dentro?](#️-cómo-funciona-por-dentro).
-
-**Qué velocidad esperar en cada ruta:**
-
-| Ruta | Qué ocurre | Velocidad típica |
-|---|---|---|
-| **CLI ↔ CLI en LAN** | Broadcast UDP IPv4 / multicast IPv6 / mDNS + TCP directo por IP privada | **100–115 MB/s** (satura Gigabit / Wi-Fi 6) |
-| **CLI ↔ CLI por WAN directo** | IPv6 global, UPnP / NAT-PMP o puerto abierto con `-p` (IP pública vía UPnP / NAT-PMP / STUN / servidor) | Limitada por tu subida/bajada real de internet |
-| **CLI ↔ CLI por WAN sin ruta (CGNAT / sin UPnP) o CLI ↔ Web** | Relay cifrado (AES-256-GCM) por el WebSocket del servidor | Depende del VPS y de `DROP_RELAY_LIMIT` (sin límite fijo salvo el que ponga la instancia; en un VPS compartido suele acotarse a unos pocos MB/s por sala) |
-| **Web ↔ Web** | WebRTC DataChannel directo (o por TURN si hay NAT simétrico) | **~15 MB/s** directo por límite de SCTP del navegador; por TURN depende de la red y del servidor |
-
-#### 5. Servidor local propio (`drop serve`)
-El propio binario `drop` lleva embebida la web (`public/`) y el servidor WebSocket de señalización y relay: sirve para transferir entre ordenadores y navegadores de tu red local sin internet y sin instalar Node.js:
-```bash
-drop serve                  # escucha en el puerto 3000 en todas las interfaces (0.0.0.0 y ::)
-drop serve -p 8080 -H 127.0.0.1
-```
-El resto de equipos solo tienen que abrir la URL LAN que imprime al arrancar en el navegador o apuntar el CLI con `-s http://<ip-local>:3000` (o `DROP_SERVER=http://<ip-local>:3000`).
-
-#### 6. Comandos de gestión del CLI
-```bash
-drop update       # Comprueba y actualiza automáticamente a la última versión de GitHub
-drop install      # Instala drop en el sistema y lo añade al PATH
-drop uninstall    # Desinstala drop del sistema y limpia el PATH
-drop --version    # Muestra la versión instalada
-drop --help       # Muestra la ayuda de comandos
-```
-
-**Autocompletado.** `drop completion <shell>` imprime el script y no toca ningún perfil por su
-cuenta; se carga así:
+<details>
+<summary><strong>Shell completions & CLI self-management</strong></summary>
 
 ```bash
 eval "$(drop completion bash)"                                  # ~/.bashrc
@@ -432,186 +238,95 @@ drop completion fish > ~/.config/fish/completions/drop.fish     # fish
 drop completion powershell | Out-String | Invoke-Expression     # $PROFILE
 ```
 
-Completa las órdenes, los flags que valen para cada una, las carpetas tras `-o` y los archivos
-tras `send`.
+```bash
+drop update       # download & verify latest signed release
+drop install      # install binary to PATH
+drop uninstall    # remove binary & PATH entry
+drop --help       # full option reference
+```
+
+</details>
 
 ---
 
-## ⚙️ ¿Cómo funciona por dentro?
+## Compatibility & Performance
 
-### 1. Transferencia Nativa CLI (TCP + AES-256-GCM)
-* **Descubrimiento LAN instantáneo:** Emite pings por broadcast UDP IPv4, multicast IPv6 (`ff02::1`, puerto `42424`) y mDNS / DNS-SD (`224.0.0.251` y `ff02::fb`, puerto `5353`) en paralelo. En la misma red Wi-Fi o cable (incluso si la red bloquea el broadcast), los equipos se encuentran en **< 10 milisegundos** y transfieren por IP privada local sin salir a internet.
-* **Sockets TCP Directos:** Utiliza `socket.setNoDelay(true)` con búferes de lectura/escritura de 2–4 MB en streaming continuo.
-* **Cifrado E2EE nativo:** Cifrado simétrico AES-256-GCM con aceleración hardware `AES-NI`. La clave
-  sale de las cuatro palabras del código pasadas por `scrypt` (ver abajo), nunca del identificador de sala.
-* **El relay también va cifrado:** cuando no hay ruta TCP directa (NAT estricta, o el receptor es un
-  navegador) los bytes pasan por el servidor, pero cifrados con la misma clave: cada trozo y cada
-  marco de control van en AES-256-GCM y el servidor reenvía ruido. El navegador deriva la misma clave
-  con una implementación propia de `scrypt` ([`public/shared/scrypt.js`](public/shared/scrypt.js)),
-  y la prueba de conocimiento del código que le manda al emisor es un HMAC con esa clave, no un hash
-  de las palabras: un servidor que la vea pasar no tiene nada barato que atacar offline.
+All four CLI/Web pairs work seamlessly under frozen **Protocol 5** ([`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md), [`docs/PROTOCOL.md`](docs/PROTOCOL.md)):
 
-### 2. Transferencia Web (WebRTC DataChannel)
-* **Protocolo mínimo:** Control en JSON (`manifest`, `accept`, `start`, `ack`, `end`, `done`) y datos en trozos binarios continuos. Está especificado entero, señalización incluida, en [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
-* **Control de flujo reactivo:** Evita desbordar la memoria pausando la lectura al superar 8 MB en el búfer de envío y reanudando al bajar de 1 MB.
-* **Cadena multi-receptor (Fanout Chain):** Cuando varios amigos descargan a la vez, se organizan en cadena (`Emisor → A → B → C`). El emisor sube **una sola copia** de los datos, ahorrando ancho de banda de subida.
+| Sender → Receiver | Transport | Encryption | Resume across cuts |
+|---|---|---|---|
+| **Web → Web** | WebRTC DataChannel (direct or TURN) | DTLS | Starts over (recovers mid-session if a chain peer drops) |
+| **CLI → CLI** | Direct TCP (LAN, UPnP/NAT-PMP, STUN, IPv4/IPv6) or WS relay | AES-256-GCM (scrypt) | Yes (direct TCP & relay; not `stdin` pipes) |
+| **CLI → Web** | Encrypted WebSocket relay | AES-256-GCM (scrypt) | No (browsers cannot append to prior Downloads files) |
+| **Web → CLI** | Encrypted WebSocket relay | AES-256-GCM (scrypt) | Yes (`.part` prefix verified via SHA-256) |
 
----
+### Expected Speeds
 
-## 🔐 Modelo de seguridad del código
-
-El código es `4271-lemon-radar-tiger-orbit` y son **dos cosas distintas pegadas con un guion**:
-
-| Parte | Qué es | ¿Sale de tu equipo? |
+| Path | How peers connect | Typical speed |
 |---|---|---|
-| `4271` | Identificador **público** de sala, lo reparte el servidor | Sí: al servidor y, hasheado, al broadcast UDP de la LAN |
-| `lemon-radar-tiger-orbit` | **Secreto** compartido, lo sortea tu cliente | **Nunca.** Ni en claro, ni hasheado, ni al servidor, ni por UDP |
+| **CLI ↔ CLI (LAN)** | Parallel IPv4 broadcast + IPv6 multicast (`ff02::1:42424`) + mDNS (`_drop._tcp.local`) + `TCP_NODELAY` | **100–115 MB/s** (saturates Gigabit / Wi-Fi 6) |
+| **CLI ↔ CLI (WAN direct)** | Global IPv6, UPnP / NAT-PMP (`5351`), or forwarded `-p` port | Full ISP upload/download bandwidth |
+| **CLI ↔ CLI (relay) / CLI ↔ Web** | End-to-end `AES-256-GCM` WebSocket relay | Server bandwidth & `DROP_RELAY_LIMIT` |
+| **Web ↔ Web** | Direct WebRTC DataChannel (or TURN fallback) | **~15 MB/s** direct (browser SCTP ceiling) |
 
-* **Entropía:** 4 palabras de la lista **BIP-39 en inglés** (2048 palabras, licencia CC0,
-  copia íntegra en [`public/shared/wordlist.js`](public/shared/wordlist.js)) = **44 bits exactos**.
-  Se eligió BIP-39 porque 2048 = 2¹¹ da 11 bits limpios por palabra y porque sus prefijos de
-  4 letras son únicos, que es lo que permite corregir erratas al teclear.
-* **Derivación de clave:** la clave AES-256-GCM sale de las palabras por **`scrypt`**
-  (N=2¹⁵, r=8, p=1 → 32 MB y ~62 ms medidos), con el identificador de sala como sal.
-  No se usa HKDF a propósito: con 44 bits, un hash rápido se rompería por fuerza bruta en
-  horas; con scrypt haría falta ~3,5 × 10¹⁰ años-CPU.
-* **Lo que ve el servidor:** `4271` y nada más. No puede descifrar, y tampoco puede atacar
-  el secreto offline porque no tiene ningún verificador de él.
-* **Lo que ve tu vecino de Wi-Fi:** el paquete de descubrimiento UDP lleva un hash del
-  identificador **público**. Aprende que hay una sala `4271` en tal IP y puerto; sin las
-  palabras, AES-GCM le rechaza el primer paquete.
-* **Lo que NO cubre:** los identificadores de sala son 10.000 y se pueden probar. El servidor
-  limita los intentos fallidos por IP y cierra la sala si el emisor denuncia varios receptores
-  que no saben el secreto, pero eso encarece el barrido, no lo impide. Quien acierte una sala
-  no obtiene ni los archivos ni sus nombres: el emisor le pide antes una prueba de conocimiento
-  del secreto, y además tiene que autorizar la descarga a mano. Sigue sin haber PAKE
-  (SPAKE2/CPace), que no se implementa a mano sin auditar: contra un *man in the middle* activo
-  con control del servidor lo que hay es la huella de sesión, que se compara a ojo.
+---
 
-### La huella de sesión
+## Architecture & Security
 
-Los dos extremos muestran tres palabras — `beef-grit-two` — sacadas de lo que se ha negociado
-de verdad. **Si no coinciden, hay alguien en medio.** Se comparan por otro canal: una llamada,
-un mensaje, estar en la misma habitación.
+### Split-Code Model
 
-| Ruta | De dónde sale la huella | Qué detecta |
+| Component | Role | Exposed to server / LAN? |
 |---|---|---|
-| **Web ↔ Web** (WebRTC) | Los *fingerprints* DTLS de los dos extremos | **Un servidor que sustituya el SDP** para hablar DTLS con cada lado por separado. Es el ataque real que cubre |
-| **CLI ↔ CLI** (TCP directo) | La clave AES ya derivada con scrypt | Que los dos estén en la misma transferencia. Aquí un MITM ya era imposible: sin las palabras, AES-GCM rechaza el primer paquete |
-| **Cualquier ruta por relay** (CLI → CLI o CLI → navegador) | La clave AES derivada con scrypt, igual que por TCP directo | Que los dos hayan derivado la misma clave: por esta ruta los bytes pasan por el servidor, pero cifrados con ella. El servidor no puede leerlos ni fabricar una huella que cuadre |
+| `4271` | Public ephemeral room ID | Yes (sent to server; hashed as `roomHash` in LAN pings) |
+| `lemon-radar-tiger-orbit` | Shared secret drawn locally from BIP-39 (2048 words) | **Never** (neither plaintext nor hashed) |
 
-La huella **no viaja por el cable** (si viajase, el de en medio la cambiaría al vuelo) y **no
-lleva dentro las palabras del código**: entra material de clave, no el secreto, para que leerla
-en voz alta no regale un verificador offline de 44 bits. El diseño completo está en
-[`public/shared/sas.js`](public/shared/sas.js).
-
-El diseño completo, con el razonamiento y los límites, está comentado en la cabecera de
-[`public/shared/codes.js`](public/shared/codes.js).
-
-### Comprobar que la web sirve el código del repositorio
-
-La web confía en el `app.js` que descarga, como toda web: un servidor malicioso podría servir
-otro. `drop verify-web` lo comprueba sin fiarse del servidor:
-
-```bash
-drop verify-web                          # https://drop.oloxx.dev
-drop verify-web https://mi-drop.example  # cualquier otra instancia
-```
-
-El servidor dice qué commit sirve (`/version`), la API de GitHub da el hash de cada archivo de
-`public/` en ese commit del repositorio público, y se compara con lo que el servidor entrega de
-verdad, archivo a archivo. Si algo no cuadra, o el commit no existe en el repositorio, sale con
-error. Lo que no puede decir es que el servidor sirva lo mismo a todo el mundo: comprueba lo que
-te ha servido a ti. Con `GITHUB_TOKEN` en el entorno usa tu cuota de la API en vez de la anónima.
-
-### Versiones que se hablan entre sí
-
-Mientras la versión mayor sea `0`, una versión menor puede romper el protocolo, y cuando lo hace
-se dice en el [CHANGELOG](CHANGELOG.md). Desde la 1.0 manda la
-[política de compatibilidad](docs/COMPATIBILITY.md). Hoy:
-
-* Dos `drop` tienen que compartir `PROTOCOL_VERSION` (la 5, la de toda la 1.x); si no, se
-  rechazan con un mensaje que pide `drop update` en vez de entenderse a medias. La web comprueba
-  lo mismo al recibir de un CLI.
-* Los tokens de la v0.3.5 (`T_9q_4uzB9iJAf8x`, 96 bits que además eran la clave de cifrado)
-  dejaron de aceptarse en la v0.8.0: el servidor contesta `VERSION` a un cliente que no pide
-  códigos memorizables, y ni el CLI ni la web los reconocen ya como código.
+* **Key derivation & verification:** 4 BIP-39 words (**44 bits**) are stretched with **`scrypt`** (`N = 32768`, `r = 8`, `p = 1`, 32 MiB RAM) salted with `SHA-256("drop-code-v2|" + roomId)`. Peers verify knowledge before any metadata leaves and compute a 3-word **SAS fingerprint** (`beef-grit-two`) from DTLS fingerprints or the derived key for out-of-band MITM checks.
+* **Transport optimization:** The Rust CLI (`cli-rs/`) negotiates LAN discovery in < 10 ms and uses hardware `AES-NI` acceleration for AES-256-GCM; the web engine (`public/app.js`) uses reactive watermarks (`HIGH_WATER = 8 MB`, `LOW_WATER = 1 MB`) over ordered DataChannels.
+* **Known trade-offs:** No paid third-party cryptographic audit; no PAKE (relies on rate limiting and room burning on brute force); and a compromised web server can serve targeted malicious JS to one browser even if `drop verify-web` passes elsewhere (run the native CLI or local `drop serve` for high-assurance transfers). See [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) and [`SECURITY.md`](SECURITY.md).
 
 ---
 
-## 💻 Desarrollo y Compilación Local
+## Self-Hosting & Development
 
-### Requisitos
-* Node.js >= 22.9 (servidor de señalización y tests; CLI en Rust con Cargo estable)
+### Docker Compose (Production Stack)
 
-```bash
-# Instalar dependencias
-npm install
-
-# Iniciar servidor local de desarrollo (http://localhost:3000)
-npm run dev
-
-# Ejecutar el CLI en modo desarrollo (Rust)
-npm run cli -- send mi_archivo.zip
-
-# Ejecutar la suite de tests (Node + Rust CLI)
-cargo test --manifest-path cli-rs/Cargo.toml
-npm test
-
-# Benchmarks de velocidad
-npm run bench:cli     # Benchmark del motor TCP nativo del CLI Rust
-npm run bench:speed   # Benchmark CLI ↔ CLI (TCP directo y Relay)
-npm run bench         # Benchmark WebRTC en navegador (~15 MB/s)
-npm run bench:fanout  # Benchmark de cadena multi-receptor
-```
-
-### Compilar el binario nativo del CLI (Rust)
-El cliente CLI está escrito en Rust (`cli-rs/`) y se compila como un ejecutable nativo autónomo sin dependencias externas en tiempo de ejecución:
-
-```bash
-npm run build:cli     # Compila cli-rs/target/release/drop(.exe) para tu plataforma actual
-npm run build:linux   # Compila binario estático musl x86_64 (requiere target rustup + musl-tools)
-npm run build:arm     # Compila binario estático musl ARM64 (Raspberry Pi, Oracle ARM)
-npm run build:macos   # Compila macOS Apple Silicon (aarch64-apple-darwin)
-npm run build:exe     # Compila Windows x64 (x86_64-pc-windows-msvc)
-```
-
-Consulta la comparativa técnica e histórica de la migración de Node.js SEA a Rust en [`docs/RUST-MIGRATION.md`](docs/RUST-MIGRATION.md).
-
----
-
-## 🌐 Despliegue del Servidor
-
-El servidor actúa únicamente como guía de señalización (emparejamiento) y nunca almacena archivos.
-
-Para desplegar tu propia instancia en un VPS (ej. Oracle Cloud Always Free):
 ```bash
 cp .env.example .env
 docker compose up -d --build
 ```
-Levanta el servidor Node.js, un reverse proxy Caddy con certificados SSL automáticos y un servidor TURN (coturn) para sortear NATs estrictas. Guía detallada en **[DEPLOY-VPS.md](DEPLOY-VPS.md)**.
 
-El servidor solo acepta WebSockets de navegador desde su propio dominio (`DROP_DOMAIN`) y
-localhost, para que una web cualquiera no pueda abrir salas con el navegador de quien la visita.
-Si sirves el frontend desde otro sitio, añade el origen con `DROP_ALLOWED_ORIGINS`. Las
-conexiones sin cabecera `Origin` —el CLI— no se ven afectadas.
+Spins up the stateless Node.js signaling server, **Caddy** (automatic Let's Encrypt HTTPS), and **coturn** (ephemeral HMAC TURN credentials). See [`DEPLOY-VPS.md`](DEPLOY-VPS.md) for firewall rules, `DROP_RELAY_LIMIT`, and secret rotation.
 
-Las respuestas llevan una **CSP** ajustada a lo que la web usa de verdad —ni scripts ni estilos
-en línea, ni una sola petición a terceros—, además de `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: no-referrer` y `Permissions-Policy` sin cámara, micrófono ni ubicación. HSTS lo
-pone Caddy, que es donde acaba el TLS. El contenedor corre como usuario sin privilegios y declara
-un `HEALTHCHECK` contra `/healthz`.
+### Local Build & Test
+
+Requires **Node.js >= 22.9** and **Rust / Cargo (stable)**:
+
+```bash
+npm install
+npm run dev           # local signaling server on http://localhost:3000
+npm run build:cli     # build release CLI binary into cli-rs/target/release/drop(.exe)
+npm run cli -- send file.bin
+
+cargo test --manifest-path cli-rs/Cargo.toml
+npm test              # full integration, serve, security header & Chrome E2E suite
+```
+
+Cross-platform release targets (`build:exe`, `build:linux`, `build:arm`, `build:macos`) and throughput benchmarks (`bench`, `bench:cli`, `bench:speed`, `bench:fanout`, `bench:webrelay`) are defined in [`package.json`](package.json).
 
 ---
 
-## 🤝 Contribuir
+## Documentation & License
 
-Las convenciones del proyecto (idiomas, estilo de comentarios, formato de commits) y cómo montar
-el entorno están en **[CONTRIBUTING.md](CONTRIBUTING.md)**. El historial de versiones, en
-**[CHANGELOG.md](CHANGELOG.md)**. Lo que falta para la 1.0, en **[ROADMAP.md](ROADMAP.md)**.
+| Document | Contents |
+|---|---|
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Environment setup, benchmarks, coding conventions, release checklist |
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Frozen Protocol 5 wire frames, signaling limits, E2EE & flow control |
+| [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) | Cross-version & CLI/Web compatibility guarantees |
+| [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) | Full security boundaries, attack vectors, and trade-offs |
+| [`docs/RUST-MIGRATION.md`](docs/RUST-MIGRATION.md) | Rust CLI architecture and benchmarks vs. legacy Node.js SEA |
+| [`DEPLOY-VPS.md`](DEPLOY-VPS.md) | VPS setup, firewall ports, Caddy, TURN, monitoring |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability disclosure policy and supported versions |
+| [`CHANGELOG.md`](CHANGELOG.md) | Version history (Spanish) |
+| [`ROADMAP.md`](ROADMAP.md) | Progress toward `v1.0` |
 
-## 📄 Licencia
-
-[Apache License 2.0](LICENSE). Puedes usar, modificar y redistribuir drop, incluso
-comercialmente, conservando el aviso de copyright y la licencia, e indicando los cambios que
-hagas. La licencia incluye además una concesión expresa de patentes.
+Licensed under the [Apache License 2.0](LICENSE).

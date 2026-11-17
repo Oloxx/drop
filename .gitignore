@@ -5,4 +5,3 @@ cli-rs/target/
 .env.local
 *.log
 test_tmp*
-CLAUDE.md

@@ -59,7 +59,7 @@ test('cli.rs lee la version de env!("DROP_VERSION") y no tiene literal a mano', 
 // la que se publica: las menciones en prosa ("a partir de la v0.5.2") hablan de
 // una version concreta a proposito y no se tocan.
 test('los enlaces de descarga del README apuntan a la version actual', () => {
-  for (const file of ['README.md', 'README.en.md']) {
+  for (const file of ['README.md', 'README.es.md']) {
     const readme = fs.readFileSync(path.join(ROOT, file), 'utf8');
     const links = [...readme.matchAll(/releases\/download\/v([0-9][^/]*)\//g)].map((m) => m[1]);
 

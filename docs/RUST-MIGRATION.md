@@ -1,148 +1,140 @@
-# Migración del CLI a Rust: comparativa y evaluación
+# CLI Migration to Rust: Benchmarks & Engineering Evaluation
 
-Evaluación técnica y empírica del refactor del CLI de **Drop** desde **Node.js + SEA** (*Single Executable Application*, anterior directorio `cli/`) a **Rust nativo** ([`cli-rs/`](../cli-rs/), publicado en la versión `0.13.0`), manteniendo congelado el **Protocolo 5 (`1.x`)** e interoperabilidad total con la aplicación web ([`public/`](../public/)) y el servidor de señalización/relay ([`server/index.js`](../server/index.js)).
-
----
-
-## Resumen ejecutivo
-
-La migración sustituye el runtime completo de Node.js/V8 embebido en cada ejecutable por un binario nativo compilado con `cargo`:
-
-- **Peso del binario (Windows x64):** baja de **`84,456,080 bytes` (`80.54 MiB`)** (binario base `node.exe` de SEA) a **`5,637,632 bytes` (`5.38 MiB`)** (~**15× más pequeño**, **−93.3 %**).
-- **Arranque en frío (`--version`, 10 ejecuciones):** mejora de **`108.79 ms`** en Node a **`15.01 ms`** en Rust (**~7.2× más rápido**).
-- **Memoria activa (`speed` en loopback):** baja de **`55.6–62.3 MB`** actuales (`82.9–105.5 MB` pico) en Node a **`9.9–10.0 MB`** actuales (`41.2–41.7 MB` pico) en Rust (**~5.5×–6.3× menos RAM activa**).
-- **Throughput cifrado TCP en memoria:** pasa de **`661.7 / 650.3 MB/s`** en Node a **`2697.3 / 2728.4 MB/s`** en Rust (**>4× más rápido**), con RTT loopback de **`0.1 ms`** frente a **`0.4 ms`**.
-- **Relay WebSocket CLI ↔ CLI:** sube de **`88.4 / 67.2 MB/s`** en Node a **`297.4 / 336.7 MB/s`** en Rust (**3.4×–5.0× más rápido**) usando exactamente el mismo servidor relay en Node.js.
-- **Compromiso principal:** el código fuente del CLI crece de `6,237` a `12,241` líneas al duplicar tipado estricto y módulos compartidos antes heredados directamente desde [`public/shared/`](../public/shared/), además de requerir compilación nativa por plataforma en CI.
+Empirical evaluation of rewriting the **Drop** CLI from **Node.js SEA** (*Single Executable Application*, previously `cli/`) to **native Rust** ([`cli-rs/`](../cli-rs/), shipped in `v0.13.0`), while keeping **Protocol 5 (`1.x`)** frozen and maintaining full interoperability with the web client ([`public/`](../public/)) and Node.js signaling/relay server ([`server/index.js`](../server/index.js)).
 
 ---
 
-## Entorno de medición
+## Executive Summary
 
-Todas las mediciones comparativas de arranque, memoria y rendimiento se ejecutaron en el mismo equipo en local sobre loopback (`127.0.0.1` / `::1`):
+Replacing the embedded Node.js/V8 runtime with a natively compiled `cargo` binary yields:
 
-- **CPU:** AMD Ryzen 7 5700X 8-Core Processor (8 núcleos / 16 hilos)
+- **Binary size (Windows x64):** drops from **`84,456,080 bytes` (`80.54 MiB`)** (SEA `node.exe` base) to **`5,637,632 bytes` (`5.38 MiB`)** (**~15× smaller**, **−93.3%**).
+- **Cold start (`--version`, 10 runs):** improves from **`108.79 ms`** in Node to **`15.01 ms`** in Rust (**~7.2× faster**).
+- **Active memory (`speed` loopback):** drops from **`55.6–62.3 MB`** working set (`82.9–105.5 MB` peak) in Node to **`9.9–10.0 MB`** working set (`41.2–41.7 MB` peak) in Rust (**~5.5×–6.3× less active RAM**).
+- **In-memory encrypted TCP throughput:** increases from **`661.7 / 650.3 MB/s`** in Node to **`2697.3 / 2728.4 MB/s`** in Rust (**>4× faster**), with **`0.1 ms`** loopback RTT vs **`0.4 ms`**.
+- **CLI ↔ CLI WebSocket relay:** rises from **`88.4 / 67.2 MB/s`** in Node to **`297.4 / 336.7 MB/s`** in Rust (**3.4×–5.0× faster**) through the exact same Node.js relay server.
+- **Main trade-off:** CLI source code grows from `6,237` to `12,241` lines due to strict typing and reimplementing shared modules previously imported directly from [`public/shared/`](../public/shared/), plus native per-target builds in CI.
+
+---
+
+## Test Environment
+
+All startup, memory, and throughput measurements were collected locally on loopback (`127.0.0.1` / `::1`) on the same machine:
+
+- **CPU:** AMD Ryzen 7 5700X 8-Core Processor (8 cores / 16 threads)
 - **RAM:** 15.9 GiB
-- **Sistema operativo:** Microsoft Windows 11 Pro 64 bits
-- **Toolchains:** `rustc 1.100.0 (0ef1bc386 2026-11-09)` / `cargo 1.100.0 (3acc79c0c 2026-11-05)` y `Node.js v22.15.0`
+- **OS:** Microsoft Windows 11 Pro 64-bit
+- **Toolchains:** `rustc 1.100.0 (0ef1bc386 2026-11-09)` / `cargo 1.100.0 (3acc79c0c 2026-11-05)` and `Node.js v22.15.0`
 
-> Las pruebas comparativas JS vs Rust se midieron contra el binario release de Rust (`5,639,168 bytes` en el momento del benchmark) y la implementación `v0.12.0` previa en `cli/src/` antes de retirar los ficheros Node del repositorio. Tras los últimos ajustes de documentación y comentarios, el binario recompilado en release pesa `5,637,632 bytes` (`5.38 MiB`).
+> Comparative JS vs. Rust numbers were measured against the Rust release binary (`5,639,168 bytes` at benchmark time) and the `v0.12.0` Node.js implementation in `cli/src/` prior to removing legacy SEA files. After final documentation tweaks, the release binary measured `5,637,632 bytes` (`5.38 MiB`).
 
 ---
 
-## 1. Peso del binario, dependencias y código fuente
+## 1. Binary Size, Dependencies & Source Footprint
 
-| Métrica | CLI anterior (Node.js SEA) | CLI nuevo (Rust) | Diferencia |
+| Metric | Previous CLI (Node.js SEA) | New CLI (Rust) | Delta |
 | :--- | :--- | :--- | :--- |
-| **Binario ejecutable (`Windows x64`)** | `84,456,080 bytes` (`80.54 MiB`, base `node.exe` SEA) | `5,637,632 bytes` (`5.38 MiB`, `drop.exe` release) | **−93.3 % (~15× menor)** |
-| **Dependencias en runtime (usuario)** | Runtime Node/V8/OpenSSL embebido por binario | `0` dependencias externas (binario nativo estático) | Sin runtime JS embebido |
-| **Paquetes de compilación CLI** | `node` + `esbuild` + `postject` + descarga de binarios `nodejs.org` | `244` crates en `cli-rs/Cargo.lock` | Sin inyección binaria post-build |
-| **Dependencias runtime servidor (`package.json`)** | `2` (`express`, `ws`) | `2` (`express`, `ws`) | Sin cambios |
-| **Código fuente del CLI** | `16` ficheros · `281,267 bytes` · `6,237` líneas (`cli/src/`) | `32` ficheros · `405,449 bytes` · `12,241` líneas (`cli-rs/src/`) | **+96 % líneas en el CLI** |
-| **Código compartido web/CLI (`public/shared/`)** | `9` ficheros · `92,770 bytes` · `1,858` líneas (importado directo) | Reimplementado en [`cli-rs/src/shared/`](../cli-rs/src/shared/) para el CLI | Se mantiene sincronizado por vectores |
-| **Tests de integración propios del CLI** | Cubiertos solo en `test/*.test.mjs` | `5` suites `.rs` (`2,001` líneas en [`cli-rs/tests/`](../cli-rs/tests/)) + suites `test/*.test.mjs` | Cobertura nativa + E2E |
+| **Executable (`Windows x64`)** | `84,456,080 bytes` (`80.54 MiB`, SEA `node.exe` base) | `5,637,632 bytes` (`5.38 MiB`, release `drop.exe`) | **−93.3% (~15× smaller)** |
+| **User runtime dependencies** | Embedded Node/V8/OpenSSL per binary | `0` external dependencies (static native binary) | No embedded JS runtime |
+| **CLI build tooling** | `node` + `esbuild` + `postject` + `nodejs.org` downloads | `244` crates in `cli-rs/Cargo.lock` | No post-build binary injection |
+| **Server runtime dependencies (`package.json`)** | `2` (`express`, `ws`) | `2` (`express`, `ws`) | Unchanged |
+| **CLI source code** | `16` files · `281,267 bytes` · `6,237` lines (`cli/src/`) | `32` files · `405,449 bytes` · `12,241` lines (`cli-rs/src/`) | **+96% CLI lines** |
+| **Shared web/CLI modules (`public/shared/`)** | `9` files · `92,770 bytes` · `1,858` lines (imported directly) | Ported into [`cli-rs/src/shared/`](../cli-rs/src/shared/) | Synced via shared test vectors |
+| **CLI integration suites** | Covered only in `test/*.test.mjs` | `5` `.rs` suites (`2,001` lines in [`cli-rs/tests/`](../cli-rs/tests/)) + `test/*.test.mjs` | Native + E2E coverage |
 
-### Lectura técnica del peso
+### Takeaways
 
-1. **Distribución real:** en el esquema SEA anterior, incluso un comando mínimo obligaba a distribuir el runtime completo de Node.js (~80 MiB en Windows sin comprimir) más la inyección del blob mediante `postject`. El binario Rust reduce el artefacto a **`5.38 MiB`**, lo que agiliza descargas iniciales, actualizaciones automáticas (`drop update`) y distribución en gestores de paquetes.
-2. **Más código en Rust, menos código de pegamento de empaquetado:** Rust exige mayor verbosidad en gestión explícita de tipos, buffers, canales asíncronos y serialización, y ya no puede importar directamente [`public/shared/`](../public/shared/). A cambio, desaparece la infraestructura artesanal de descarga/verificación de runtimes Node (`scripts/build-cross.mjs`, `scripts/shasums.mjs`, `sea-config.json`).
+1. **Distribution:** SEA bundled the entire Node.js runtime (~80 MiB uncompressed on Windows) via `postject`. Dropping to **`5.38 MiB`** makes initial downloads, `drop update`, and package-manager updates substantially faster.
+2. **More Rust source, less packaging glue:** Rust requires explicit types, buffer management, and async channels, and cannot import [`public/shared/`](../public/shared/) directly; in exchange, the custom runtime-download and injection scripts (`scripts/build-cross.mjs`, `scripts/shasums.mjs`, `sea-config.json`) were eliminated.
 
 ---
 
-## 2. Arranque en frío y consumo de memoria
+## 2. Cold Start & Memory Usage
 
-Mediciones tomadas en Windows usando `WorkingSet64` y `PeakWorkingSet64` para memoria, y 10 ejecuciones consecutivas para arranque en frío:
+Measured on Windows via `WorkingSet64` and `PeakWorkingSet64`, and 10 consecutive runs for cold startup:
 
-| Escenario | Node.js (`v22.15.0`) | Rust (`drop.exe` release) | Mejora |
+| Scenario | Node.js (`v22.15.0`) | Rust (release `drop.exe`) | Improvement |
 | :--- | :--- | :--- | :--- |
-| **Arranque en frío (`--version`, 10 corridas)** | `108.79 ms` media (`min 103.60 ms`, `max 118.42 ms`) | `15.01 ms` media (`min 12.50 ms`, `max 27.72 ms`) | **7.2× más rápido** |
-| **RAM en espera (`send --no-qr`)** | `51.4 MiB` actual · `83.1 MiB` pico | `10.4 MiB` actual · `42.0 MiB` pico | **~4.9× menos RAM actual** |
-| **RAM bajo carga (`speed` loopback) — Host** | `55.6 MB` actual · `82.9 MB` pico | `10.0 MB` actual · `41.7 MB` pico | **~5.6× menos RAM actual** |
-| **RAM bajo carga (`speed` loopback) — Guest** | `62.3 MB` actual · `105.5 MB` pico | `9.9 MB` actual · `41.2 MB` pico | **~6.3× menos RAM actual** |
+| **Cold start (`--version`, 10 runs)** | `108.79 ms` avg (`min 103.60 ms`, `max 118.42 ms`) | `15.01 ms` avg (`min 12.50 ms`, `max 27.72 ms`) | **7.2× faster** |
+| **Idle RAM (`send --no-qr`)** | `51.4 MiB` working · `83.1 MiB` peak | `10.4 MiB` working · `42.0 MiB` peak | **~4.9× less active RAM** |
+| **RAM under load (`speed` loopback) — Host** | `55.6 MB` working · `82.9 MB` peak | `10.0 MB` working · `41.7 MB` peak | **~5.6× less active RAM** |
+| **RAM under load (`speed` loopback) — Guest** | `62.3 MB` working · `105.5 MB` peak | `9.9 MB` working · `41.2 MB` peak | **~6.3× less active RAM** |
 
-En invocaciones breves (`--help`, `completion`, `verify-web`, comandos erróneos), Node pagaba siempre más de `100 ms` solo por inicializar V8 y cargar módulos ES. Rust responde en **`~15 ms`** de media, resultando inmediato en terminal y reduciendo la huella de memoria de larga duración durante transferencias grandes o sesiones en espera.
+Short commands (`--help`, `completion`, `verify-web`, invalid argument errors) previously paid >`100 ms` just to initialize V8 and ES modules; Rust finishes in **`~15 ms`**.
 
 ---
 
-## 3. Benchmarks de velocidad y latencia
+## 3. Speed & Latency Benchmarks
 
-### 3.1 Transferencia E2E de archivo (`test/cli.bench.mjs`, 128 MB por TCP loopback)
+### 3.1 E2E File Transfer (`test/cli.bench.mjs`, 128 MB over TCP loopback)
 
-Incluye el ciclo completo de usuario: arranque de los dos procesos, señalización, derivación de clave con `scrypt`, lectura/escritura en disco, cifrado/descifrado AES-256-GCM y verificación SHA-256.
+Includes spawning both processes, signaling, `scrypt` key derivation, disk I/O, AES-256-GCM encryption/decryption, and SHA-256 verification:
 
-| Implementación | Tiempo total | Caudal efectivo |
+| Implementation | Total time | Effective throughput |
 | :--- | :--- | :--- |
 | **Node.js CLI** | `1.86 s` | `68.7 MB/s` (`550 Mbit/s`) |
 | **Rust CLI** | `1.55 s` | `82.4 MB/s` (`660 Mbit/s`) |
 
-**Análisis:** sobre disco local con un fichero de 128 MB, la diferencia es de **+20 %** (`0.31 s` menos) porque el I/O de disco y el coste fijo de `scrypt` dominan buena parte del tiempo total. La ventaja de CPU de Rust se nota mucho más en transferencias sostenidas en red rápida o en memoria.
+**Analysis:** on a 128 MB local disk transfer, local I/O and fixed `scrypt` setup account for much of the wall clock (+20% / `0.31 s` faster). Rust's CPU advantage becomes dramatic on fast networks or sustained streams.
 
----
+### 3.2 Pure Direct TCP Benchmark (`test/speed.bench.mjs`, 2.00 s per direction, in-memory AES-256-GCM)
 
-### 3.2 Benchmark puro TCP directo (`test/speed.bench.mjs`, 2.00 s por sentido, cifrado AES-256-GCM en memoria)
-
-| Implementación | Subida (Host) | Bajada (Host) | Latencia RTT |
+| Implementation | Upload (Host) | Download (Host) | RTT Latency |
 | :--- | :--- | :--- | :--- |
 | **Node.js CLI** | `661.7 MB/s` (`5294 Mbit/s`, `1.3 GB/2.0s`) | `650.3 MB/s` (`5203 Mbit/s`, `1.3 GB/2.0s`) | `0.4 ms` |
 | **Rust CLI** | `2697.3 MB/s` (`21579 Mbit/s`, `5.3 GB/2.00s`) | `2728.4 MB/s` (`21827 Mbit/s`, `5.3 GB/2.00s`) | `0.1 ms` (Guest `0.0 ms`) |
 
-**Análisis:** sin freno de disco ni límite de red física, Rust supera los **`2.7 GB/s` (~`21.8 Gbit/s`) cifrando AES-256-GCM en tiempo real**, multiplicando por **>4×** el techo de Node.js (`~650–662 MB/s`) al eliminar copias de `Buffer` entre JS y C++, asignaciones repetidas por chunk y pausas de GC.
+**Analysis:** without disk or physical NIC limits, Rust sustains **`>2.7 GB/s` (~`21.8 Gbit/s`) of real-time AES-256-GCM**, **>4×** higher than Node.js (`~650–662 MB/s`) by removing JS/C++ `Buffer` copies, per-chunk allocations, and GC pauses.
 
----
+### 3.3 WebSocket Relay Benchmark (`test/speed.bench.mjs --relay` via Node.js `ws` server)
 
-### 3.3 Benchmark por WebSocket Relay (`test/speed.bench.mjs --relay` sobre servidor Node.js `ws`)
+Both CLIs route through the exact same Node.js relay server on loopback:
 
-Ambos CLI pasan exactamente por el mismo servidor relay Node.js en loopback:
-
-| Implementación | Subida (Host) | Bajada (Host) | Latencia RTT |
+| Implementation | Upload (Host) | Download (Host) | RTT Latency |
 | :--- | :--- | :--- | :--- |
 | **Node.js CLI** | `88.4 MB/s` (`707 Mbit/s`, `179 MB/2.0s`) | `67.2 MB/s` (`537 Mbit/s`, `136 MB/2.0s`) | `0.7 ms` |
 | **Rust CLI** | `297.4 MB/s` (`2379 Mbit/s`, `622 MB/2.09s`) | `336.7 MB/s` (`2693 Mbit/s`, `809 MB/2.40s`) | `0.4 ms` |
 
-**Análisis:** este resultado es especialmente revelador: el techo previo de **`67–88 MB/s`** en `--relay` **no estaba en el servidor WebSocket de Node**, sino en el propio cliente CLI de Node gestionando frames binarios + AES-GCM + backpressure. Al pasar el cliente a Rust, el mismo servidor relay en Node entrega **3.4×–5.0× más rendimiento** (`297–337 MB/s`).
+**Analysis:** the previous `67–88 MB/s` ceiling was **not** in the Node.js WebSocket server — it was in the Node.js CLI client handling binary frames, AES-GCM, and backpressure. With the Rust client, the same Node.js server delivers **3.4×–5.0× higher throughput** (`297–337 MB/s`).
 
----
+### 3.4 CLI ↔ Chrome Interoperability (`test/webrelay.bench.mjs`, 12 MB via WS relay, SHA-256 verified)
 
-### 3.4 Interoperabilidad CLI ↔ Chrome (`test/webrelay.bench.mjs`, 12 MB por Relay WS, SHA-256 verificado)
-
-| Dirección | Node.js CLI | Rust CLI | Observación |
+| Direction | Node.js CLI | Rust CLI | Notes |
 | :--- | :--- | :--- | :--- |
-| **CLI `send` → Chrome** | Handshake `0.71 s` · Transfer `0.50 s` (`23.9 MB/s`) | Handshake `0.72 s` · Transfer `0.59 s` (`20.2 MB/s`) | Empate técnico; domina el hilo WebCrypto/WS de Chrome |
-| **Chrome → CLI `recv`** | Handshake `0.54 s` · Transfer `0.25 s` (`48.2 MB/s`) | Handshake `0.36 s` · Transfer `0.26 s` (`46.9 MB/s`) | Misma velocidad de transferencia; Rust recorta `0.18 s` el handshake |
+| **CLI `send` → Chrome** | Handshake `0.71 s` · Transfer `0.50 s` (`23.9 MB/s`) | Handshake `0.72 s` · Transfer `0.59 s` (`20.2 MB/s`) | Technical tie; bound by Chrome WebCrypto/WS thread |
+| **Chrome → CLI `recv`** | Handshake `0.54 s` · Transfer `0.25 s` (`48.2 MB/s`) | Handshake `0.36 s` · Transfer `0.26 s` (`46.9 MB/s`) | Identical transfer rate; Rust trims `0.18 s` from handshake |
 
-**Análisis:** cuando uno de los extremos es el navegador, el cuello de botella reside en la ejecución de WebCrypto en Chrome, el paso de mensajes entre navegador y WebSocket y la ventana de confirmación (`cli-ack` de 8 MiB) del protocolo relay. Aquí la reescritura en Rust no acelera la velocidad sostenida (incluso muestra una ligera variación de `0.09 s` en la corrida de 12 MB enviada hacia Chrome), porque el límite ya no está en el binario de consola.
-
----
-
-## 4. Paridad de protocolo e interoperabilidad cruzada
-
-Para asegurar que la migración no introduce regresiones con el cliente web ni con versiones JS previas de Protocolo 5:
-
-1. **Interoperabilidad binaria JS `v0.12.0` ↔ Rust `v0.12.0`:** probada con un fichero de **`9,437,261 bytes`** y verificación SHA-256 en las 4 combinaciones:
-   - `Node send → Rust recv` (TCP directo): **PASS**
-   - `Node send → Rust recv` (Relay WebSocket): **PASS**
-   - `Rust send → Node recv` (TCP directo): **PASS**
-   - `Rust send → Node recv` (Relay WebSocket): **PASS**
-2. **Vectores compartidos entre lenguajes ([`cli-rs/tests/shared_vectors_test.rs`](../cli-rs/tests/shared_vectors_test.rs)):** **8 tests** validan paridad bit a bit contra las constantes y funciones criptográficas de [`public/shared/`](../public/shared/) (palabras, códigos, derivación, AES-256-GCM, SAS, QR, selección `--only`, completado de shell y Minisign).
-3. **Batería propia de Rust (`cargo test`):** **33 tests** en 5 suites (`network_test`: 11, `shared_vectors_test`: 8, `speed_test`: 2, `system_test`: 5, `transfer_test`: 7), compilando sin advertencias bajo `cargo clippy --all-targets -- -D warnings`.
+**Analysis:** when one peer is a browser, Chrome's WebCrypto/WebSocket worker and the 8 MiB `cli-ack` window dominate, not the CLI binary.
 
 ---
 
-## 5. Evaluación de ingeniería: pros, contras y conclusión
+## 4. Protocol Parity & Cross-Implementation Testing
 
-### Lo que mejora claramente
+1. **Binary interoperability JS `v0.12.0` ↔ Rust `v0.12.0`:** verified with a **`9,437,261-byte`** file and SHA-256 check across all 4 paths:
+   - `Node send → Rust recv` (Direct TCP): **PASS**
+   - `Node send → Rust recv` (WebSocket Relay): **PASS**
+   - `Rust send → Node recv` (Direct TCP): **PASS**
+   - `Rust send → Node recv` (WebSocket Relay): **PASS**
+2. **Cross-language shared vectors ([`cli-rs/tests/shared_vectors_test.rs`](../cli-rs/tests/shared_vectors_test.rs)):** **8 tests** enforce bit-for-bit parity against [`public/shared/`](../public/shared/) (wordlists, codes, key derivation, AES-256-GCM, SAS, QR, `--only` globs, shell completions, Minisign).
+3. **Rust test suite (`cargo test`):** **33 tests** across 5 suites (`network_test`, `shared_vectors_test`, `speed_test`, `system_test`, `transfer_test`), zero warnings under `cargo clippy --all-targets -- -D warnings`.
 
-- **Experiencia de usuario e instalación:** binario de `5.38 MiB` frente a `80.54 MiB` base, arranque casi instantáneo (`~15 ms`) y ~5× menos consumo de memoria.
-- **Pipeline de release más limpio:** desaparecen `sea-config.json`, la descarga manual de tarballs de `nodejs.org`, la verificación ad-hoc `SHASUMS256.txt` y los hacks de `postject` (incluida la re-inyección/re-firmado de segmentos Mach-O en macOS). La verificación de releases mantiene el formato Minisign con la misma clave pública en [`cli-rs/src/cli.rs`](../cli-rs/src/cli.rs).
-- **Techo de red desbloqueado:** con **`>21 Gbit/s`** cifrados en memoria TCP y **`>2.3 Gbit/s`** sobre relay WS en loopback, el CLI deja de limitar enlaces Ethernet de 2.5/10 Gbit/s.
-- **Separación sana de arquitectura:** el servidor sigue siendo Node.js minimalista (2 dependencias: `express`, `ws`), mientras el binario distribuido al usuario final vive aislado en `cli-rs/`.
+---
 
-### Costes y compromisos reales
+## 5. Engineering Assessment
 
-- **Doble implementación de módulos `shared`:** lo que antes era código único en [`public/shared/`](../public/shared/) ahora requiere mantener sincronizados los archivos homólogos en [`cli-rs/src/shared/`](../cli-rs/src/shared/). Cualquier cambio futuro debe respetar las reglas de [compatibilidad](COMPATIBILITY.md) y actualizar ambos lados.
-- **Compilación en frío vs iteración instantánea:** una compilación `release` completa en local tarda **`34.01 s`** en este equipo (frente a ejecución directa sin compilación con `node`), aunque las compilaciones incrementales en desarrollo son rápidas (`cargo clippy` y `dev` en pocos segundos) y CI cachea crates.
-- **Matriz multiplataforma en CI:** generar binarios nativos estáticos (`windows-x64`, `linux-x64` musl, `linux-arm64` musl, `macos-arm64`, `macos-x64`) en [`.github/workflows/release.yml`](../.github/workflows/release.yml) depende de toolchains nativos/musl por arquitectura en lugar de inyectar bytecode sobre runtimes precompilados de Node.
+### Clear Wins
 
-### Veredicto
+- **Distribution & UX:** `5.38 MiB` binary vs `80.54 MiB` SEA baseline, `~15 ms` cold start, ~5× lower memory footprint.
+- **Cleaner release pipeline:** removes `sea-config.json`, Node runtime tarball fetching, and `postject` / Mach-O re-signing hacks while preserving Minisign release verification with the same embedded public key in [`cli-rs/src/cli.rs`](../cli-rs/src/cli.rs).
+- **Network headroom unlocked:** `>21 Gbit/s` encrypted in-memory TCP and `>2.3 Gbit/s` WS relay remove the CLI as a bottleneck on 2.5/10 Gbit/s Ethernet.
+- **Clean architecture split:** signaling server remains minimal Node.js (2 dependencies: `express`, `ws`), while the user-installed binary is self-contained in `cli-rs/`.
 
-La migración a Rust **merece la pena**: para un CLI P2P que el usuario descarga como ejecutable independiente, reducir el peso de ~80 MiB a `5.38 MiB`, bajar la memoria activa a `~10 MB` y multiplicar por más de `4×` el throughput cifrado elimina las principales limitaciones prácticas del enfoque SEA de Node.js, pagando un coste asumible en duplicación de constantes de protocolo (cubierta por tests cruzados) y tiempos de compilación.
+### Real Costs
+
+- **Dual `shared/` implementation:** changes to [`public/shared/`](../public/shared/) must be mirrored in [`cli-rs/src/shared/`](../cli-rs/src/shared/) per [`COMPATIBILITY.md`](COMPATIBILITY.md).
+- **Cold build time:** a full local `release` build takes **`34.01 s`** on the test machine (incremental `dev` / `clippy` builds take a few seconds, and CI caches crates).
+- **Cross-platform CI matrix:** [`.github/workflows/release.yml`](../.github/workflows/release.yml) builds native/musl binaries per platform (`windows-x64`, `linux-x64`, `linux-arm64`, `macos-arm64`).
+
+### Verdict
+
+Migrating the CLI to Rust is a **clear net win**: shrinking a standalone P2P binary from ~80 MiB to `5.38 MiB`, cutting active RAM to `~10 MB`, and increasing encrypted throughput by >`4×` eliminates the core limitations of Node.js SEA at a manageable cost in duplicated protocol constants (guarded by cross-language vector tests).

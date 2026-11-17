@@ -1,29 +1,26 @@
-# Contribuir a drop
+# Contributing to Drop
 
-Gracias por querer echar una mano. Este documento es lo que hace falta saber para que un
-cambio entre sin ida y vuelta: cómo montar el entorno, cómo probar lo que tocas y qué
-convenciones sigue el repositorio.
+Thank you for contributing. This document covers how to set up your environment, run tests and benchmarks, follow project conventions, and publish a release.
 
-## Montar el entorno
+## Environment Setup
 
-Hace falta **Node.js >= 22.9** (para el servidor, la web y la suite de integración) y **Rust (`cargo` estable)** si vas a compilar o tocar el CLI (`cli-rs/`).
+You need **Node.js >= 22.9** (signaling server, web client, and integration test suite) and **Rust (`cargo` stable)** if you build or modify the native CLI (`cli-rs/`).
 
 ```bash
 git clone https://github.com/Oloxx/drop.git
 cd drop
 npm install
 
-npm run dev        # http://localhost:3000, recarga sola al guardar
+npm run dev        # http://localhost:3000 (auto-reloads on save)
 ```
 
-No hay base de datos, ni servicios externos, ni claves que pedir: las salas viven en memoria
-del proceso y los archivos nunca pasan por el servidor.
+There is no database, external state, or required API key: rooms live in process memory (`Map` in `server/index.js`) and file bytes never transit the signaling server in plaintext. Both `dev` and `start` pass `--env-file-if-exists=.env`.
 
-Para compilar o probar el CLI en Rust:
+To build or run the Rust CLI:
 
 ```bash
-npm run build:cli  # compila el binario release en cli-rs/target/release/drop
-npm run cli -- send fichero.zip
+npm run build:cli  # builds release binary at cli-rs/target/release/drop(.exe)
+npm run cli -- send file.zip
 npm run cli -- recv 4271-lemon-radar-tiger-orbit
 ```
 
@@ -31,134 +28,72 @@ npm run cli -- recv 4271-lemon-radar-tiger-orbit
 
 ```bash
 npm test
+cargo test --manifest-path cli-rs/Cargo.toml
 ```
 
-La suite arranca su propio servidor de señalización en un puerto libre y lo apaga al terminar,
-así que **no hay que levantar nada antes**. Un caso suelto:
+`npm test` is self-contained: `test/helpers.mjs` spawns `server/index.js` on an ephemeral port per test file and terminates it afterwards (isolated because per-IP quotas are process-wide). A single test can be run with:
 
 ```bash
 node --test --test-name-pattern "NOT_FOUND" test/signaling.test.mjs
 ```
 
-Todo cambio de comportamiento necesita un test. Los que hay ya marcan el tono: cada uno explica
-en un comentario **qué se rompió o qué se rompería** si eso dejara de cumplirse, no lo que hace
-la línea de abajo.
+`test/web.test.mjs` drives two real Chrome tabs via `playwright-core` using the locally installed browser (no browser download; override with `CHROME_PATH`). It skips if Chrome is absent unless `DROP_REQUIRE_CHROME=1` is set (which CI enables on Linux).
 
-Si tocas rendimiento (troceado, contrapresión, el bucle de acuses), los números salen de los
-benchmarks, y **hay que comparar medianas de tres ejecuciones**: la dispersión entre ejecuciones
-es de ~1 MB/s y una sola no dice nada.
+Every behavior change needs a test. Existing tests explain in a comment **what broke or would break** if the assertion failed, rather than restating the code.
+
+## Benchmarks
+
+When changing chunking, backpressure, watermarks, or the ack loop, always compare **medians of three runs** (run-to-run variance is ~1 MB/s):
 
 ```bash
-npm run bench        # transferencia real entre dos pestañas de Chrome
-npm run bench:cli    # TCP nativo entre dos procesos del CLI
-npm run bench:fanout # cadena de reenvío con varios receptores
+npm run bench           # real WebRTC transfer between two Chrome tabs (256 MB baseline ~11.5 MB/s)
+npm run bench:fanout    # multi-receiver relay chain; measures uplink copies sent by sender
+npm run bench:cli       # native CLI TCP transfer
+npm run bench:speed     # CLI-to-CLI throughput benchmark (direct TCP & relay)
+npm run bench:webrelay  # browser <-> CLI WebSocket relay in both directions
 ```
 
-Los benchmarks necesitan un servidor levantado (`npm run dev`) y, los de navegador, Chrome
-instalado (`CHROME_PATH` si no está donde se espera).
+Benchmarks require a running server (`npm run dev`), and browser benchmarks require Chrome installed.
 
-## Convenciones
+## Conventions
 
-**Idiomas.** El código, los comentarios, los commits, las issues y los PR van en **español**.
-Cada superficie habla un solo idioma, decidido y sin mezclar:
+**Languages.** Code comments, commits, issues, and PRs may be written in **Spanish** or **English** (documentation is primarily English). Each user-facing surface keeps one consistent language:
 
-- la **web** va en **inglés**, en minúscula y escueta (`open channel`, `transmitting…`,
-  `delivered`);
-- el **CLI** va en **español**, incluidos sus errores;
-- el código compartido que produce texto para el usuario (`public/shared/codes.js`) recibe
-  el idioma como parámetro (`parseCode(input, { lang })`) en vez de imponer uno: la web pasa
-  `en` y el CLI usa el `es` por defecto.
+- **Web UI (`public/`):** **English**, lowercase and terse (`open channel`, `transmitting…`, `delivered`).
+- **CLI (`cli-rs/`):** **Spanish**, including errors and `--help` output.
+- **Shared formatting/parsing (`public/shared/codes.js`):** takes `lang` explicitly (`parseCode(input, { lang })`) instead of hardcoding one (`'en'` on the web, `'es'` default in the CLI).
 
-No es capricho: mezclarlo ya pasó y quedó a medias (#41).
+**Comments.** Explain *why*, not *what*. A comment that explains why two frames must share or avoid a channel, or why an invariant exists, prevents regressions months later.
 
-**Comentarios.** Se comenta el *porqué*, no el *qué*. Un comentario que repite el nombre de la
-función sobra; uno que dice "esto no puede ir en el canal directo porque adelanta a los últimos
-trozos y cierra el archivo a medias" es el que evita que alguien lo simplifique dentro de seis
-meses. Si algo parece rebuscado y no lo es, explica el caso que lo justifica.
+**Commits.** [Conventional Commits](https://www.conventionalcommits.org/) in imperative mood. Active types: `feat`, `fix`, `sec`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`.
 
-**Commits.** [Conventional Commits](https://www.conventionalcommits.org/es/), en español y en
-imperativo:
+**Pull requests.** Keep PRs focused and targeted against `main`. Describe what problem it solves, what was tested, and how. CI runs the suite on Linux, macOS, and Windows and must pass before merging — every push to `main` deploys to production.
 
-```
-fix(cli): cerrar el descriptor en finally para no filtrarlo al fallar
+**Dependencies.** The web app makes **zero third-party requests** (`public/fonts/` is self-hosted; no CDN, no analytics). The server has two runtime dependencies (`express` and `ws`), and the Rust CLI compiles to a static binary with zero runtime dependencies. New server dependencies require strong justification.
 
-Cuerpo opcional: qué pasaba antes, por qué se arregla así y no de otra
-forma. Las referencias a issues, al final.
+**Before changing the protocol or relay chain**, read [`docs/PROTOCOL.md`](docs/PROTOCOL.md) and the header comments in [`public/app.js`](public/app.js) and [`cli-rs/src/transfer.rs`](cli-rs/src/transfer.rs). They document non-obvious invariants around channel ordering, chunk re-splitting, atomic `.part` commits, and `conn.epoch`.
 
-Cierra #21.
-```
+## Publishing a Release
 
-Tipos en uso: `feat`, `fix`, `sec`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`.
+A release is two commits and a tag; `.github/workflows/release.yml` builds all four platform binaries, signs `SHA256SUMS` with Minisign, verifies the signature with the real `minisign` binary, and creates the GitHub release. Manual checklist in order:
 
-**Pull requests.** Uno por tema, contra `main`. En el cuerpo: qué problema resuelve, qué se ha
-verificado y cómo. Si cierra issues, usa las palabras clave en inglés (`closes #21`) — GitHub no
-entiende "cierra #21" y la issue se queda abierta.
-
-El CI ejecuta la suite en Linux, macOS y Windows, y tiene que estar en verde antes de mezclar:
-un push a `main` despliega a producción.
-
-**Dependencias.** La web hace **cero peticiones a terceros** y así se queda: la fuente está
-servida desde `public/fonts/`, no hay CDN ni analítica. En el servidor hay dos dependencias
-(`express` y `ws`) y el CLI en Rust genera un binario estático sin dependencias de ejecución. Añadir una dependencia al servidor tiene que justificarse.
-
-**Antes de tocar el protocolo o la cadena de reenvío**, lee las cabeceras de
-[`public/app.js`](public/app.js) y [`cli-rs/src/transfer.rs`](cli-rs/src/transfer.rs). Documentan las
-decisiones que parecen simplificables y no lo son -- por qué los trozos y los mensajes de
-control van por canales distintos, por qué un relay tiene que volver a trocear lo que reenvía --
-y cada una está ahí porque romperla costó una tarde.
-
-## Publicar una versión
-
-Una release son dos commits y un tag; el workflow `release.yml` hace el resto (compila los
-cuatro binarios, firma `SHA256SUMS`, verifica la firma con el `minisign` real y publica). Lo que
-no puede comprobar la máquina va en esta lista, en este orden:
-
-1. **`npm test` en verde en las tres plataformas.** Localmente pasa en una; el CI de la PR
-   cubre las otras dos. No se etiqueta con la matriz en rojo.
-2. **Si cambia el protocolo:** dentro de la 1.x `PROTOCOL_VERSION` no se sube. Lo nuevo va
-   como campo opcional, marco que el otro ignora o capacidad anunciada en `features`, con las
-   reglas de [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md). Algo que no quepa ahí es una
-   2.0: se sube el número, se anuncia en el `CHANGELOG` con una versión menor de antelación y
-   se cambia a la vez `test/compat.test.mjs`. Un cambio de protocolo sin subir el número deja
-   dos versiones entendiéndose a medias, que es peor que rechazarse.
-3. **`CHANGELOG.md`:** mueve *Sin publicar* a una sección `[X.Y.Z] — AAAA-MM-DD` y deja
-   *Sin publicar* vacía.
-4. **`README.md` y `README.en.md`:** los enlaces de descarga apuntan a la versión nueva
-   (`test/version.test.mjs` lo comprueba). La prosa que nombra versiones concretas ("a partir de
-   la v0.5.2") se deja como está.
-5. **`ROADMAP.md`:** marca lo que entra y quita lo que ya no aplica.
-6. Commit de docs (`docs: enlaces de descarga y changelog para la vX.Y.Z`) y, encima, el de
-   versión con el tag:
+1. **`npm test` green across Linux, macOS, and Windows.** Do not tag with a red CI matrix.
+2. **If protocol changes:** inside `1.x`, `PROTOCOL_VERSION` stays `5`. New capabilities use optional fields, ignored control frames, or `features` negotiation per [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md). Anything incompatible requires `2.0`, a prior minor-version deprecation notice in `CHANGELOG.md`, and updating `test/compat.test.mjs`.
+3. **`CHANGELOG.md`:** move *Sin publicar* / *Unreleased* into `[X.Y.Z] — YYYY-MM-DD` and leave the unreleased section empty.
+4. **`README.md` and `README.es.md`:** point all release download links to `vX.Y.Z` (`test/version.test.mjs` enforces this). Leave historical version mentions in prose untouched.
+5. **`ROADMAP.md`:** check off completed items and prune obsolete notes.
+6. Commit docs (`docs: download links and changelog for vX.Y.Z`), then bump version and push tag:
 
    ```bash
    npm version X.Y.Z -m "chore(release): v%s"
    git push --follow-tags
    ```
 
-7. Cuando el workflow termine, **`drop update` desde la versión anterior** en al menos una
-   máquina real: es la única prueba de extremo a extremo de la firma y de que el binario
-   arranca fuera del CI. `minisign -Vm SHA256SUMS -P <clave del README>` sobre lo descargado
-   también vale como comprobación independiente.
-8. Abre la web en producción y haz una transferencia entre dos pestañas. El deploy es
-   automático con el push a `main`, pero nadie lo ha mirado hasta que alguien lo mira.
-9. **Homebrew y Scoop** se ponen al día solos en menos de seis horas: los workflows de
-   [`Oloxx/homebrew-tap`](https://github.com/Oloxx/homebrew-tap) y
-   [`Oloxx/scoop-bucket`](https://github.com/Oloxx/scoop-bucket) comprueban la firma del
-   `SHA256SUMS`, regeneran el manifiesto e instalan de verdad. Para no esperar:
-   `gh workflow run update.yml -R Oloxx/homebrew-tap` (y lo mismo con `scoop-bucket`). Si uno se
-   pone en rojo, la release no llega a ese gestor hasta arreglarlo.
-10. **WinGet (`Oloxx.drop` en `microsoft/winget-pkgs`):** el job `winget` de `release.yml` genera
-    los manifiestos desde el `SHA256SUMS` verificado con Minisign, ejecuta `winget validate` en
-    Windows y abre la PR automáticamente si el repositorio tiene el secret `WINGET_TOKEN` (PAT con
-    permiso `public_repo` para el fork). Manualmente: `node scripts/winget.mjs vX.Y.Z --submit`.
+7. Once the workflow finishes, test **`drop update` from the previous release** on at least one real machine (or verify with `minisign -Vm SHA256SUMS -P <key from README>`).
+8. Open the production web app and complete a transfer between two browser tabs.
+9. **Homebrew and Scoop** update automatically within 6 hours via [`Oloxx/homebrew-tap`](https://github.com/Oloxx/homebrew-tap) and [`Oloxx/scoop-bucket`](https://github.com/Oloxx/scoop-bucket) after verifying `SHA256SUMS.minisig`. To trigger immediately: `gh workflow run update.yml -R Oloxx/homebrew-tap` (and likewise for `scoop-bucket`).
+10. **WinGet (`Oloxx.drop` in `microsoft/winget-pkgs`):** the `winget` job in `release.yml` verifies `SHA256SUMS.minisig`, generates the manifest, runs `winget validate` on Windows, and opens the PR if `WINGET_TOKEN` (PAT with `public_repo`) is configured. Manual fallback: `node scripts/winget.mjs vX.Y.Z --submit`.
 
-## Seguridad
+## Security
 
-Si encuentras un fallo con impacto en seguridad, **no abras una issue pública**: escribe por
-[advisory privado](https://github.com/Oloxx/drop/security/advisories/new). El modelo de
-amenazas, con lo que cubre y lo que no, está en [SECURITY.md](SECURITY.md).
-
-## Licencia
-
-Al contribuir aceptas que tu código se publique bajo la [Apache License 2.0](LICENSE), que es la
-del proyecto.
+If you find a security vulnerability, **do not open a public issue**: report it via [GitHub Private Security Advisory](https://github.com/Oloxx/drop/security/advisories/new). See [`SECURITY.md`](SECURITY.md) and [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).

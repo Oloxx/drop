@@ -1,84 +1,84 @@
-# Modelo de amenazas de drop
+# Drop Threat Model
 
-Este documento detalla qué garantiza **drop** en cada ruta de transferencia y distribución, qué ve cada intermediario y qué queda explícitamente fuera del modelo. El resumen corto está en [`SECURITY.md`](../SECURITY.md).
+Detailed security guarantees across every transfer and distribution path, what each intermediary observes, and explicit boundaries. For a concise summary and vulnerability reporting instructions, see [`SECURITY.md`](../SECURITY.md).
 
 ---
 
-## 1. Actores y qué ve cada uno
+## 1. Actors and Visibility
 
-| Actor | Qué ve | Qué NO ve |
+| Actor | Sees | Does NOT see |
 |---|---|---|
-| **Servidor de señalización** (`server/index.js`) | Identificador público de sala (`4271`, 4 dígitos), direcciones IP de emisor y receptores, SDP/ICE en WebRTC, `cli-offer`/`cli-proof` y tráfico cifrado (`cli-sealed` + trozos AES-GCM) cuando se usa relay | Las cuatro palabras del código, la clave derivada, los nombres/tamaños de archivos del CLI ni ningún byte de archivo en claro |
-| **Servidor TURN** (`coturn`) | IPs de los pares y paquetes DTLS ya cifrados extremo a extremo entre navegadores | Contenido del DataChannel ni contraseñas permanentes (usa credenciales HMAC temporales de duración `TURN_TTL_SECONDS`) |
-| **Vecino de LAN** (UDP `42424` / mDNS `5353`) | `roomHash = sha256(roomId).slice(0, 16)` y puerto TCP local del emisor | Las cuatro palabras del código, el manifiesto o los archivos: sin clave scrypt, AES-GCM rechaza el primer paquete TCP |
-| **Observador pasivo en red / ISP** | IPs, horarios, volumen de tráfico y SNI/DNS; el contenido va dentro de DTLS (WebRTC) o AES-256-GCM (TCP y relay) | Nombres de archivo ni contenido en claro |
-| **Otro extremo con el código** | Todo lo incluido en la oferta (y lo elegido con `--only` / casillas) una vez aceptado por el emisor | Otros archivos del equipo fuera del envío |
+| **Signaling server** (`server/index.js`) | Public 4-digit room ID (`4271`), sender/receiver IPs, WebRTC SDP/ICE, `cli-offer`/`cli-proof`, and encrypted relay payloads (`cli-sealed` + AES-GCM chunks) when relay is used | The four code words, the derived AES key, CLI filenames/sizes, or any plaintext file byte |
+| **TURN server** (`coturn`) | Peer IPs and end-to-end DTLS-encrypted WebRTC packets | DataChannel contents or permanent credentials (uses ephemeral HMAC tokens valid for `TURN_TTL_SECONDS`) |
+| **LAN neighbor** (UDP `42424` / mDNS `5353`) | `roomHash = sha256(roomId).slice(0, 16)` and sender's local TCP port | The four words, manifest, or file data (without the `scrypt` key, AES-GCM rejects the first TCP packet) |
+| **Passive network observer / ISP** | IPs, timing, traffic volume, and SNI/DNS; payloads are wrapped in DTLS (WebRTC) or AES-256-GCM (TCP and relay) | Filenames or plaintext file contents |
+| **Peer holding the code** | Offered files (or selected `--only` / checkbox subset) once approved by sender | Any other files outside the transfer |
 
 ---
 
-## 2. El código de cuatro palabras y la derivación de clave
+## 2. Four-Word Code & Key Derivation
 
-El código `4271-lemon-radar-tiger-orbit` separa dos mitades ([`public/shared/codes.js`](../public/shared/codes.js)):
+`4271-lemon-radar-tiger-orbit` separates routing from secret entropy ([`public/shared/codes.js`](../public/shared/codes.js)):
 
-- **Identificador público (`4271`, 4 dígitos, 10.000 salas):** solo sirve para enrutar la señalización y calcular `roomHash` en LAN. **No aporta secreto.**
-- **Secreto compartido (`lemon-radar-tiger-orbit`, 4 palabras BIP-39 de 2048):** $4 \times 11 = 44\text{ bits}$ de entropía exacta, sorteados en el cliente (`OsRng` en Rust / `crypto.getRandomValues` en navegador). Nunca se envía al servidor.
+- **Public room ID (`4271`, 4 digits, 10,000 rooms):** routes signaling and computes LAN `roomHash`. **Contributes zero secrecy.**
+- **Shared secret (`lemon-radar-tiger-orbit`, 4 words from 2048-word BIP-39 list):** $4 \times 11 = 44\text{ bits}$ of entropy generated client-side (`OsRng` in Rust, `crypto.getRandomValues` in browsers). Never sent to the server.
 
-### Derivación (`scrypt`)
+### Derivation (`scrypt`)
 
-Tanto el CLI ([`cli-rs/src/crypto.rs`](../cli-rs/src/crypto.rs)) como el navegador ([`public/shared/e2ee.js`](../public/shared/e2ee.js), [`public/shared/scrypt.js`](../public/shared/scrypt.js)) derivan la clave AES-256 usando:
+Both the CLI ([`cli-rs/src/crypto.rs`](../cli-rs/src/crypto.rs)) and browser ([`public/shared/e2ee.js`](../public/shared/e2ee.js), [`public/shared/scrypt.js`](../public/shared/scrypt.js)) derive the 256-bit key via:
 
 ```text
 salt = SHA-256("drop-code-v2|" + roomId)
 key  = scrypt(secret, salt, N=32768, r=8, p=1, dkLen=32)
 ```
 
-- **Coste por intento:** 32 MiB de RAM y ~62 ms en equipo moderno (~0,3 s en JS en navegador).
-- **Resistencia a fuerza bruta offline:** si un atacante graba tráfico TCP o relay cifrado (o un `cli-proof`), probar el espacio de $2^{44}$ códigos contra `scrypt` supone $\sim 2^{44} \times 0{,}062\text{ s} \approx 3{,}5 \times 10^{10}$ años-CPU, con cuello de botella en ancho de banda de memoria.
-- **Separación de dominios:** el `roomId` entra en la sal (`drop-code-v2|<roomId>`), así que las mismas cuatro palabras en dos salas distintas producen claves diferentes.
+- **Cost per guess:** 32 MiB RAM and ~62 ms native (~0.3 s in browser JS).
+- **Offline brute-force resistance:** against captured TCP/relay ciphertext or a `cli-proof`, testing the $2^{44}$ space against `scrypt` requires $\sim 2^{44} \times 0.062\text{ s} \approx 3.5 \times 10^{10}$ CPU-years, memory-bandwidth bound.
+- **Domain separation:** `roomId` enters the salt (`drop-code-v2|<roomId>`), so identical words in different rooms yield distinct keys.
 
-### Fuerza bruta online
+### Online Brute-Force Defenses
 
-Quien intente enumerar salas o adivinar palabras contra un emisor vivo se encuentra con límites en [`server/index.js`](../server/index.js):
+[`server/index.js`](../server/index.js) enforces:
 
-1. **`JOIN_FAIL_MAX = 20` por IP cada 60 s (`RATE_LIMITED`):** barrer las 10.000 salas posibles desde una IP tarda del orden de ~8 horas, mientras las salas viven minutos (`DROP_ROOM_TTL_MS`, 30 min por defecto).
-2. **`BAD_GUEST_MAX = 5` (`BURNED`):** si un emisor denuncia 5 pruebas de conocimiento fallidas (`bad-guest`), el servidor quema y cierra la sala entera.
-3. **Verificación en tiempo constante:** el CLI valida `cli-proof` (`HMAC-SHA256(key, "drop-proof-v3|" + nonce)`) en tiempo constante mediante `subtle::ConstantTimeEq` (`verify_proof` en [`cli-rs/src/crypto.rs`](../cli-rs/src/crypto.rs)).
-4. **Confirmación explícita del emisor:** incluso con las cuatro palabras, un receptor no recibe el manifiesto ni datos hasta superar la prueba de conocimiento y (salvo `--yes`) ser aceptado por el emisor.
-
----
-
-## 3. Cifrado en tránsito, integridad y escritura en disco
-
-- **TCP directo y Relay (CLI ↔ CLI y CLI ↔ Web):** cada marco de control y cada trozo binario va cifrado con **AES-256-GCM** usando un IV aleatorio de 96 bits (`12 bytes IV | 16 bytes tag | ciphertext`). Con IVs aleatorios de 96 bits, el límite seguro de NIST SP 800-38D es $2^{32}$ paquetes por clave (~256 TiB en trozos de 64 KiB), muy por encima de una transferencia efímera.
-- **Web ↔ Web (WebRTC):** cifrado por **DTLS** del estándar WebRTC sobre SCTP.
-- **Integridad de extremo a extremo:** además de la autenticación AEAD por paquete/trama, cada archivo lleva su **SHA-256** verificado al completarse dentro del canal autenticado (`end` / `cli-end`), de modo que cualquier pérdida, duplicación o reordenación de trozos por parte de un relay hostil hace fallar la verificación antes de confirmar la entrega.
-- **Escritura segura en destino:** los receptores validan las rutas del manifiesto para evitar *path traversal* (escapar fuera del directorio de destino) y rechazan reanudar archivos `.part` cuyo hash de prefijo no coincida con el del emisor.
+1. **`JOIN_FAIL_MAX = 20` per IP every 60 s (`RATE_LIMITED`):** scanning all 10,000 room IDs from one IP takes ~8 hours, while idle rooms expire in minutes (`DROP_ROOM_TTL_MS`, 30 min default).
+2. **`BAD_GUEST_MAX = 5` (`BURNED`):** five failed secret proofs reported by the sender (`bad-guest`) permanently burn and close the room.
+3. **Constant-time verification:** the CLI validates `cli-proof` (`HMAC-SHA256(key, "drop-proof-v3|" + nonce)`) in constant time via `subtle::ConstantTimeEq` (`verify_proof` in [`cli-rs/src/crypto.rs`](../cli-rs/src/crypto.rs)), and the browser uses [`timingSafeEqualStr`](../public/shared/e2ee.js).
+4. **Explicit sender approval:** even with the four words, a peer sees neither the manifest nor file bytes until passing the proof check and (unless `--yes`) being accepted by the sender.
 
 ---
 
-## 4. Huella de sesión (SAS)
+## 3. Transport Encryption, Integrity & Disk Safety
 
-El SAS son **3 palabras BIP-39** (33 bits) calculadas localmente en ambos extremos ([`public/shared/sas.js`](../public/shared/sas.js)):
-
-- **WebRTC (`webrtc`):** `SHA-256("drop-sas-v1|webrtc|" + sorted(dtlsFingerprints))`. Detecta un ataque **MITM en el servidor de señalización** que sustituya los *fingerprints* DTLS en el SDP para interceptar el canal WebRTC: cada extremo negocia DTLS con el atacante y las huellas dejan de coincidir.
-- **CLI (`tcp`):** `HMAC-SHA256(key, "drop-sas-v1|tcp|" + roomId)`. Confirma que ambos extremos comparten la misma clave scrypt en la misma sala sin exponer un verificador barato del secreto (las palabras en claro nunca entran en el SAS).
-
-Los humanos deben comparar la huella por un canal independiente (voz, chat, presencial); el software la muestra pero no puede verificarla por ellos.
+- **Direct TCP & WebSocket Relay (CLI ↔ CLI and CLI ↔ Web):** every control frame and binary chunk is encrypted with **AES-256-GCM** using a random 96-bit IV (`12-byte IV | 16-byte tag | ciphertext`). Per NIST SP 800-38D, random 96-bit IVs remain safe up to $2^{32}$ packets per key (~256 TiB at 64 KiB chunks), far exceeding ephemeral transfers.
+- **Web ↔ Web (WebRTC):** encrypted by standard WebRTC **DTLS** over SCTP.
+- **End-to-end file integrity:** beyond per-frame AEAD authentication, every file carries a full **SHA-256** digest verified inside the authenticated channel (`end` / `cli-end`), detecting any chunk drop, duplication, or reordering by a hostile relay.
+- **Safe destination writes:** receivers validate manifest `path` segments to block path traversal (`../`) and refuse resuming `.part` files whose prefix SHA-256 does not match the sender's file.
 
 ---
 
-## 5. Integridad de distribución y cliente web
+## 4. Session Fingerprint (SAS)
 
-- **Binarios del CLI (`drop update`):** cada release publica `SHA256SUMS` y su firma Ed25519 `SHA256SUMS.minisig` ([`cli-rs/src/minisign.rs`](../cli-rs/src/minisign.rs)), verificadas contra la clave pública embebida en el binario. Un atacante que comprometa el DNS o sirva un espejo falso de GitHub Releases no puede falsificar la firma sin la clave privada (`DROP_SIGNING_KEY`).
-- **Cliente web (`drop verify-web`):** [`cli-rs/src/verifyweb.rs`](../cli-rs/src/verifyweb.rs) consulta `/version` para obtener el commit declarado (`DROP_COMMIT`) y compara byte a byte los archivos servidos en `public/` contra el árbol de ese commit en GitHub.
+The SAS consists of **3 BIP-39 words** (33 bits) computed locally on both peers ([`public/shared/sas.js`](../public/shared/sas.js)):
+
+- **WebRTC (`webrtc`):** `SHA-256("drop-sas-v1|webrtc|" + sorted(dtlsFingerprints))`. Detects an **active MITM on the signaling server** swapping DTLS fingerprints in SDP: each peer negotiates DTLS with the attacker and sees different words.
+- **CLI (`tcp`):** `HMAC-SHA256(key, "drop-sas-v1|tcp|" + roomId)`. Confirms both peers share the same `scrypt` key in the same room without exposing a cheap offline verifier of the words.
+
+Users compare the 3 words over an independent channel (voice, chat, in person); the software displays them but cannot verify out-of-band identity on its own.
 
 ---
 
-## 6. Qué NO está cubierto (límites explícitos)
+## 5. Distribution & Web Client Integrity
 
-1. **Servidor web malicioso dirigido:** si un atacante controla el servidor que entrega el HTML y `public/app.js`, puede servir código alterado solo a la víctima mientras entrega el código legítimo a quien ejecute `drop verify-web`. (SRI tampoco resuelve esto si el propio HTML con los atributos `integrity` lo sirve el mismo servidor).
-2. **Ausencia de PAKE (SPAKE2/CPace):** el código tiene 44 bits y no usa intercambio autenticado basado en contraseña en curva elíptica (decisión consciente para no escribir primitivas de curva sin auditar y mantener cero dependencias). Un atacante con **control activo de la señalización y capacidad de interceptar en tiempo real** podría intentar un ataque en vivo si el usuario no comprueba el SAS o acepta un par inesperado.
-3. **Botnets distribuidas:** los límites por IP (`JOIN_FAIL_MAX`, `ROOM_RATE_MAX`) frenan escaneos desde una única IP, no desde miles de IPs coordinadas (aunque `BAD_GUEST_MAX = 5` sigue cerrando cualquier sala concreta bajo ataque).
-4. **Metadatos de tráfico:** el servidor, TURN y observadores de red ven qué IPs se comunican, cuándo y cuántos bytes transfieren.
-5. **Compromiso del código o del dispositivo:** quien escuche o reciba las cuatro palabras tiene acceso a la transferencia; un sistema operativo o navegador comprometido puede leer los archivos antes de cifrarlos o después de descifrarlos.
-6. **Auditoría externa independiente:** la criptografía usa primitivas estándar de Node.js y WebCrypto combinadas con implementaciones propias verificadas contra vectores oficiales (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) en [`test/e2ee.test.mjs`](../test/e2ee.test.mjs) y [`test/minisign.test.mjs`](../test/minisign.test.mjs), pero **no cuenta con una auditoría externa pagada**.
+- **CLI binaries (`drop update`):** releases ship `SHA256SUMS` and Ed25519 signature `SHA256SUMS.minisig` ([`cli-rs/src/minisign.rs`](../cli-rs/src/minisign.rs)), verified against the public key embedded in the binary. Compromising DNS or serving a fake release mirror cannot forge the signature without `DROP_SIGNING_KEY`.
+- **Web client (`drop verify-web`):** [`cli-rs/src/verifyweb.rs`](../cli-rs/src/verifyweb.rs) queries `/version` for `DROP_COMMIT` and compares served `public/` files byte-for-byte against that commit's tree on GitHub.
+
+---
+
+## 6. Explicit Non-Goals & Out of Scope
+
+1. **Targeted malicious web server:** an attacker controlling the web server can serve tampered JS to a target browser while serving clean files to `drop verify-web` (SRI does not solve this when the same server serves the HTML).
+2. **No PAKE (SPAKE2/CPace):** the 4-word code relies on `scrypt` work factor and rate limits rather than an elliptic-curve PAKE (deliberate trade-off to avoid un-audited curve primitives and external crypto dependencies). An active signaling MITM must still be caught via SAS comparison.
+3. **Distributed botnets:** per-IP limits (`JOIN_FAIL_MAX`, `ROOM_RATE_MAX`) slow single-IP scanning, not thousands of distributed IPs (though `BAD_GUEST_MAX = 5` still burns any targeted room).
+4. **Traffic metadata:** server, TURN, and network observers see peer IPs, timestamps, and byte counts.
+5. **Compromised endpoint or leaked code:** anyone given the four words—or malware on a sender/receiver machine—can read the transferred files.
+6. **Paid external audit:** cryptography combines standard Rust, Node.js, and WebCrypto primitives verified against official vectors (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) in [`test/e2ee.test.mjs`](../test/e2ee.test.mjs) and [`cli-rs/tests/shared_vectors_test.rs`](../cli-rs/tests/shared_vectors_test.rs), without a paid third-party audit.

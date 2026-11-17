@@ -1,49 +1,37 @@
-# Desplegar en un VPS (guía para Oracle Cloud)
+# VPS Deployment (Oracle Cloud Guide)
 
-Levanta tres contenedores: la app, un **Caddy** que resuelve el HTTPS solo, y un **coturn**
-propio como servidor TURN. Con esto la pila entera es gratis y no dependes de nadie.
+Runs three containers: the **drop** app, **Caddy** (automatic Let's Encrypt HTTPS), and a self-hosted **coturn** TURN server. The entire stack is free on Oracle Cloud Always Free with zero external service dependencies.
 
-Antes de empezar necesitas un **dominio** apuntando a la IP pública de tu instancia. Si no
-tienes, [DuckDNS](https://www.duckdns.org) da subdominios gratis (`mi-drop.duckdns.org`) y sirve
-perfectamente para Let's Encrypt. Sin dominio no hay certificado, y sin HTTPS la app pierde el
-portapapeles y la escritura directa a disco.
+Before starting, point a **domain** to your instance's public IP (e.g. a free subdomain from [DuckDNS](https://www.duckdns.org)). Without HTTPS, browsers disable clipboard access and Service Worker streaming downloads.
 
-**Una sola instancia, a propósito.** Las salas viven en la memoria del proceso (un `Map` en
-`server/index.js`): emisor y receptor tienen que llegar al mismo proceso o el código sale como
-caducado. No pongas dos réplicas de `drop` detrás de un balanceador. No hace falta: una sala es
-poco más que dos WebSockets, los bytes de WebRTC no pasan por el servidor y el relay del CLI se
-puede acotar con `DROP_RELAY_LIMIT`. Repartir las salas entre procesos (Redis con pub/sub) no
-entra en la 1.x.
+**Single instance, by design.** Rooms live in process memory (`Map` in `server/index.js`): sender and receiver must hit the same process or the code reads as expired. Do not place multiple `drop` replicas behind a load balancer. A single process easily handles signaling WebSockets, WebRTC bytes bypass the server, and CLI relay bandwidth can be bounded via `DROP_RELAY_LIMIT`.
 
-## 1. Abrir los puertos (en Oracle son DOS sitios)
+## 1. Open Firewall Ports (Two Places on Oracle)
 
-Esta es la trampa clásica de Oracle Cloud, y donde se atasca todo el mundo: abrir los puertos en
-la consola **no basta**, porque la imagen de la máquina trae además su propio cortafuegos.
+Opening ports in the OCI web console **is not enough**: Oracle's Ubuntu images also ship local `iptables` rules that drop incoming traffic.
 
-**a) En la consola de OCI** — *Networking → Virtual Cloud Networks → tu VCN → Security Lists →
-Default Security List → Add Ingress Rules*. Origen `0.0.0.0/0` en todas:
+**a) In the OCI Console** — *Networking → Virtual Cloud Networks → your VCN → Security Lists → Default Security List → Add Ingress Rules* (source `0.0.0.0/0`):
 
-| Puerto | Protocolo | Para qué |
+| Port | Protocol | Purpose |
 |---|---|---|
-| 80 | TCP | Let's Encrypt (validación del certificado) |
-| 443 | TCP | la app (HTTPS + WebSocket) |
-| 3478 | TCP y UDP | TURN |
-| 49160-49200 | UDP | los relays que abre el TURN |
+| 80 | TCP | Let's Encrypt HTTP validation |
+| 443 | TCP | App (HTTPS + WebSocket) |
+| 3478 | TCP & UDP | TURN |
+| 49160-49200 | UDP | TURN relay media ports |
 
-**b) Dentro de la máquina.** En las imágenes **Ubuntu** de Oracle hay reglas de `iptables` con un
-REJECT al final de la cadena INPUT, así que las nuevas hay que insertarlas **antes** de esa línea:
+**b) Inside the VM.** Oracle **Ubuntu** images end the `INPUT` chain with a `REJECT` rule, so new rules must be inserted **before** it:
 
 ```bash
-sudo iptables -L INPUT --line-numbers        # mira en qué línea está el REJECT
+sudo iptables -L INPUT --line-numbers        # check the REJECT line number
 sudo iptables -I INPUT 6 -p tcp --dport 80 -j ACCEPT
 sudo iptables -I INPUT 7 -p tcp --dport 443 -j ACCEPT
 sudo iptables -I INPUT 8 -p tcp --dport 3478 -j ACCEPT
 sudo iptables -I INPUT 9 -p udp --dport 3478 -j ACCEPT
 sudo iptables -I INPUT 10 -p udp --dport 49160:49200 -j ACCEPT
-sudo netfilter-persistent save               # si no, se pierden al reiniciar
+sudo netfilter-persistent save               # persist across reboots
 ```
 
-Si tu imagen es **Oracle Linux**, es firewalld y es más corto:
+On **Oracle Linux** (`firewalld`):
 
 ```bash
 sudo firewall-cmd --permanent --add-port=80/tcp --add-port=443/tcp \
@@ -55,190 +43,138 @@ sudo firewall-cmd --reload
 
 ```bash
 curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER    # cierra sesión y vuelve a entrar
+sudo usermod -aG docker $USER    # log out and back in
 ```
 
-## 3. Subir el proyecto
+## 3. Upload the Project
 
-Lo más cómodo es `git init` en local, subirlo a GitHub y clonarlo en la máquina. Alternativa
-directa desde Windows, sin repositorio (evitando `node_modules`, que no hace falta allí):
+Clone from GitHub, or copy from a local machine without `node_modules`:
 
 ```powershell
 tar --exclude=node_modules -czf drop.tgz .
-scp -i C:\ruta\a\tu-clave.key drop.tgz ubuntu@TU_IP:~
+scp -i C:\path\to\your-key.key drop.tgz ubuntu@YOUR_IP:~
 ```
 
 ```bash
 mkdir -p ~/drop && tar -xzf ~/drop.tgz -C ~/drop && cd ~/drop
 ```
 
-## 4. Configurar y levantar
+## 4. Configure and Start
 
 ```bash
 cp .env.example .env
-ip -4 addr show                 # la IP privada, para el .env (suele ser 10.0.0.x)
-openssl rand -hex 32            # el TURN_SECRET, cópialo en el .env
-nano .env                       # dominio, IPs y TURN_SECRET
+ip -4 addr show                 # private IP for .env (usually 10.0.0.x)
+openssl rand -hex 32            # TURN_SECRET for .env
+nano .env                       # set domain, IPs, and TURN_SECRET
 docker compose up -d --build
 ```
 
-Caddy tarda unos segundos en sacar el certificado. Comprobaciones:
+Note that `coturn` runs with `network_mode: host` and `--external-ip=PUBLIC/PRIVATE` because Oracle uses 1:1 NAT.
+
+Caddy takes a few seconds to obtain the TLS certificate. Verify:
 
 ```bash
-curl https://TU_DOMINIO/healthz            # {"ok":true,"rooms":0}
-docker compose logs -f drop                # las trazas de salas
+curl https://YOUR_DOMAIN/healthz           # {"ok":true,"rooms":0}
+docker compose logs -f drop                # room & startup logs
 docker compose logs caddy | grep -i certificate
 ```
 
-En las trazas de `drop` aparece, al arrancar, desde qué orígenes acepta WebSockets de
-navegador:
+At startup, `drop` logs allowed browser WebSocket origins:
 
 ```text
-origenes permitidos: https://drop.oloxx.dev, https://TU_DOMINIO, http://localhost:3000
+origenes permitidos: https://drop.oloxx.dev, https://YOUR_DOMAIN, http://localhost:3000
 ```
 
-Sale de `DROP_DOMAIN`, así que si el `.env` está bien no hay nada que tocar. Un navegador
-que abra la web desde un dominio que no esté en esa lista recibe un **403** y no llega a
-conectar: es lo que impide que una web cualquiera use el navegador de quien la visita para
-abrir salas contra tu servidor. Si sirves el frontend desde otro sitio (un dominio distinto,
-un CDN), añádelo con `DROP_ALLOWED_ORIGINS` separando por comas. El CLI no manda cabecera
-`Origin`, así que no le afecta.
+Browsers connecting from unlisted origins receive **403** so third-party websites cannot open rooms on your server. Add extra origins via comma-separated `DROP_ALLOWED_ORIGINS`. The CLI sends no `Origin` header and is unaffected.
 
-Las trazas dicen qué orígenes acepta WebSocket de navegador y qué proxies de confianza (`DROP_TRUST_PROXY`) pueden pasar `X-Forwarded-For`. En [docker-compose.yml](docker-compose.yml) viene puesto `loopback,private` porque el contenedor `drop` solo expone el puerto `3000` dentro de la red privada detrás de Caddy, y [Caddyfile](Caddyfile) sobrescribe `X-Forwarded-For` con `{remote_host}` para impedir falsificaciones de IP. Si arrancas `node server/index.js` directamente sin definir `DROP_TRUST_PROXY`, la cabecera `X-Forwarded-For` se ignora por defecto.
+Startup logs also list trusted proxies (`DROP_TRUST_PROXY`) allowed to pass `X-Forwarded-For`. [`docker-compose.yml`](docker-compose.yml) sets `loopback,private` because `drop` only exposes port `3000` on the internal network behind Caddy, and [`Caddyfile`](Caddyfile) overwrites `X-Forwarded-For` with `{remote_host}` to prevent IP spoofing. Running `node server/index.js` directly without `DROP_TRUST_PROXY` ignores `X-Forwarded-For` by default.
 
-El TURN no tiene usuario ni contraseña fijos: el servidor firma con `TURN_SECRET` unas
-credenciales que llevan dentro su propia caducidad (12 h por defecto, `TURN_TTL_SECONDS`) y
-coturn las valida sin guardar ninguna. Además, [docker-compose.yml](docker-compose.yml) bloquea en `coturn` mediante `--denied-peer-ip` las retransmisiones hacia bucle local (`127.0.0.0/8`, `::1`), redes privadas RFC 1918/CGNAT, link-local IPv6 (`fe80::/10`), ULA (`fc00::/7`) y metadatos de instancia cloud (`169.254.0.0/16`) para evitar SSRF (#60). Si falta el secreto, al arrancar lo dice:
+TURN uses no static user/password: `drop` signs per-request HMAC-SHA1 credentials with `TURN_SECRET` carrying an expiry (`TURN_TTL_SECONDS`, default 12h), and `coturn` validates them statelessly via `--use-auth-secret`. [`docker-compose.yml`](docker-compose.yml) also sets `--denied-peer-ip` rules in `coturn` blocking loopback (`127.0.0.0/8`, `::1`), RFC 1918 / CGNAT private ranges, IPv6 link-local (`fe80::/10`), ULA (`fc00::/7`), and cloud metadata (`169.254.0.0/16`) to prevent SSRF (#60).
 
-```text
-AVISO: hay TURN_URL pero no TURN_SECRET, no se sirve TURN (ver .env.example)
-```
-
-Para verificar que el TURN responde de verdad, saca unas credenciales del propio servidor:
+Verify TURN credentials and relay reachability:
 
 ```bash
-curl -s https://TU_DOMINIO/config
-# {"iceServers":[{"urls":[...]},{"urls":"turn:TU_DOMINIO:3478","username":"1757...:drop","credential":"..."}],"ttl":43200}
+curl -s https://YOUR_DOMAIN/config
+# {"iceServers":[{"urls":[...]},{"urls":"turn:YOUR_DOMAIN:3478","username":"1757...:drop","credential":"..."}],"ttl":43200}
 ```
 
-Abre la [herramienta Trickle ICE de WebRTC](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/),
-mete `turn:TU_DOMINIO:3478` con ese `username` y ese `credential`, y comprueba que aparece algún
-candidato de tipo `relay`. Si solo salen `host` y `srflx`, el TURN no está llegando: casi siempre
-es el paso 1b, o las IPs de `--external-ip`.
+Paste `turn:YOUR_DOMAIN:3478`, `username`, and `credential` into the [WebRTC Trickle ICE sample](https://webrtc.github.io/samples/src/content/peerconnection/trickle-ice/) and confirm a `relay` candidate appears.
 
-### Cuota de caudal del relay
+### Relay Bandwidth Quotas
 
-El TURN va con credenciales que caducan, pero el relay WebSocket propio (el camino `--relay`
-del CLI y las transferencias CLI ↔ navegador) pasa por tu VPS y es el que paga el ancho de
-banda. Por defecto no tiene tope; con `DROP_RELAY_LIMIT` en el `.env` se limita **por sala** y
-con `DROP_RELAY_LIMIT_TOTAL` entre todas (`10M`, `500K`, `1.5G`, bytes por segundo):
+TURN uses ephemeral credentials, while the WebSocket relay (`--relay` and CLI ↔ browser transfers) flows through your VPS. By default it is uncapped; set `DROP_RELAY_LIMIT` (per room) and `DROP_RELAY_LIMIT_TOTAL` (process-wide) in `.env` (`10M`, `500K`, `1.5G` bytes/s):
 
 ```bash
 DROP_RELAY_LIMIT=10M
 DROP_RELAY_LIMIT_TOTAL=50M
 ```
 
-Al pasarse **no se corta nada**: el servidor deja de leer del socket el tiempo justo y el emisor
-se frena solo por la contrapresión; la transferencia termina íntegra, solo más despacio. Al
-arrancar lo confirma (`caudal del relay: 10485760 B/s por sala | ...`), y `/healthz` dice si
-está saltando:
+Exceeding the limit pauses socket reads (`ws.pause()`) rather than dropping connections, letting TCP backpressure slow the sender cleanly. Check `/healthz` for live counters:
 
 ```bash
-curl -s https://TU_DOMINIO/healthz
+curl -s https://YOUR_DOMAIN/healthz
 # {"ok":true,"rooms":2,"guests":3,"uptime":86400,"roomsOpened":41,
 #  "relay":{"bytes":734003200,"frames":11200,"throttled":57,"limit":10485760,"limitTotal":52428800},
 #  "rejected":{"NOT_FOUND":3,"RATE_LIMITED":1}}
 ```
 
-`relay.throttled` es cuántas veces se ha pausado un socket; si es cero durante días el límite
-no está haciendo nada, y si `rejected` acumula `RATE_LIMITED` o `TOO_MANY_ROOMS` alguien está
-barriendo. Los contadores viven en el proceso y vuelven a cero al reiniciarlo, a propósito.
-
-Actualizar después de tocar código:
+Update manually after pulling changes:
 
 ```bash
 git pull && docker compose up -d --build
 ```
 
-## 5. Que Oracle no se lleve tu máquina
+*(With `.github/workflows/deploy.yml`, pushes to `main` automatically run CI and redeploy via SSH.)*
 
-Las instancias **Always Free** pueden ser reclamadas si están ociosas: Oracle las marca cuando,
-durante 7 días, el percentil 95 de CPU está por debajo del 20 %, la red por debajo del 20 % y
-—solo en las A1 de Ampere— la memoria por debajo del 20 %. Un servidor de señalización que se
-pasa el día esperando encaja justo en ese perfil.
+## 5. Preventing Oracle Idle Reclamation
 
-Dos cosas a tu favor: los criterios se evalúan **juntos**, así que basta con no cumplir uno para
-salvarla, y en las A1 la memoria suele ser la más fácil de mantener ocupada de forma estable.
-La vía que se usa habitualmente para quitarse el problema de encima es pasar la cuenta a *Pay As
-You Go*: los recursos Always Free se siguen sin cobrar, pero la reclamación deja de aplicarse.
-Requiere tarjeta, así que compruébalo en tu consola antes de decidir.
+Oracle **Always Free** instances may be reclaimed after 7 days if 95th-percentile CPU, network, and (on Ampere A1) memory utilization all stay below 20%. Exceeding any single metric (usually memory on A1) or upgrading the account to *Pay As You Go* (Always Free resources remain free) avoids reclamation. Since `drop` is stateless, rebuilding on a fresh VM only takes a few minutes.
 
-Y pase lo que pase, no guardes nada importante ahí: esta app no tiene estado, así que si un día
-te reclaman la máquina solo pierdes el rato de volver a levantarla.
+## 6. Backup and Secret Rotation
 
-## 6. Copia de seguridad y rotación de secretos
+Although **drop** stores no files or database, back up and know how to rotate **`TURN_SECRET`** (in the VPS `.env`) and **`DROP_SIGNING_KEY`** (the Ed25519 key used by GitHub Actions to sign releases).
 
-Aunque **drop** no tiene base de datos ni guarda archivos en disco, hay dos secretos que conviene
-respaldar y saber rotar: **`TURN_SECRET`** (en el `.env` del VPS) y **`DROP_SIGNING_KEY`** (la
-clave privada Ed25519 con la que GitHub Actions firma las releases).
+### Backup
 
-### Copia de seguridad
+- **VPS `.env`:** contains `DROP_DOMAIN`, `PUBLIC_IP`, `PRIVATE_IP`, and `TURN_SECRET`. Keep `chmod 600 .env`, never commit it to Git, and keep an encrypted offline copy (password manager or `gpg -c .env`).
+- **`DROP_SIGNING_KEY`:** lives outside the VPS (GitHub repo secret and local file generated by [`scripts/keygen.mjs`](scripts/keygen.mjs), default `~/.drop-signing-key` with `0600`). Back it up encrypted offline — losing it prevents publishing verifiable updates for existing binaries.
 
-- **`.env` del VPS:** contiene `DROP_DOMAIN`, `PUBLIC_IP`, `PRIVATE_IP` y `TURN_SECRET`. Déjalo con
-  permisos solo de lectura para el propietario (`chmod 600 .env`), nunca dentro de Git, y guarda una
-  copia cifrada fuera del VPS (por ejemplo, en un gestor de contraseñas o cifrada con `gpg -c .env`
-  antes de copiarla).
-- **`DROP_SIGNING_KEY`:** vive fuera del VPS (en el secret del repositorio de GitHub y en tu copia
-  local generada por [`scripts/keygen.mjs`](scripts/keygen.mjs), por defecto `~/.drop-signing-key`
-  con modo `0600`). Guarda una copia cifrada offline: si se pierde no se pueden publicar releases
-  verificables por los binarios ya instalados.
+### Rotating `TURN_SECRET`
 
-### Rotar `TURN_SECRET`
-
-1. Genera un secreto nuevo y sustituye la línea `TURN_SECRET=` en `.env`:
+1. Generate a new secret and update `TURN_SECRET=` in `.env`:
 
    ```bash
    openssl rand -hex 32
    ```
 
-2. Recrea los contenedores que lo leen (`drop` y `coturn`):
+2. Recreate `drop` and `coturn`:
 
    ```bash
    docker compose up -d
    ```
 
-3. Comprueba que `/config` devuelve credenciales nuevas (`curl -s https://TU_DOMINIO/config`).
+3. Confirm `/config` returns fresh credentials (`curl -s https://YOUR_DOMAIN/config`).
 
-**Impacto:** las credenciales que `drop` ya había repartido antes del reinicio (válidas durante
-`TURN_TTL_SECONDS`, 12 h por defecto) dejan de ser aceptadas por `coturn` al instante. Los canales
-nuevos reciben credenciales firmadas con el secreto nuevo; los receptores que estuvieran rebotando
-por TURN en ese momento pueden necesitar reintentar si renuevan ICE, así que conviene rotarlo en
-una franja de poco tráfico.
+Previously issued TURN credentials stop working immediately on `coturn` reload; rotate during low traffic.
 
-### Rotar `DROP_SIGNING_KEY` (releases del CLI)
+### Rotating `DROP_SIGNING_KEY` (CLI Releases)
 
-La clave pública (`PUBLIC_KEY`) va **empotrada dentro de cada binario** en
-[`cli-rs/src/cli.rs`](cli-rs/src/cli.rs), así que rotar la clave privada es una operación deliberada:
+The public key (`PUBLIC_KEY`) is **embedded in every CLI binary** in [`cli-rs/src/cli.rs`](cli-rs/src/cli.rs):
 
-1. Respalda y aparta `~/.drop-signing-key` y genera un par nuevo:
+1. Back up `~/.drop-signing-key` and generate a new pair:
 
    ```bash
    mv ~/.drop-signing-key ~/.drop-signing-key.old
    node scripts/keygen.mjs
    ```
 
-2. Sube la privada nueva al secret del repositorio sin pasarla por pantalla:
+2. Upload the new private key to GitHub Actions secrets without printing it:
 
    ```bash
    gh secret set DROP_SIGNING_KEY < ~/.drop-signing-key
    ```
 
-3. Actualiza `PUBLIC_KEY` en [`cli-rs/src/cli.rs`](cli-rs/src/cli.rs) y la clave pública de verificación
-   en [`README.md`](README.md) y [`README.en.md`](README.en.md).
-4. Ejecuta `npm test` (incluye `test/minisign.test.mjs`) y publica una release nueva.
+3. Update `PUBLIC_KEY` in [`cli-rs/src/cli.rs`](cli-rs/src/cli.rs) and the verification public key in [`README.md`](README.md) and [`README.es.md`](README.es.md).
+4. Run `npm test` (includes `test/minisign.test.mjs`) and publish a new release.
 
-**Aviso importante:** los binarios antiguos ya instalados llevan dentro la clave pública anterior,
-así que su `drop update` rechazará la primera release firmada con la clave nueva. Si rotas por
-compromiso o mantenimiento, indícalo en las notas de la release para que quienes ya tenían `drop`
-actualicen reinstalando por su gestor (`brew upgrade drop`, `scoop update drop`) o descargando el
-binario verificando la nueva clave pública.
+**Important:** older binaries carry the old embedded public key, so `drop update` will reject the first release signed with the new key. Note this in the release notes so users upgrade via their package manager (`brew upgrade drop`, `winget upgrade Oloxx.drop`, `scoop update drop`) or re-download verifying the new key.

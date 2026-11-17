@@ -1,153 +1,66 @@
-# Camino a la 1.0
+# Road to 1.0
 
-Lo que falta para que **drop** pase de `0.x` a `1.0`. La regla de SemVer es simple: a partir
-de la 1.0 el protocolo, el formato de los códigos y la interfaz del CLI no cambian sin subir
-la versión mayor. Así que la lista no es "todas las funciones que se nos ocurren", sino lo
-que hay que **cerrar o decidir** antes de prometer eso.
+What remains for **drop** to move from `0.x` to `1.0`. Under SemVer, once `1.0` ships, the protocol, code format, and CLI interface cannot break without bumping the major version. This list tracks what must be **decided or closed** before locking that contract.
 
-Cada punto enlaza a su issue cuando lo tiene. Lo que no tiene número todavía no está abierto.
+## Protocol & Compatibility
 
-## Protocolo y compatibilidad
+Frozen at `1.0`; breaking changes afterwards require a major version.
 
-Lo que se congela con la 1.0. Cualquier cambio aquí después cuesta una versión mayor.
+- [x] **Freeze `PROTOCOL_VERSION`** and document the compatibility policy: version `5` for all `1.x`, specified in [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md), reserving `features` for future capabilities and enforcing via `test/compat.test.mjs`.
+- [x] **Specify the DataChannel protocol:** [`docs/PROTOCOL.md`](docs/PROTOCOL.md) covers signaling, JSON/binary frames, the relay chain, in-band vs control routing, and `1.x` compatibility rules.
+- [x] **Remove v0.3.5 legacy path:** removed in `v0.8.0` (`server/index.js` returns `VERSION` without `v: 2`, and `parseCode` rejects legacy tokens).
+- [x] **Interoperability matrix in the README:** Web↔Web, CLI↔CLI, CLI→Web, Web→CLI with transports and resume behavior.
+- [x] **Cross-session resume everywhere possible** (#58): Web→CLI resumes `.part` files after SHA-256 prefix verification; README documents why browser downloads cannot append across sessions.
+- [x] **IPv6 direct paths and LAN discovery** (#37): global IPv6 in `ips`, dual-stack listener, and UDP IPv6 multicast (`ff02::1:42424`) in [`cli-rs/src/discovery.rs`](cli-rs/src/discovery.rs).
+- [x] **mDNS / DNS-SD LAN discovery** (#38): [`cli-rs/src/mdns.rs`](cli-rs/src/mdns.rs) advertises and queries `_drop._tcp.local` (`224.0.0.251:5353` and `[ff02::fb]:5353`) without external dependencies or leaking the 4-word secret, degrading cleanly if port `5353` cannot bind.
 
-- [x] **Congelar `PROTOCOL_VERSION`** y escribir la política de compatibilidad: qué versiones
-      del CLI se hablan entre sí y con la web, y durante cuánto tiempo. La 5 para toda la 1.x,
-      en [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md), con `features` reservado para
-      capacidades nuevas y `test/compat.test.mjs` como candado.
-- [x] **Especificar el protocolo del DataChannel en un documento**: [`docs/PROTOCOL.md`](docs/PROTOCOL.md),
-      con la señalización, los marcos JSON y binarios, la cadena de relay, qué va en banda y qué
-      por control, y qué se congela con la 1.0 frente a qué se puede añadir sin versión mayor.
-- [x] **Quitar el camino de la v0.3.5** (`@deprecated` en `server/index.js`, `cli/src/cli.js`,
-      `cli/src/crypto.js`). Hecho en la v0.8.0: el servidor contesta `VERSION` a quien no pide
-      `v:2`, y `parseCode` ya no reconoce el token largo.
-- [x] **Tabla de interoperabilidad en el README**: Web↔Web, CLI↔CLI, CLI→Web, Web→CLI, con
-      qué transporte usa cada una (TCP directo, relay cifrado, DataChannel) y qué reanuda.
-      Hecho en la v0.8.0, con la columna de reanudación y la fila de "Dos modos" corregida.
-- [x] **Reanudación en todas las combinaciones que puedan** (#58): Web→CLI sigue desde el
-      `.part` con el prefijo comprobado; explicado en el README junto con el motivo por el que el
-      receptor web (Service Worker / Blob) empieza de cero entre sesiones.
-- [x] **IPv6 en rutas directas y descubrimiento LAN** (#37): desde la v0.9.0 las IPv6 entran
-      en `ips` y el emisor escucha en dual-stack; completado el descubrimiento local por multicast
-      UDP IPv6 (`ff02::1`, puerto `42424`) en [`cli-rs/src/discovery.rs`](cli-rs/src/discovery.rs)
-      en paralelo al broadcast IPv4.
-- [x] **Descubrimiento local por mDNS / DNS-SD** (#38): [`cli-rs/src/mdns.rs`](cli-rs/src/mdns.rs)
-      anuncia y consulta `_drop._tcp.local` (`224.0.0.251:5353` y `[ff02::fb]:5353`) con `PTR`,
-      `SRV` y `TXT` (`h=<roomHash>`, `p=<puerto>`) en paralelo al broadcast UDP `42424`, sin
-      dependencias externas ni filtrar el secreto de cuatro palabras, degradando limpio si el
-      puerto `5353` está ocupado sin `SO_REUSEPORT`.
+## Robustness
 
-## Robustez de lo que ya existe
+- [x] **Streaming downloads without File System Access** (#55): Service Worker in [`public/sw.js`](public/sw.js) streams downloads via HTTP response (verified in Chrome; Safari/iOS verification tracked below).
+- [x] **CLI-to-CLI over WAN** (#11): [`cli-rs/src/stun.rs`](cli-rs/src/stun.rs) queries STUN (RFC 5389) in parallel, [`cli-rs/src/natpmp.rs`](cli-rs/src/natpmp.rs) adds automatic NAT-PMP (RFC 6886) fallback alongside UPnP, and the README documents realistic speeds per path.
+- [x] **Unix pipes** (#29): `drop send -` streams unknown-size `stdin` (`size: null`, `--stdout` already supported).
+- [ ] **Real desktop Safari & iOS end-to-end testing** for web transfers (SCTP, `maxMessageSize`, Service Worker / Blob sinks). Currently measured on Chrome only.
+- [x] **Browser E2E tests in CI:** `test/web.test.mjs` runs inside `npm test` using Chrome and CI enforces `DROP_REQUIRE_CHROME=1` on Linux.
+- [x] **Clear error reporting on all disconnect paths:** web routes failures through `recvDead()`; CLI explains rejections and preserves `.part` files.
 
-- [x] **Descarga en streaming sin File System Access** (#55): Service Worker en `public/sw.js`
-      que sirve la descarga como respuesta HTTP en streaming, desde la v0.9.0. Probado en
-      Chrome; falta pasarlo por Firefox y Safari/iOS de verdad (ver el punto de abajo).
-- [x] **CLI a CLI por WAN** (#11): además de UPnP y la IP vista por el servidor de señalización,
-      `cli-rs/src/stun.rs` consulta servidores STUN (RFC 5389) en paralelo para descubrir la IP
-      pública IPv4 incluso cuando la señalización entra por IPv6 o UPnP no responde,
-      `cli-rs/src/natpmp.rs` añade respaldo automático por NAT-PMP (RFC 6886) en `map_port` cuando
-      UPnP no responde o falla, y el README documenta honestamente la velocidad real en cada ruta
-      (LAN, WAN directo, relay y WebRTC).
-- [x] **Tuberías** (#29): `drop send -` desde stdin con tamaño desconocido (`size: null` en el
-      manifiesto, protocolo 4). Hecho en la v0.9.0; `--stdout` ya existía.
-- [ ] **Safari de escritorio y iOS probados de verdad** con transferencia web completa (SCTP,
-      `maxMessageSize`, sin `showDirectoryPicker`). Hoy solo hay medición en Chrome.
-- [x] **Tests del cliente web en CI**: `test/web.test.mjs` (un archivo, dos pestañas, huella
-      igual en las dos, SHA-256) corre dentro de `npm test` con el Chrome del runner y el CI
-      lo exige en Linux (`DROP_REQUIRE_CHROME=1`). `bench` y `bench:fanout` siguen siendo
-      benches.
-- [x] **Errores con mensaje en todos los cortes conocidos**: en la web todos pasan por
-      `recvDead()` — emisor que cierra antes o después de aceptar, ICE que falla sin TURN,
-      servidor caído antes de que abra el canal — y con el canal ya abierto la transferencia
-      termina sin servidor (probado en `test/web.test.mjs`). El CLI ya decía qué pasa con un
-      rechazo del emisor y con un `.part` conservado.
+## Server & Deployment
 
-## Servidor y despliegue
+- [x] **WebSocket relay bandwidth quotas** (#56): `DROP_RELAY_LIMIT` (per room) and `DROP_RELAY_LIMIT_TOTAL` (process-wide) pause socket reads via backpressure without dropping transfers.
+- [x] **Operational metrics on `/healthz`:** active rooms, guests, relayed bytes/frames, throttle pauses, and rejection counters by reason.
+- [x] **Single-instance architecture:** rooms live in process memory (`DEPLOY-VPS.md`).
+- [x] **Secret backup and rotation guide:** documented in [`DEPLOY-VPS.md`](DEPLOY-VPS.md) for `TURN_SECRET` and `DROP_SIGNING_KEY`.
+- [x] **`npm audit` and dependency checks in CI:** `audit` job in `.github/workflows/ci.yml` gates production dependencies and guards `dependencies` count.
 
-- [x] **Cuota de caudal para el relay WebSocket** (#56): `DROP_RELAY_LIMIT` por sala y
-      `DROP_RELAY_LIMIT_TOTAL` por proceso desde la v0.8.0. Pausa el socket, no corta.
-- [x] **Métricas mínimas** en `/healthz`: salas, invitados, bytes y frames relayed, pausas
-      por cuota y rechazos por motivo. Desde la v0.8.0.
-- [x] **Decidir la escala**: una sola instancia, aceptado. Una sala es poco más que dos
-      WebSockets y los bytes de WebRTC no pasan por el servidor, así que un proceso sobra; está
-      escrito en `DEPLOY-VPS.md`. `fly.toml`, que nunca se probó, se ha quitado.
-- [x] **Copia de seguridad y rotación** del `.env` de valhalla (`TURN_SECRET`,
-      `DROP_SIGNING_KEY`), con el procedimiento escrito en [`DEPLOY-VPS.md`](DEPLOY-VPS.md).
-- [x] **`npm audit` y actualización de dependencias en CI**: job `audit` en `ci.yml`, solo
-      producción y a partir de `moderate`, y falla si `dependencies` deja de tener dos entradas.
-      Desde la v0.8.0.
+## CLI Distribution
 
-## Distribución del CLI
+- [x] **macOS signing** (#24): native Rust binary signed ad hoc with `codesign --sign - --force` for Apple Silicon (`aarch64-apple-darwin`), without paid notarization (documented in README).
+- [x] **Windows without paid Authenticode** (#57): static CRT build (`+crt-static`) with SmartScreen/Minisign verification documented in README.
+- [x] **Package managers** (#40): **Homebrew** (`Oloxx/homebrew-tap`), **Scoop** (`Oloxx/scoop-bucket`), and **WinGet** (`Oloxx.drop` via [`scripts/winget.mjs`](scripts/winget.mjs) and `release.yml`), all verifying `SHA256SUMS.minisig` and detected by [`cli-rs/src/pkgmgr.rs`](cli-rs/src/pkgmgr.rs). npm distribution was dropped after migrating to native Rust (`cli-rs/`).
+- [ ] **`drop update` tested end-to-end against a real release** across all three platforms before each release (currently covered by unit tests in `cli-rs/src/minisign.rs`, not E2E).
+- [x] **Shell completions & `--help` coverage:** `drop completion bash|zsh|fish|powershell` ([`cli-rs/src/completion.rs`](cli-rs/src/completion.rs)) enforced against parser flags in [`test/version.test.mjs`](test/version.test.mjs).
 
-- [x] **macOS firmado** (#24): tras migrar el CLI a Rust, el build firma el binario nativo con `codesign --sign - --force`
-      ad hoc, así que el binario arranca en Apple Silicon (`aarch64-apple-darwin`). **Sin notarizar, a
-      propósito:** el Apple Developer Program cuesta dinero cada año. El README explica cómo
-      pasar Gatekeeper y recomienda descargar con `curl`, que no marca el archivo.
-- [x] **Windows sin Authenticode, a propósito** (#57): un certificado cuesta dinero cada año. El
-      README explica el aviso de SmartScreen, `Unblock-File` y la descarga con `curl.exe`. La firma
-      minisign del `SHA256SUMS` sigue siendo la que dice quién publicó el binario.
-- [x] **Gestores de paquetes** (#40). Cubiertos **Homebrew** (`Oloxx/homebrew-tap`), **Scoop**
-      (`Oloxx/scoop-bucket`) y **WinGet** (`Oloxx.drop` en `microsoft/winget-pkgs` mediante
-      [`scripts/winget.mjs`](scripts/winget.mjs) y el job `winget` de `release.yml`): todos
-      verifican primero la firma Minisign del `SHA256SUMS` antes de leer hashes, y
-      [`cli-rs/src/pkgmgr.rs`](cli-rs/src/pkgmgr.rs) detecta los tres para bloquear la
-      autoinstalación y la autoactualización. **npm** queda descartado tras la migración del CLI
-      a binario nativo en Rust (`cli-rs/`).
-- [ ] **`drop update` probado contra una release real** en las tres plataformas antes de cada
-      release (hoy está cubierto por tests unitarios de `cli-rs/src/minisign.rs`, no por un
-      flujo de extremo a extremo).
-- [x] **Autocompletado de shell** (`drop completion bash|zsh|fish|powershell`, en
-      `cli-rs/src/completion.rs`) y `drop --help` completo: `test/version.test.mjs` saca del parser
-      todos los flags y falla si alguno falta en la ayuda o en la tabla del autocompletado.
+## Security
 
-## Seguridad
-
-- [x] **Documento de modelo de amenazas**: [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md),
-      enlazado desde [`SECURITY.md`](SECURITY.md), con qué ve el servidor y TURN, el coste
-      contra fuerza bruta de `scrypt`, qué protege el SAS y qué queda fuera de cobertura.
-- [x] **Revisión externa o pasada formal sobre la criptografía**: pasada formal sobre
-      [`public/shared/`](public/shared/) (`e2ee.js`, `scrypt.js`, `sas.js`, `sha256.js`) y
-      [`cli-rs/src/`](cli-rs/src/) (`crypto.rs`, `minisign.rs`, `shared/sas.rs`) —comparación
-      en tiempo constante `verifyProof`, validación de parámetros en `scrypt` / `e2ee`, y
-      vectores oficiales FIPS 180-4, RFC 4231, RFC 6070 y RFC 7914 en
-      [`test/e2ee.test.mjs`](test/e2ee.test.mjs) y
-      [`cli-rs/tests/shared_vectors_test.rs`](cli-rs/tests/shared_vectors_test.rs)—.
-      Sigue sin auditoría externa pagada, documentado en `SECURITY.md` y `docs/THREAT-MODEL.md`.
-- [x] **`SECURITY.md`** con cómo reportar, qué versiones tienen soporte y el modelo de
-      amenazas completo enlazado en [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).
-- [x] **Comprobar que el servidor sirve el código del repositorio.** No por release sino por
-      commit, porque la web se despliega desde `main`: `/version` dice el commit (lo pone el
-      despliegue) y `drop verify-web` compara cada archivo servido con el árbol de `public/` de
-      ese commit en GitHub. SRI no servía: el HTML con los `integrity` lo sirve el mismo servidor.
+- [x] **Threat model document:** [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md), linked from [`SECURITY.md`](SECURITY.md).
+- [x] **Formal internal cryptography pass:** verified constant-time `verifyProof`, scrypt/AEAD parameter checks, and official test vectors (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) in [`test/e2ee.test.mjs`](test/e2ee.test.mjs) and [`cli-rs/tests/shared_vectors_test.rs`](cli-rs/tests/shared_vectors_test.rs). No paid external audit (documented in `SECURITY.md` and `docs/THREAT-MODEL.md`).
+- [x] **`SECURITY.md`:** vulnerability reporting, supported versions, and threat model summary.
+- [x] **Web integrity verification (`drop verify-web`):** compares served `public/` assets against the GitHub commit reported by `/version`.
 
 ## Web
 
-- [x] **Selección de archivos en el receptor** (#10): con un lote de 15 fotos, poder bajar
-      tres. Casillas en la oferta web y `drop recv --only <patrones>`; la elección viaja como
-      `files` (índices del manifiesto) en `accept`, `ready` y `cli-accept`, protocolo 5.
-- [x] **Accesibilidad básica**: foco visible (también en la zona de soltar), avisos
-      `aria-live` del final de cada transferencia, barras `progressbar`, contraste AA
-      comprobado en `test/a11y.test.mjs` (el gris de texto era 2,8:1 y ahora 4,7:1) y el
-      selector de archivos alcanzable con Tab.
-- [x] **Página de error para navegadores sin WebRTC** en vez de un fallo silencioso. Desde la
-      v0.8.0: vista `unsupported`, con el código del enlace a la vista para abrirlo en otro sitio.
+- [x] **Per-file selection on receiver** (#10): checkboxes in web offer and `drop recv --only <patterns>` using `files` manifest indices (Protocol 5).
+- [x] **Basic accessibility:** visible focus outlines, `aria-live` announcements, `progressbar` semantics, WCAG AA contrast checked by `test/a11y.test.mjs`, and keyboard-accessible file picker.
+- [x] **Unsupported WebRTC fallback view:** explicit `unsupported` view showing the share code instead of failing silently.
 
-## Documentación y proceso
+## Documentation & Tooling
 
-- [x] **README en inglés** además del español: [`README.en.md`](README.en.md) enlazado desde
-      [`README.md`](README.md) y comprobado en `test/version.test.mjs` para que los enlaces de
-      descarga no se queden atrás.
-- [x] **Servidor web y de señalización embebido** (#39): [`cli-rs/src/commands/serve.rs`](cli-rs/src/commands/serve.rs)
-      implementa `drop serve [-p <puerto>] [-H <dir>]` con los archivos de `public/` embebidos en
-      compilación ([`cli-rs/build.rs`](cli-rs/build.rs)), `/config`, `/healthz`, `/version`,
-      cabeceras de seguridad y el servidor WebSocket de señalización y relay sin depender de Node.
-- [x] **Checklist de release** en `CONTRIBUTING.md` ("Publicar una versión"). Desde la v0.8.0.
+- [x] **Bilingual README (`README.md` in English + `README.es.md` in Spanish):** synced download links checked by [`test/version.test.mjs`](test/version.test.mjs).
+- [x] **Embedded web & signaling server (`drop serve`, #39):** [`cli-rs/src/commands/serve.rs`](cli-rs/src/commands/serve.rs) and [`cli-rs/build.rs`](cli-rs/build.rs) embed `public/` into the single native binary with `/config`, `/healthz`, `/version`, CSP headers, and WebSocket signaling/relay.
+- [x] **Release checklist:** documented in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## Lo que la 1.0 no necesita
+## Non-Goals for 1.0
 
-Para que no se cuele por inercia:
-
-- Redis y multi-instancia, si se decide arriba que una instancia basta.
-- Cuentas, historial, enlaces persistentes. drop es efímero a propósito.
-- Vista previa de archivos en el receptor (la segunda mitad de #10). Es bonito, no es 1.0.
-- Cualquier petición a un tercero desde la web. Sigue siendo cero.
+- Redis / multi-instance clustering.
+- User accounts, transfer history, or persistent links (Drop is ephemeral by design).
+- In-browser file previews on the receiver (second half of #10 — nice to have, not required for 1.0).
+- Any third-party network requests from the web client.

@@ -1,69 +1,29 @@
-# Seguridad
+# Security Policy
 
-## Reportar un fallo
+## Reporting a Vulnerability
 
-Si encuentras un fallo con impacto en seguridad, **no abras una issue pública**: escribe por
-[advisory privado de GitHub](https://github.com/Oloxx/drop/security/advisories/new). Se
-responde en pocos días, y el arreglo sale en una release antes de que el aviso se haga público.
+If you discover a security vulnerability, **do not open a public issue**: report it through a [GitHub Private Security Advisory](https://github.com/Oloxx/drop/security/advisories/new). You can expect an initial response within a few days, and fixes ship in a release before any advisory is published.
 
-Cuenta como fallo de seguridad todo lo que contradiga el modelo de amenazas de abajo: que el
-servidor pueda leer un byte de un archivo, que alguien sin las cuatro palabras pueda descargar,
-que un `path` del manifiesto escape del directorio de destino, que `drop update` acepte un
-binario sin firma válida.
+Anything that violates the threat model below qualifies as a security issue: the server being able to read plaintext file bytes, a peer downloading without knowing the four words, a manifest `path` escaping the destination directory, or `drop update` accepting a binary without a valid signature.
 
-## Versiones con soporte
+## Supported Versions
 
-Solo la **última release** recibe arreglos. Los binarios instalados se actualizan con
-`drop update`, que comprueba la firma de la release antes de sustituirse a sí mismo. La web se
-despliega desde `main` y siempre está en la última versión. Dentro de la 1.x actualizar no rompe
-nada con quien siga en una anterior: el protocolo no cambia ([COMPATIBILITY.md](docs/COMPATIBILITY.md)).
+Only the **latest release** receives fixes. Installed CLI binaries update via `drop update`, which verifies the release signature before replacing itself. The web app deploys continuously from `main` and is always on the latest version. Within `1.x`, protocol `5` remains backwards-compatible ([`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md)).
 
-## Modelo de amenazas, en corto
+## Threat Model Summary
 
-Lo que protege drop y lo que no. El documento completo y enlazable está en
-[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md), junto con los detalles en el
-[README](README.md#-modelo-de-seguridad-del-código) y las cabeceras de
-[`public/shared/codes.js`](public/shared/codes.js) y [`public/shared/sas.js`](public/shared/sas.js).
+See [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) for the full threat model, along with the [README](README.md#code-security-model) and header comments in [`public/shared/codes.js`](public/shared/codes.js) and [`public/shared/sas.js`](public/shared/sas.js).
 
-**Lo que ve el servidor de señalización:** el identificador público de sala (`4271`), las IPs
-de los dos extremos, el SDP/ICE del WebRTC y, por el relay, ruido cifrado. **Nunca** las cuatro
-palabras, ni un hash de ellas, ni un byte de archivo en claro. Por WebRTC los archivos no pasan
-por él; por relay pasan cifrados con AES-256-GCM con una clave que no puede derivar.
+- **What the signaling server sees:** the 4-digit public room ID (`4271`), peer IPs, WebRTC SDP/ICE signaling, and encrypted AES-256-GCM relay noise when relay is used. **Never** the four words, any fast hash of them, or plaintext file bytes.
+- **What TURN sees:** DTLS-encrypted packets between browsers. Credentials carry an expiry (`TURN_TTL_SECONDS`) and are HMAC-signed per request.
+- **What the 4-word code protects:** 44 bits of secret entropy stretched with `scrypt` (`N=2^15, r=8, p=1`: ~62 ms native and 32 MiB per guess). Online brute force is throttled by per-IP rate limits and room burning (`BAD_GUEST_MAX = 5`). Guessing a room ID without the words yields neither file contents nor filenames.
+- **What the session fingerprint (SAS) protects:** 3 BIP-39 words derived locally from negotiated material (DTLS fingerprints on WebRTC, scrypt key on TCP/relay). If a server tampers with SDP to MITM WebRTC, fingerprints diverge; compare them over an out-of-band channel.
+- **What release signatures protect:** `SHA256SUMS.minisig` (Ed25519, Minisign format) proves release authenticity against the public key embedded in the binary. `drop update` rejects unsigned or mismatched releases.
 
-**Lo que ve el TURN:** paquetes DTLS ya cifrados entre dos navegadores. Sus credenciales
-caducan (`TURN_TTL_SECONDS`) y se firman por petición, así que no es un relay abierto.
+### Out of Scope
 
-**Lo que protege el código de cuatro palabras:** 44 bits de secreto, derivados a clave con
-scrypt (N=2¹⁵, r=8, p=1: ~62 ms y 32 MB por intento). Contra un servidor o un vecino de red que
-intente adivinar offline eso son ~3,5 × 10¹⁰ años-CPU. Contra intentos *online* los frena el
-propio servidor: límite de fallos por IP, y la sala se cierra cuando el emisor denuncia varios
-receptores que no saben el secreto. Quien acierta el identificador de sala pero no las palabras
-no obtiene ni los nombres de los archivos.
-
-**Lo que protege la huella de sesión (SAS):** las tres palabras que muestran los dos extremos
-salen de lo negociado de verdad (fingerprints DTLS por WebRTC, la clave scrypt por TCP y relay).
-Si un servidor sustituye el SDP para ponerse en medio, las huellas dejan de coincidir. Hay que
-compararlas por otro canal; el software no puede hacerlo por ti.
-
-**Lo que protegen las firmas de release:** `SHA256SUMS.minisig` (Ed25519, formato minisign)
-dice quién publicó el binario, no solo que llegó entero. `drop update` rechaza una release sin
-firma o con firma que no cuadra con la clave pública embebida en el binario.
-
-**Lo que NO está cubierto:**
-
-- Un servidor malicioso que sirva **otro `app.js`**. La web confía en el código que descarga,
-  como toda web. `drop verify-web` compara lo que sirve un servidor con el commit del repositorio
-  público que dice servir, archivo a archivo, pero solo prueba lo que te ha servido a ti: un
-  servidor malicioso puede dar el código bueno a quien pregunta y el malo a un navegador concreto.
-- **PAKE.** No hay SPAKE2/CPace: el código de cuatro palabras protege por entropía y coste de
-  derivación, no por un intercambio autenticado. Implementarlo a mano sin auditar sería peor.
-- **Auditoría externa.** Los módulos criptográficos en [`public/shared/`](public/shared/)
-  (`e2ee.js`, `scrypt.js`, `sas.js`, `sha256.js`) y [`cli-rs/src/`](cli-rs/src/) (`crypto.rs`,
-  `minisign.rs`, `shared/sas.rs`) combinan primitivas estándar de Rust, Node y WebCrypto
-  verificadas contra vectores oficiales (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) en
-  [`test/e2ee.test.mjs`](test/e2ee.test.mjs) y
-  [`cli-rs/tests/shared_vectors_test.rs`](cli-rs/tests/shared_vectors_test.rs),
-  pero sin auditoría externa independiente pagada.
-- **Metadatos.** El servidor y quien mire la red ven cuándo, entre qué IPs y cuántos bytes.
-- **El otro extremo.** Quien tiene las cuatro palabras tiene los archivos; drop no puede
-  proteger un código que se ha dictado a la persona equivocada.
+- **Targeted malicious web server:** a compromised server could serve tampered `app.js` to a victim browser while serving clean files to `drop verify-web`.
+- **PAKE:** Drop does not implement SPAKE2/CPace; protection relies on secret entropy, `scrypt` stretching, server rate limits, and manual SAS comparison.
+- **Paid external audit:** cryptographic modules in [`public/shared/`](public/shared/) and [`cli-rs/src/`](cli-rs/src/) use standard primitives verified against official test vectors (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) in [`test/e2ee.test.mjs`](test/e2ee.test.mjs) and [`cli-rs/tests/shared_vectors_test.rs`](cli-rs/tests/shared_vectors_test.rs), without a paid third-party audit.
+- **Traffic metadata:** the server, TURN, and network observers can see timing, peer IPs, and byte volumes.
+- **Endpoint compromise:** anyone who receives the four words or compromises a sender/receiver device can access the transferred files.

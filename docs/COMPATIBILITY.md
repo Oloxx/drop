@@ -1,98 +1,51 @@
-# Compatibilidad
+# Compatibility
 
-Qué promete drop a partir de la 1.0: qué versiones se hablan entre sí, qué no va a cambiar
-sin una versión mayor y cómo se añaden cosas sin romper los binarios que ya están instalados.
+What **drop** guarantees starting at `1.0`: which versions interoperate, what cannot change without a major version bump, and how new capabilities are added without breaking installed binaries.
 
-La regla es [SemVer](https://semver.org/lang/es/): dentro de la 1.x nada de lo que está en la
-sección 1 cambia de forma incompatible. Lo que no está en la lista no es promesa.
+This policy follows [SemVer](https://semver.org/): within `1.x`, nothing listed in Section 1 changes in a backwards-incompatible way. Anything outside Section 1 is not part of the stability promise.
 
-## 1. Qué se congela con la 1.0
+## 1. Frozen for 1.0
 
-- **El protocolo del CLI, versión 5** (`PROTOCOL_VERSION` en
-  [`public/shared/protocol.js`](../public/shared/protocol.js)). Es el mismo número en toda la
-  1.x. Cubre el TCP directo (marcos `[longitud][IV][tag][cifrado]`, `manifest` → `ready` →
-  `start`/datos/`end` → `done`), el relay cifrado (`cli-offer`, `cli-proof`, `cli-manifest`,
-  `cli-accept`, `cli-start`, `cli-ack`, `cli-end`, `cli-done`, `cli-complete`, `cli-retry`,
-  `cli-error`, `cli-denied`, `cli-wait`), la derivación de la clave con scrypt, la fórmula de la prueba y de
-  la huella, y `files` para elegir archivos. La descripción canónica está encima de
-  `receive_from_relay` en [`cli-rs/src/transfer.rs`](../cli-rs/src/transfer.rs).
-- **El protocolo web** (señalización y DataChannel): lo que marca como congelado la sección 8 de
-  [`PROTOCOL.md`](PROTOCOL.md).
-- **La señalización con el servidor:** `host` con `v: 2`, `join`, `signal` y `bad-guest` hacia el
-  servidor; `hosted`, `joined`, `guest`, `guest-gone`, `host-gone`, `signal` y `error` de vuelta.
-- **El código:** `4271-lemon-radar-tiger-orbit`, cuatro dígitos de sala y cuatro palabras de la
-  lista BIP-39 inglesa, en el fragmento del enlace (`/#<código>`), con la tolerancia de siempre al
-  teclearlo (mayúsculas, espacios, prefijos de cuatro letras). Un código que vale en una 1.x vale
-  en todas.
-- **La interfaz del CLI:** las órdenes (`send`, `recv`, `speed`, `serve`, `update`, `install`,
-  `uninstall`, `completion`, `verify-web`) y los flags que salen en `drop --help` siguen existiendo y
-  significando lo mismo; el código de salida es `0` cuando todo ha ido bien y distinto de `0` si
-  no; con `--stdout` (o `-o -`) por la salida estándar solo sale el contenido de los archivos.
-- **El servidor autoalojado:** los nombres de las variables de entorno documentadas (`DROP_*`,
-  `TURN_SECRET`, `TURN_TTL_SECONDS`, `DROP_COMMIT`) y las rutas `/config`, `/healthz` y
-  `/version`. Pueden ganar campos, no perderlos.
+- **CLI Protocol Version 5** (`PROTOCOL_VERSION` in [`public/shared/protocol.js`](../public/shared/protocol.js)). Fixed for the entire `1.x` series. Covers direct TCP (`[length][IV][tag][ciphertext]` frames, `manifest` → `ready` → `start`/chunks/`end` → `done`), the encrypted WebSocket relay (`cli-offer`, `cli-proof`, `cli-manifest`, `cli-accept`, `cli-start`, `cli-ack`, `cli-end`, `cli-done`, `cli-complete`, `cli-retry`, `cli-error`, `cli-denied`, `cli-wait`), `scrypt` key derivation, proof/SAS formulas, and `files` selective download. The canonical reference lives above `receive_from_relay` in [`cli-rs/src/transfer.rs`](../cli-rs/src/transfer.rs).
+- **Web protocol** (signaling + DataChannel): everything marked frozen in Section 8 of [`docs/PROTOCOL.md`](PROTOCOL.md).
+- **Server signaling:** `host` with `v: 2`, `join`, `signal`, and `bad-guest` client-to-server; `hosted`, `joined`, `guest`, `guest-gone`, `host-gone`, `signal`, and `error` server-to-client.
+- **Share code format:** `4271-lemon-radar-tiger-orbit` — 4-digit room ID + 4 English BIP-39 words in the URL fragment (`/#<code>`), preserving case-insensitive, space-tolerant, and 4-letter prefix parsing. Any code valid in `1.0` remains valid in all `1.x`.
+- **CLI interface:** subcommands (`send`, `recv`, `speed`, `serve`, `update`, `install`, `uninstall`, `completion`, `verify-web`) and flags documented in `drop --help`; exit code `0` on success and non-zero on failure; `--stdout` (or `-o -`) writes only file bytes to standard output.
+- **Self-hosted server:** documented environment variable names (`DROP_*`, `TURN_SECRET`, `TURN_TTL_SECONDS`, `DROP_COMMIT`) and HTTP routes (`/config`, `/healthz`, `/version`). Responses may gain fields, never lose existing ones.
 
-**No** es promesa: los textos que se enseñan (mensajes, barra de progreso, colores, idioma), el
-aspecto de la web, los valores por defecto de los límites del servidor, las constantes de
-rendimiento (tamaño de trozo, marcas de agua, cada cuánto se acusa) y todo lo que no sale en
-`--help`.
+**Not part of the promise:** human-readable output text (prompts, progress bar layout, colors, language), web UI styling, default server quota values, tuning constants (chunk size, watermarks, ack intervals), and undocumented behavior.
 
-## 2. Quién habla con quién
+## 2. Interoperability Matrix
 
-| | CLI 1.x | Web (la desplegada) | CLI 0.x |
+| | CLI `1.x` | Deployed Web | CLI `0.x` |
 |---|---|---|---|
-| **CLI 1.x** | Sí, cualquier 1.x con cualquier 1.y, en los dos sentidos, por TCP y por relay | Sí: la web habla el protocolo 5 durante toda la 1.x | No: se rechazan con un mensaje que pide `drop update` |
-| **Web** | Sí | Sí: las dos pestañas cargan el mismo `app.js` | No, mismo mensaje |
+| **CLI `1.x`** | Yes — any `1.x` with any `1.y`, both directions, TCP and relay | Yes — web speaks Protocol 5 across all `1.x` | No — rejected with an explicit message asking for `drop update` |
+| **Web** | Yes | Yes — both tabs load the same `app.js` | No — same rejection message |
 
-Antes de la 1.0 cada versión menor podía romper, y rompió: la 0.9.x habla el protocolo 4, la
-0.7.x y la 0.8.x el 3. Ninguna habla con una 1.x. Lo dice el [CHANGELOG](../CHANGELOG.md) en cada
-release.
+Before `1.0`, minor versions could break compatibility (`0.9.x` uses Protocol 4; `0.7.x`–`0.8.x` use Protocol 3). Breaking changes are documented per release in [`CHANGELOG.md`](../CHANGELOG.md).
 
-## 3. Cómo se añade algo en la 1.x sin romper
+## 3. Extending 1.x Without Breaking
 
-El número no se mueve, así que un `drop` 1.0 y uno 1.3 se aceptan y se hablan. Lo que lo hace
-posible son estas reglas, y [`test/compat.test.mjs`](../test/compat.test.mjs) comprueba que los
-receptores y emisores de hoy las cumplen:
+Because `PROTOCOL_VERSION` stays fixed at `5`, a `1.0` peer and a `1.3` peer must interoperate cleanly. [`test/compat.test.mjs`](../test/compat.test.mjs) enforces these rules:
 
-1. **Todo lo desconocido se ignora.** Un campo de más en un marco, un marco de control con un
-   `k` (DataChannel, TCP) o un `type` (relay) que no se conoce, un `t` de señalización nuevo: ni se
-   rechaza, ni se escribe en ningún archivo, ni corta nada. Lo cumplen los dos lados de cada
-   camino y el servidor.
-2. **Un campo nuevo es opcional y su ausencia es el comportamiento de la 1.0.** `files` ya
-   funciona así: sin él se manda el lote entero.
-3. **Lo que obliga al otro lado a hacer algo se anuncia antes en `features`.** Pedir algo que el
-   otro ignoraría en silencio es peor que no pedirlo: un emisor 1.0 que no entiende una petición
-   hace otra cosa. Por eso un campo nuevo que *cambia* lo que tiene que hacer el otro extremo
-   (comprimir, cifrar de otra forma, saltarse algo) solo se usa si el otro lo ha anunciado:
-   - `features` es una lista de cadenas. El emisor la pone en el manifiesto (`manifest` por TCP,
-     `cli-manifest` por relay, `manifest` en el DataChannel); el receptor, en su respuesta
-     (`ready`, `cli-accept`, `accept`).
-   - Si no viene, es la lista vacía: eso es lo que manda cualquier 1.0.
-   - La 1.0 no anuncia ninguna. El nombre del campo queda reservado para esto.
-4. **El orden no cambia.** El primer marco del emisor por TCP es el manifiesto y la primera
-   respuesta del receptor es `ready`; por relay la oferta va en claro y lo demás sellado. Algo
-   nuevo va después, nunca delante.
-5. **Un `t` de señalización nuevo entra primero en el servidor.** Los clientes y el servidor
-   ignoran los `t` que no conocen, pero un cliente no puede contar con uno que el servidor no
-   reenvía. Un motivo de `error` nuevo lo enseña una versión vieja con su texto genérico (la
-   web) o con el motivo tal cual (el CLI): se nota, no rompe.
-6. **Las constantes de un solo lado se tocan libremente** (trozo, marcas de agua, ventana de la
-   cadena) mientras la semántica no cambie: el acuse es de bytes totales y monótono, y la ventana
-   del emisor por relay tiene que seguir muy por encima de cada cuánto acusa el receptor.
+1. **Unknown items are ignored.** Extra fields on a JSON frame, unknown `k` control frames (DataChannel/TCP), unknown `cli-*` relay `type`s, or unknown signaling `t` messages are ignored without error and never written to disk.
+2. **New fields are optional, and absence means `1.0` behavior.** `files` already works this way: omitting it transfers the entire batch.
+3. **Behavior-changing capabilities are negotiated via `features`.** Requesting something an older peer silently ignores is worse than not requesting it:
+   - `features` is an array of strings sent by the sender in the manifest (`manifest` over TCP/DataChannel, `cli-manifest` over relay) and echoed/intersected by the receiver (`ready`, `cli-accept`, `accept`).
+   - Omitting `features` means `[]` (`1.0` baseline).
+   - `1.0` announces no features; the field name is reserved for future `1.x` extensions.
+4. **Handshake ordering never changes.** On TCP, the sender's first frame is `manifest` and the receiver's first frame is `ready`. Over relay, `cli-offer` is cleartext and subsequent frames are sealed. New steps go after, never before.
+5. **New signaling `t` messages ship on the server first.** Clients and servers ignore unknown `t`, so a client cannot rely on a message the server does not forward yet. New `error` reasons fall back to generic text on older clients without breaking.
+6. **Single-sided tuning constants may change freely** (chunk size, watermarks, chain batching window) as long as ack semantics remain monotonic total plaintext bytes and relay window sizes stay well above receiver ack frequency.
 
-## 4. Cuándo se rompe: la 2.0
+## 4. Breaking Changes: 2.0
 
-Solo una versión mayor cambia `PROTOCOL_VERSION`, y cambiarlo es lo que la hace mayor.
+Only a major release changes `PROTOCOL_VERSION`:
 
-- Se anuncia en el CHANGELOG con al menos una versión menor de antelación, diciendo qué cambia.
-- Un `drop` 1.x contra uno 2.x se rechaza con el mensaje de siempre (`drop update`), nunca se
-  entienden a medias.
-- La web desplegada pasa al protocolo nuevo el día de la 2.0. Entre dos CLI 1.x todo sigue
-  funcionando: el TCP directo no necesita el servidor, y el relay usa una señalización que el
-  servidor público sigue aceptando al menos **seis meses** después de publicar la 2.0.
+- Announced in `CHANGELOG.md` at least one minor release in advance.
+- A `1.x` client and `2.x` client reject each other cleanly (`drop update`), never half-parsing frames.
+- The public signaling server continues accepting `1.x` relay signaling for at least **6 months** after `2.0` ships; direct CLI TCP transfers need no server at all.
 
-## 5. Qué versiones reciben arreglos
+## 5. Supported Versions
 
-La última release. Como dentro de la 1.x el protocolo no cambia, actualizar con `drop update` a la
-última 1.x no rompe nada con quien siga en una anterior. Los fallos de seguridad se publican como
-dice [SECURITY.md](../SECURITY.md).
+Only the latest release receives fixes. Since `1.x` preserves protocol compatibility, updating via `drop update` never breaks communication with peers on earlier `1.x` releases. Security reporting is covered in [`SECURITY.md`](../SECURITY.md).
