@@ -8,7 +8,7 @@
 // que un runner sin navegador falle en vez de pasar en silencio.
 //
 // Lo que NO mide: velocidad. Las dos pestanas comparten una CPU y eso es lo que
-// dice el numero; para eso esta `npm run bench` (ver CLAUDE.md).
+// dice el numero; para eso esta `npm run bench` (ver CONTRIBUTING.md).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -517,5 +517,135 @@ test('web: lotes de archivos bajan en streaming como .zip', { skip: !CHROME && !
     assert.ok(entries['proyecto/README.md'].equals(readme));
     assert.equal(entries['proyecto/vacio.txt'].length, 0);
     assert.equal(sha256(entries['proyecto/src/index.js']), sha256(code));
+  }
+
+  // ------------------------------ 4. Pegar con Ctrl+V (texto e imagenes) -> Web
+  {
+    const context = await browser.newContext({ acceptDownloads: true });
+    t.after(() => context.close());
+    const sender = await context.newPage();
+    await sender.goto(srv.http, { waitUntil: 'domcontentloaded' });
+
+    // Pegar un codigo dentro de #code-in NO debe anadirlo como archivo.
+    await sender.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', '4271-lemon-radar-tiger-orbit');
+      const codeInput = document.getElementById('code-in');
+      codeInput.focus();
+      codeInput.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    });
+    assert.equal(await sender.locator('#file-list li').count(), 0, 'pegar en #code-in no debe crear archivos');
+
+    // Pegar texto fuera de inputs -> clipboard.txt y clipboard-2.txt (incluso con mismo tamano),
+    // y dos capturas image.png -> image.png e image-2.png.
+    await sender.evaluate(() => {
+      const paste = (setup) => {
+        const dt = new DataTransfer();
+        setup(dt);
+        document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      };
+      paste((dt) => dt.setData('text/plain', 'hola1'));
+      paste((dt) => dt.setData('text/plain', 'hola2'));
+      paste((dt) => dt.items.add(new File([new Uint8Array([1, 2, 3])], 'image.png', { type: 'image/png' })));
+      paste((dt) => dt.items.add(new File([new Uint8Array([4, 5, 6])], 'image.png', { type: 'image/png' })));
+    });
+    const pastedNames = await sender.locator('#file-list .name').allTextContents();
+    assert.deepEqual(pastedNames, ['clipboard.txt', 'clipboard-2.txt', 'image.png', 'image-2.png']);
+
+    // Quedarnos solo con clipboard.txt y enviarlo por WebRTC para verificar que el File es legible.
+    for (let i = 0; i < 3; i++) await sender.locator('#file-list .drop-one').nth(1).click();
+    assert.deepEqual(await sender.locator('#file-list .name').allTextContents(), ['clipboard.txt']);
+
+    await sender.click('#create-link');
+    await sender.waitForFunction(() => document.getElementById('link-out').value.includes('#'), null, { timeout: 15_000 });
+    const link = await sender.inputValue('#link-out');
+
+    const receiver = await context.newPage();
+    const downloaded = new Promise((resolve) => receiver.on('download', resolve));
+    await receiver.goto(link, { waitUntil: 'domcontentloaded' });
+    await receiver.waitForSelector('#accept:visible', { timeout: 20_000 });
+    await receiver.click('#accept');
+    await receiver.waitForFunction(() => /received/.test(document.querySelector('.peer .state')?.textContent || ''), null, { timeout: 30_000 });
+
+    const dl = await downloaded;
+    assert.equal(dl.suggestedFilename(), 'clipboard.txt');
+    assert.equal(fs.readFileSync(await dl.path(), 'utf8'), 'hola1');
+  }
+
+  // ------------------------------ 5. Descarga del CLI con autodeteccion de SO
+  {
+    const ver = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+    const cases = [
+      {
+        name: 'Windows x64',
+        platform: 'Win32',
+        ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0',
+        expectedUrl: `https://github.com/Oloxx/drop/releases/download/v${ver}/drop-v${ver}-windows-x64.exe`,
+        checkToggle: true,
+      },
+      {
+        name: 'macOS Apple Silicon',
+        platform: 'MacIntel',
+        ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15',
+        expectedUrl: `https://github.com/Oloxx/drop/releases/download/v${ver}/drop-v${ver}-macos-arm64.tar.gz`,
+      },
+      {
+        name: 'Linux x64',
+        platform: 'Linux x86_64',
+        ua: 'Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/131.0',
+        expectedUrl: `https://github.com/Oloxx/drop/releases/download/v${ver}/drop-v${ver}-linux-x64.tar.gz`,
+      },
+      {
+        name: 'Linux ARM64 (userAgentData)',
+        platform: 'Linux x86_64',
+        ua: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0',
+        uaData: { platform: 'Linux', architecture: 'arm', bitness: '64', mobile: false },
+        expectedUrl: `https://github.com/Oloxx/drop/releases/download/v${ver}/drop-v${ver}-linux-arm64.tar.gz`,
+      },
+      {
+        name: 'Android (sin binario directo)',
+        platform: 'Linux armv8l',
+        ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/130.0 Mobile',
+        expectedUrl: null,
+      },
+    ];
+
+    for (const c of cases) {
+      const ctx = await browser.newContext();
+      const page = await ctx.newPage();
+      await page.addInitScript((cfg) => {
+        Object.defineProperty(navigator, 'platform', { get: () => cfg.platform });
+        Object.defineProperty(navigator, 'userAgent', { get: () => cfg.ua });
+        Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+        Object.defineProperty(navigator, 'userAgentData', {
+          configurable: true,
+          get: () => (cfg.uaData ? {
+            platform: cfg.uaData.platform,
+            mobile: !!cfg.uaData.mobile,
+            getHighEntropyValues: async () => cfg.uaData,
+          } : undefined),
+        });
+      }, c);
+
+      await page.goto(srv.http, { waitUntil: 'domcontentloaded' });
+      await page.waitForFunction((v) => document.getElementById('cli-ver')?.textContent === `v${v}`, ver, { timeout: 10_000 });
+
+      if (c.expectedUrl) {
+        await page.waitForFunction((url) => document.getElementById('cli-dl')?.href === url, c.expectedUrl, { timeout: 10_000 });
+        assert.equal(await page.isVisible('#cli-dl'), true, `${c.name}: boton principal visible`);
+        if (c.checkToggle) {
+          assert.equal(await page.isVisible('#cli-all'), false, 'otras plataformas empiezan ocultas');
+          await page.click('#cli-all-toggle');
+          assert.equal(await page.isVisible('#cli-all'), true, 'al pulsar se muestran las 4 plataformas');
+          assert.equal(await page.locator('#cli-list li').count(), 4);
+        }
+      } else {
+        assert.equal(await page.isVisible('#cli-dl'), false, `${c.name}: sin boton de binario unico en movil`);
+        assert.equal(await page.isVisible('#cli-all'), true, `${c.name}: muestra la lista de escritorio`);
+        assert.match(await page.textContent('#cli-note'), /android/i);
+        assert.equal(await page.locator('#cli-list li').count(), 4);
+      }
+      await ctx.close();
+    }
   }
 });

@@ -586,6 +586,31 @@ function renderFileList() {
   $('#send-actions').hidden = out.files.length === 0 || !!out.code;
   $('#drop').hidden = !!out.code;
   $('#join-box').hidden = !!out.code;
+  const cliBox = $('#cli-box');
+  if (cliBox) cliBox.hidden = !!out.code;
+}
+
+const MIME_EXT = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'image/svg+xml': '.svg',
+  'text/plain': '.txt',
+};
+
+function nextPastedName(stem, ext, taken) {
+  if (!taken.has(stem + ext)) {
+    taken.add(stem + ext);
+    return stem + ext;
+  }
+  for (let n = 2; ; n++) {
+    const candidate = `${stem}-${n}${ext}`;
+    if (!taken.has(candidate)) {
+      taken.add(candidate);
+      return candidate;
+    }
+  }
 }
 
 function addFiles(fileList) {
@@ -2340,6 +2365,59 @@ drop.addEventListener('drop', (e) => {
   addFiles(files);
 });
 
+// Pegar desde el portapapeles (Ctrl+V / Cmd+V): archivos/capturas o texto plano como clipboard.txt.
+// Se ignora dentro de campos de texto (p. ej. al pegar un codigo en #code-in) y tras abrir el canal.
+document.addEventListener('paste', (e) => {
+  if (document.body.dataset.view !== 'send' || out.code) return;
+  const target = e.target;
+  if (target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
+  if (target instanceof HTMLInputElement && target.type !== 'file') return;
+
+  const cd = e.clipboardData;
+  if (!cd) return;
+
+  const rawFiles = [];
+  if (cd.items?.length) {
+    for (const item of cd.items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) rawFiles.push(file);
+      }
+    }
+  }
+  if (!rawFiles.length && cd.files?.length) {
+    rawFiles.push(...cd.files);
+  }
+  if (rawFiles.length) {
+    e.preventDefault();
+    const taken = new Set(out.files.map((f) => f.name));
+    const files = rawFiles.map((f) => {
+      // Las capturas de pantalla suelen llegar como `image.png`: si ya existe en cola se
+      // numera (`image-2.png`) para que addFiles no la descarte si coincide el tamaño.
+      if (!f.name || f.name === 'image.png' || f.name === 'blob') {
+        const ext = MIME_EXT[f.type] || (f.type.startsWith('image/') ? '.png' : '.bin');
+        const stem = (!f.name || f.name === 'blob') ? 'pasted' : 'image';
+        const name = nextPastedName(stem, ext, taken);
+        if (name !== f.name) return new File([f], name, { type: f.type, lastModified: f.lastModified });
+      }
+      taken.add(f.name);
+      return f;
+    });
+    addFiles(files);
+    announce(`added ${files.length} pasted file${files.length === 1 ? '' : 's'}`);
+    return;
+  }
+
+  const text = cd.getData('text/plain');
+  if (text) {
+    e.preventDefault();
+    const taken = new Set(out.files.map((f) => f.name));
+    const file = new File([text], nextPastedName('clipboard', '.txt', taken), { type: 'text/plain;charset=utf-8' });
+    addFiles([file]);
+    announce(`added ${file.name}`);
+  }
+});
+
 $('#clear-files').onclick = () => { out.files = []; renderFileList(); };
 $('#create-link').onclick = createLink;
 
@@ -2426,6 +2504,177 @@ $('#alerts-toggle').onclick = () => {
   if (alerts.enabled) { armAlerts(); chime(); }
 };
 
+// ------------------------------------------------------------ descarga CLI
+
+const CLI_RELEASE_BASE = 'https://github.com/Oloxx/drop/releases';
+const CLI_PLATFORMS = [
+  {
+    id: 'win-x64',
+    label: 'Windows (x64)',
+    buttonLabel: '↓ download for windows (.exe)',
+    asset: (v) => `drop-v${v}-windows-x64.exe`,
+    hint: (file) => `${file} · or run: winget install Oloxx.drop`,
+  },
+  {
+    id: 'mac-arm64',
+    label: 'macOS (Apple Silicon)',
+    buttonLabel: '↓ download for macos (arm64)',
+    asset: (v) => `drop-v${v}-macos-arm64.tar.gz`,
+    hint: (file, archHint) => (archHint === 'x86'
+      ? `${file} · Apple Silicon (M1–M4); Intel Macs need source build`
+      : `${file} · or run: brew install oloxx/tap/drop`),
+  },
+  {
+    id: 'linux-x64',
+    label: 'Linux (x64)',
+    buttonLabel: '↓ download for linux (x64)',
+    asset: (v) => `drop-v${v}-linux-x64.tar.gz`,
+    hint: (file) => `${file} · extract and run ./drop install`,
+  },
+  {
+    id: 'linux-arm64',
+    label: 'Linux (ARM64)',
+    buttonLabel: '↓ download for linux (arm64)',
+    asset: (v) => `drop-v${v}-linux-arm64.tar.gz`,
+    hint: (file) => `${file} · extract and run ./drop install`,
+  },
+];
+
+function detectCliPlatform(nav = navigator, highEntropy = null) {
+  const ua = String(nav?.userAgent || '');
+  const navPlatform = String(nav?.platform || '');
+  const plat = String(highEntropy?.platform || nav?.userAgentData?.platform || navPlatform);
+  const arch = String(highEntropy?.architecture || '').toLowerCase();
+  const bitness = String(highEntropy?.bitness || '');
+  const touchPoints = Number(nav?.maxTouchPoints || 0);
+
+  // Android UA incluye "Linux" y iPadOS se identifica como "MacIntel": van antes.
+  if (/iPhone|iPad|iPod/i.test(ua) || (/MacIntel/i.test(navPlatform) && touchPoints > 1)) {
+    return { id: 'mobile', osName: 'ios', arch: null };
+  }
+  if (/Android/i.test(ua) || /Android/i.test(plat)) {
+    return { id: 'mobile', osName: 'android', arch: null };
+  }
+  if (/Win/i.test(plat) || /Windows/i.test(ua)) {
+    return { id: 'win-x64', osName: 'windows', arch: arch || null };
+  }
+  if (/Mac/i.test(plat) || /Mac OS X|Macintosh/i.test(ua)) {
+    return { id: 'mac-arm64', osName: 'macos', arch: arch || null };
+  }
+  if (/Linux|X11/i.test(plat) || /Linux/i.test(ua)) {
+    const isArm64 = (arch === 'arm' && (!bitness || bitness === '64'))
+      || /aarch64|arm64|armv8/i.test(`${plat} ${ua}`);
+    return { id: isArm64 ? 'linux-arm64' : 'linux-x64', osName: 'linux', arch: arch || null };
+  }
+  return { id: 'unknown', osName: null, arch: null };
+}
+
+function cliReleaseUrl(version, assetName) {
+  if (version) return `${CLI_RELEASE_BASE}/download/v${version}/${assetName}`;
+  return `${CLI_RELEASE_BASE}/latest`;
+}
+
+function renderCliDownload(detected, version) {
+  const box = $('#cli-box');
+  if (!box) return;
+  const verEl = $('#cli-ver');
+  const dl = $('#cli-dl');
+  const toggle = $('#cli-all-toggle');
+  const note = $('#cli-note');
+  const all = $('#cli-all');
+  const list = $('#cli-list');
+  const relLink = $('#cli-rel-link');
+
+  if (version) {
+    verEl.textContent = `v${version}`;
+    verEl.hidden = false;
+  } else {
+    verEl.hidden = true;
+  }
+
+  relLink.href = version ? `${CLI_RELEASE_BASE}/tag/v${version}` : `${CLI_RELEASE_BASE}/latest`;
+
+  const target = CLI_PLATFORMS.find((p) => p.id === detected.id);
+  if (target) {
+    const file = version ? target.asset(version) : `${target.id} binary`;
+    dl.hidden = false;
+    dl.href = cliReleaseUrl(version, target.asset(version || '0.0.0'));
+    // Los binarios de GitHub vienen con Content-Disposition: attachment; abrir en la
+    // misma pestaña inicia la descarga sin dejar una pestaña en blanco abierta.
+    if (version) dl.removeAttribute('target');
+    else dl.setAttribute('target', '_blank');
+    dl.textContent = target.buttonLabel;
+    note.textContent = target.hint(file, detected.arch);
+    note.hidden = false;
+    toggle.hidden = false;
+  } else {
+    dl.hidden = true;
+    toggle.hidden = true;
+    all.hidden = false;
+    note.textContent = detected.osName
+      ? `detected ${detected.osName} · desktop cli binaries are for windows, macos and linux:`
+      : 'select a platform executable below:';
+    note.hidden = false;
+  }
+
+  list.textContent = '';
+  for (const plat of CLI_PLATFORMS) {
+    const li = document.createElement('li');
+    const nameEl = document.createElement('span');
+    nameEl.className = 'cli-plat';
+    nameEl.textContent = plat.label;
+    const fileEl = document.createElement('span');
+    fileEl.className = 'cli-file';
+    fileEl.textContent = version ? plat.asset(version) : plat.id;
+    const link = document.createElement('a');
+    link.className = 'cli-get';
+    link.href = cliReleaseUrl(version, plat.asset(version || '0.0.0'));
+    link.rel = 'noopener noreferrer';
+    if (!version) link.target = '_blank';
+    link.textContent = plat.id === detected.id ? 'recommended' : 'download';
+    link.setAttribute('aria-label', `Download drop CLI for ${plat.label}`);
+    li.append(nameEl, fileEl, link);
+    list.appendChild(li);
+  }
+}
+
+function initCliDownload() {
+  const box = $('#cli-box');
+  if (!box) return;
+  let detected = detectCliPlatform();
+  let version = null;
+
+  renderCliDownload(detected, version);
+
+  $('#cli-all-toggle').onclick = () => {
+    const all = $('#cli-all');
+    const open = all.hidden;
+    all.hidden = !open;
+    $('#cli-all-toggle').setAttribute('aria-expanded', String(open));
+    $('#cli-all-toggle').textContent = open ? 'hide platforms' : 'other platforms';
+  };
+
+  if (navigator.userAgentData?.getHighEntropyValues) {
+    navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness', 'platform'])
+      .then((he) => {
+        detected = detectCliPlatform(navigator, he);
+        renderCliDownload(detected, version);
+      })
+      .catch(() => {});
+  }
+
+  fetch('/version')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      const v = typeof data?.version === 'string' ? data.version.trim() : '';
+      if (/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)) {
+        version = v;
+        renderCliDownload(detected, version);
+      }
+    })
+    .catch(() => {});
+}
+
 // El codigo viaja en el fragmento (#...), que el navegador nunca manda al
 // servidor: no queda en sus logs ni en el Referer. Y ahi va ENTERO, palabras
 // incluidas, porque el enlace es justo el atajo para no tener que dictarlas.
@@ -2470,6 +2719,8 @@ if (fragment) {
     $('#retry-code').value = fragment;
     setStatus('offline', 'bad');
   }
+} else if (document.body.dataset.view === 'send') {
+  initCliDownload();
 }
 
 // Enganche para el bench (app.js es un modulo: sin esto no hay forma de mirar el

@@ -5,12 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>drop · peer to peer</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preload" href="fonts/jetbrains-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
 </head>
 <body data-view="send">
 
 <header class="head">
+  <img class="brand-mark" src="favicon.svg" alt="" width="24" height="24" aria-hidden="true">
   <nav class="head-nav" aria-label="Primary">
     <a class="nav active" href="./" aria-current="page">transfer</a>
     <a class="nav" href="speed">speed test</a>
@@ -39,7 +41,7 @@
       <input type="file" id="file-input" class="sr-only" multiple aria-label="Choose files to send">
       <span class="drop-glyph" aria-hidden="true">+</span>
       <strong><span class="only-pointer">drop files here</span><span class="only-touch">select files</span></strong>
-      <small><span class="only-pointer">or browse</span><span class="only-touch">tap to browse</span></small>
+      <small><span class="only-pointer">or browse · paste</span><span class="only-touch">tap to browse</span></small>
     </label>
 
     <ul class="files" id="file-list"></ul>
@@ -82,6 +84,28 @@
     </div>
 
     <div class="peers" id="peers"></div>
+
+    <div class="ticket cli-box" id="cli-box">
+      <div class="cli-head">
+        <div>
+          <p class="label" id="cli-label">cli · desktop binary</p>
+          <p class="hint cli-sub">Full LAN speed (100+ MB/s), folder trees, resume and no browser limits.</p>
+        </div>
+        <span class="cli-ver" id="cli-ver" hidden></span>
+      </div>
+      <div class="row cli-actions">
+        <a class="btn primary" id="cli-dl" href="https://github.com/Oloxx/drop/releases/latest"
+           target="_blank" rel="noopener noreferrer">download cli</a>
+        <button class="ghost" id="cli-all-toggle" type="button"
+                aria-expanded="false" aria-controls="cli-all">other platforms</button>
+      </div>
+      <p class="hint" id="cli-note" hidden></p>
+      <div class="cli-all" id="cli-all" hidden>
+        <ul class="cli-list" id="cli-list"></ul>
+        <a class="cli-rel-link" id="cli-rel-link" href="https://github.com/Oloxx/drop/releases/latest"
+           target="_blank" rel="noopener noreferrer">SHA256SUMS &amp; Minisign signature on GitHub →</a>
+      </div>
+    </div>
   </section>
 
   <!-- ---------- Sin WebRTC (navegador viejo, Tor, WebRTC apagado) ---------- -->
