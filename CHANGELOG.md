@@ -11,6 +11,10 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+### Añadido
+- **Instaladores rápidos en un comando (`install.ps1`, `install.cmd`, `install.sh`):** añadidos [`public/install.ps1`](public/install.ps1) (`irm https://drop.oloxx.dev/install.ps1 | iex`), [`public/install.cmd`](public/install.cmd) (CMD con `curl.exe` + `certutil`) y [`public/install.sh`](public/install.sh) (`curl -fsSL https://drop.oloxx.dev/install.sh | sh`), servidos desde `public/` (y embebidos en `drop serve` con `text/plain`), con verificación SHA-256 contra `SHA256SUMS` y bloque de comando copiable en la tarjeta `#cli-box` de la web.
+- **Auto-actualización silenciosa en segundo plano en el CLI:** [`cli/src/commands/update.rs`](cli/src/commands/update.rs) y [`cli/src/cli.rs`](cli/src/cli.rs) comprueban nuevas releases en segundo plano (como máximo cada 24 h, caché en `update-state.json`) al ejecutar comandos habituales (`send`, `recv`, `speed`, `serve`), verificando siempre `SHA256SUMS.minisig` + `SHA256SUMS` antes de reemplazar el binario para el siguiente arranque. Si `drop` está gestionado por Homebrew, WinGet o Scoop, solo muestra un aviso discreto en `stderr` con el comando de actualización. Se desactiva automáticamente en CI, en binarios no instalados y con `DROP_NO_AUTO_UPDATE=1`.
+
 ## [0.14.0] — 2026-11-19
 
 Compatible con la v0.13.x (protocolo 5 sin cambios).

@@ -89,7 +89,26 @@ drop recv 4271-lemon-radar-tiger-orbit
 
 ## Installation
 
-### Package Managers (Recommended)
+### Quick Install (One-liner)
+
+Downloads the latest release, verifies its `SHA256SUMS` hash, installs `drop` and adds it to your `PATH`:
+
+```powershell
+# Windows (PowerShell)
+irm https://drop.oloxx.dev/install.ps1 | iex
+```
+
+```cmd
+:: Windows (CMD)
+curl -fsSL https://drop.oloxx.dev/install.cmd -o "%TEMP%\drop-install.cmd" && "%TEMP%\drop-install.cmd" && del "%TEMP%\drop-install.cmd"
+```
+
+```bash
+# macOS & Linux
+curl -fsSL https://drop.oloxx.dev/install.sh | sh
+```
+
+### Package Managers
 
 ```bash
 # macOS & Linux (Homebrew)
@@ -136,7 +155,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 Get-FileHash drop-v0.14.0-windows-x64.exe -Algorithm SHA256
 ```
 
-`drop update` automatically runs both Minisign and SHA-256 verification before replacing the executable and aborts on any mismatch (`--allow-unsigned` is required for pre-`v0.5.2` releases).
+`drop update` automatically runs both Minisign and SHA-256 verification before replacing the executable and aborts on any mismatch (`--allow-unsigned` is required for pre-`v0.5.2` releases). Installed standalone binaries also check for updates silently in the background (at most once every 24h) and apply verified releases for the next run; package-manager installs only print an upgrade hint. Set `DROP_NO_AUTO_UPDATE=1` to disable background checks.
 
 </details>
 

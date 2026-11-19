@@ -475,3 +475,199 @@ async fn test_throttle_pacing_and_progress_bar_formatting() {
     assert!(!single.contains('\n'));
     assert!(!single.contains("[1/1]"));
 }
+
+#[test]
+fn auto_update_interval_check_logic() {
+    use drop::commands::update::{UpdateState, should_check_now};
+
+    assert!(should_check_now(None, 1000, 86_400));
+    let st = UpdateState {
+        last_check_unix: 1000,
+        latest_version: Some("0.14.0".into()),
+    };
+    assert!(!should_check_now(Some(&st), 1000 + 86_399, 86_400));
+    assert!(should_check_now(Some(&st), 1000 + 86_400, 86_400));
+    assert!(should_check_now(Some(&st), 1000, 0));
+}
+
+#[tokio::test]
+async fn auto_update_downloads_verifies_replaces_and_respects_cache_and_pkgmgr() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use drop::commands::update::{
+        AutoUpdateConfig, AutoUpdateOutcome, load_update_state, run_auto_update_once,
+        target_asset_suffixes,
+    };
+    use drop::pkgmgr::PackageManager;
+
+    let suffix = target_asset_suffixes()[0];
+    let asset_name = format!("drop-v0.99.0-{suffix}");
+    let new_binary = b"drop-new-binary-v0.99.0".to_vec();
+    let asset_bytes = if asset_name.ends_with(".tar.gz") {
+        let mut tar_buf = Vec::new();
+        {
+            let gz = GzEncoder::new(&mut tar_buf, Compression::default());
+            let mut builder = tar::Builder::new(gz);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(new_binary.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "drop", new_binary.as_slice())
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        tar_buf
+    } else {
+        new_binary.clone()
+    };
+
+    let sums = format!("{}  {asset_name}\n", sha256_hex(&asset_bytes));
+    let (pub_key, valid_sig) = minisign_fixture(sums.as_bytes());
+    let hits = Arc::new(AtomicUsize::new(0));
+
+    let base_url_slot: Arc<std::sync::Mutex<String>> = Arc::new(std::sync::Mutex::new(String::new()));
+    let base_url_for_handler = Arc::clone(&base_url_slot);
+    let hits_for_handler = Arc::clone(&hits);
+    let asset_name_h = asset_name.clone();
+    let asset_bytes_h = asset_bytes.clone();
+    let sums_h = sums.clone();
+    let sig_h = valid_sig.clone();
+
+    let gh_url = start_mock_http(move |path| {
+        let base = base_url_for_handler.lock().unwrap().clone();
+        match path {
+            "/repos/Oloxx/drop/releases/latest" => {
+                hits_for_handler.fetch_add(1, Ordering::SeqCst);
+                let body = json!({
+                    "tag_name": "v0.99.0",
+                    "assets": [
+                        {
+                            "name": asset_name_h,
+                            "url": format!("{base}/dl/bin"),
+                            "browser_download_url": format!("{base}/dl/bin"),
+                            "size": asset_bytes_h.len(),
+                        },
+                        {
+                            "name": "SHA256SUMS",
+                            "url": format!("{base}/dl/sums"),
+                            "browser_download_url": format!("{base}/dl/sums"),
+                            "size": sums_h.len(),
+                        },
+                        {
+                            "name": "SHA256SUMS.minisig",
+                            "url": format!("{base}/dl/sig"),
+                            "browser_download_url": format!("{base}/dl/sig"),
+                            "size": sig_h.len(),
+                        }
+                    ]
+                })
+                .to_string()
+                .into_bytes();
+                (200, "application/json", body)
+            }
+            "/dl/bin" => (200, "application/octet-stream", asset_bytes_h.clone()),
+            "/dl/sums" => (200, "text/plain", sums_h.as_bytes().to_vec()),
+            "/dl/sig" => (200, "text/plain", sig_h.as_bytes().to_vec()),
+            _ => (404, "text/plain", Vec::new()),
+        }
+    })
+    .await;
+    *base_url_slot.lock().unwrap() = gh_url.clone();
+
+    let dir = std::env::temp_dir().join(format!("drop-autoupdate-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // 1. Instalacion directa: descarga, verifica firma, reemplaza binario y guarda estado.
+    let fake_exe = dir.join("drop-bin");
+    std::fs::write(&fake_exe, b"old-binary").unwrap();
+    let state_path = dir.join("state.json");
+
+    let cfg = AutoUpdateConfig {
+        exe_path: fake_exe.clone(),
+        state_path: state_path.clone(),
+        github_api: gh_url.clone(),
+        repo: "Oloxx/drop".into(),
+        current_version: "0.14.0".into(),
+        public_key: pub_key.clone(),
+        manager: None,
+        interval_secs: 86_400,
+    };
+
+    let outcome = run_auto_update_once(cfg.clone()).await;
+    assert_eq!(
+        outcome,
+        AutoUpdateOutcome::Updated {
+            from: "0.14.0".into(),
+            to: "0.99.0".into(),
+        }
+    );
+    assert_eq!(std::fs::read(&fake_exe).unwrap(), new_binary);
+    let st = load_update_state(&state_path).expect("state saved");
+    assert_eq!(st.latest_version.as_deref(), Some("0.99.0"));
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    // 2. Segunda ejecucion dentro de 24h: debe saltarse sin consultar GitHub.
+    let outcome2 = run_auto_update_once(cfg).await;
+    assert_eq!(outcome2, AutoUpdateOutcome::Skipped);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    // 3. Con gestor de paquetes (WinGet): solo avisa y NO toca el binario.
+    let managed_exe = dir.join("drop-managed");
+    std::fs::write(&managed_exe, b"winget-binary").unwrap();
+    let managed_state = dir.join("state-managed.json");
+    let mgr = PackageManager {
+        name: "WinGet",
+        upgrade: "winget upgrade Oloxx.drop",
+        uninstall: "winget uninstall Oloxx.drop",
+    };
+    let managed_outcome = run_auto_update_once(AutoUpdateConfig {
+        exe_path: managed_exe.clone(),
+        state_path: managed_state,
+        github_api: gh_url.clone(),
+        repo: "Oloxx/drop".into(),
+        current_version: "0.14.0".into(),
+        public_key: pub_key.clone(),
+        manager: Some(mgr.clone()),
+        interval_secs: 86_400,
+    })
+    .await;
+    assert_eq!(
+        managed_outcome,
+        AutoUpdateOutcome::ManagedAvailable {
+            version: "0.99.0".into(),
+            manager: mgr,
+        }
+    );
+    assert_eq!(std::fs::read(&managed_exe).unwrap(), b"winget-binary");
+
+    // 4. Clave publica equivocada / firma invalida: rechaza y NO toca el binario.
+    let bad_exe = dir.join("drop-bad");
+    std::fs::write(&bad_exe, b"keep-me").unwrap();
+    let bad_state = dir.join("state-bad.json");
+    let (other_pub_key, _) = {
+        let sk = SigningKey::from_bytes(&[0x99u8; 32]);
+        let mut raw_pk = Vec::with_capacity(42);
+        raw_pk.extend_from_slice(b"Ed");
+        raw_pk.extend_from_slice(&[9u8; 8]);
+        raw_pk.extend_from_slice(&sk.verifying_key().to_bytes());
+        (B64.encode(raw_pk), String::new())
+    };
+    let bad_outcome = run_auto_update_once(AutoUpdateConfig {
+        exe_path: bad_exe.clone(),
+        state_path: bad_state,
+        github_api: gh_url,
+        repo: "Oloxx/drop".into(),
+        current_version: "0.14.0".into(),
+        public_key: other_pub_key,
+        manager: None,
+        interval_secs: 86_400,
+    })
+    .await;
+    assert_eq!(bad_outcome, AutoUpdateOutcome::Skipped);
+    assert_eq!(std::fs::read(&bad_exe).unwrap(), b"keep-me");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

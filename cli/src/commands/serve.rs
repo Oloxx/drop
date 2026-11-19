@@ -838,6 +838,7 @@ fn mime_type(asset_path: &str) -> &'static str {
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "ico" => "image/x-icon",
+        "ps1" | "cmd" | "sh" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }

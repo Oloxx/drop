@@ -3,21 +3,25 @@
 use std::env;
 use std::fs;
 use std::io::{self, Cursor, IsTerminal, Read};
-use std::path::Path;
-#[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use flate2::read::GzDecoder;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
-use crate::commands::install::cleanup_old_binary;
+use crate::commands::install::{cleanup_old_binary, home_dir, is_installed};
 use crate::minisign::verify_signature;
+use crate::pkgmgr::PackageManager;
 use crate::ui::{BOLD, CYAN, DIM, GREEN, RED, RESET, YELLOW, fmt_bytes};
+
+/// Intervalo minimo entre comprobaciones automaticas de actualizacion (24 horas).
+pub const AUTO_UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// Tiempo de espera tras un error de red o rate-limit antes de volver a comprobar (1 hora).
+const AUTO_UPDATE_RETRY_AFTER_ERROR_SECS: u64 = 60 * 60;
 
 #[derive(Debug, Clone, Default)]
 pub struct UpdateOptions {
@@ -110,13 +114,20 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-fn github_token() -> Option<String> {
+fn env_github_token() -> Option<String> {
     for var in ["GITHUB_TOKEN", "GH_TOKEN"] {
         if let Ok(tok) = env::var(var)
             && !tok.trim().is_empty()
         {
             return Some(tok.trim().to_string());
         }
+    }
+    None
+}
+
+fn github_token() -> Option<String> {
+    if let Some(tok) = env_github_token() {
+        return Some(tok);
     }
     if env::var_os("DROP_NO_GH").is_some_and(|v| !v.is_empty()) {
         return None;
@@ -220,8 +231,34 @@ pub async fn verify_download(
     token: Option<&str>,
     opts: &UpdateOptions,
 ) -> Result<(), String> {
+    verify_download_inner(
+        client,
+        assets,
+        target_asset,
+        downloaded_bytes,
+        public_key,
+        token,
+        opts,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn verify_download_inner(
+    client: &Client,
+    assets: &[ReleaseAsset],
+    target_asset: &ReleaseAsset,
+    downloaded_bytes: &[u8],
+    public_key: &str,
+    token: Option<&str>,
+    opts: &UpdateOptions,
+    quiet: bool,
+) -> Result<(), String> {
     if opts.skip_verify {
-        println!("  {YELLOW}Aviso: verificación omitida (--skip-verify).{RESET}");
+        if !quiet {
+            println!("  {YELLOW}Aviso: verificación omitida (--skip-verify).{RESET}");
+        }
         return Ok(());
     }
 
@@ -240,11 +277,15 @@ pub async fn verify_download(
             let reason = res.reason.unwrap_or_else(|| "desconocida".to_string());
             return Err(format!("Firma Minisign NO VÁLIDA: {reason}"));
         }
-        println!("  {GREEN}✔ Firma verificada (Minisign).{RESET}");
+        if !quiet {
+            println!("  {GREEN}✔ Firma verificada (Minisign).{RESET}");
+        }
     } else if opts.allow_unsigned {
-        println!(
-            "  {YELLOW}Aviso: release sin firma (--allow-unsigned). Comprobando solo SHA-256.{RESET}"
-        );
+        if !quiet {
+            println!(
+                "  {YELLOW}Aviso: release sin firma (--allow-unsigned). Comprobando solo SHA-256.{RESET}"
+            );
+        }
     } else {
         return Err(
             "La release no está firmada (falta SHA256SUMS.minisig). Usa --allow-unsigned solo para versiones anteriores a la v0.5.2."
@@ -262,7 +303,9 @@ pub async fn verify_download(
             &actual[..12]
         ));
     }
-    println!("  {GREEN}✔ SHA-256 verificado ({}).{RESET}", &actual[..12]);
+    if !quiet {
+        println!("  {GREEN}✔ SHA-256 verificado ({}).{RESET}", &actual[..12]);
+    }
     Ok(())
 }
 
@@ -416,6 +459,13 @@ pub async fn run_update(
 
     let latest_clean = release.tag_name.trim_start_matches(['v', 'V']);
     if !opts.force && !is_newer_version(latest_clean, current_version) {
+        save_update_state(
+            &state_file_path(),
+            &UpdateState {
+                last_check_unix: now_unix_secs(),
+                latest_version: Some(latest_clean.to_string()),
+            },
+        );
         println!(
             "  {GREEN}✔ Ya tienes la última versión (v{current_version}).{RESET}\n"
         );
@@ -482,8 +532,380 @@ pub async fn run_update(
         return 1;
     }
 
+    save_update_state(
+        &state_file_path(),
+        &UpdateState {
+            last_check_unix: now_unix_secs(),
+            latest_version: Some(latest_clean.to_string()),
+        },
+    );
+
     println!(
         "  {GREEN}✔ Actualizado a v{latest_clean} correctamente.{RESET}\n"
     );
     0
+}
+
+// ---------------------------------------------------------------------------
+// Auto-actualizacion silenciosa en segundo plano
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateState {
+    pub last_check_unix: u64,
+    #[serde(default)]
+    pub latest_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoUpdateOutcome {
+    UpToDate,
+    Updated {
+        from: String,
+        to: String,
+    },
+    ManagedAvailable {
+        version: String,
+        manager: PackageManager,
+    },
+    Skipped,
+}
+
+#[derive(Debug, Clone)]
+pub struct AutoUpdateConfig {
+    pub exe_path: PathBuf,
+    pub state_path: PathBuf,
+    pub github_api: String,
+    pub repo: String,
+    pub current_version: String,
+    pub public_key: String,
+    pub manager: Option<PackageManager>,
+    pub interval_secs: u64,
+}
+
+pub fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub fn state_dir() -> PathBuf {
+    if let Ok(custom) = env::var("DROP_STATE_DIR")
+        && !custom.trim().is_empty()
+    {
+        return PathBuf::from(custom.trim());
+    }
+    #[cfg(windows)]
+    {
+        let local_app_data = env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join("AppData").join("Local"));
+        local_app_data.join("drop")
+    }
+    #[cfg(not(windows))]
+    {
+        let cache_base = env::var_os("XDG_CACHE_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join(".cache"));
+        cache_base.join("drop")
+    }
+}
+
+pub fn state_file_path() -> PathBuf {
+    state_dir().join("update-state.json")
+}
+
+pub fn load_update_state(path: &Path) -> Option<UpdateState> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+pub fn save_update_state(path: &Path, state: &UpdateState) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(state) {
+        let _ = fs::write(path, json);
+    }
+}
+
+pub fn cleanup_state_files() {
+    let file = state_file_path();
+    let _ = fs::remove_file(&file);
+    if let Some(dir) = file.parent() {
+        let _ = fs::remove_dir(dir);
+    }
+}
+
+pub fn should_check_now(state: Option<&UpdateState>, now_unix: u64, interval_secs: u64) -> bool {
+    if interval_secs == 0 {
+        return true;
+    }
+    let Some(st) = state else {
+        return true;
+    };
+    now_unix.saturating_sub(st.last_check_unix) >= interval_secs
+}
+
+pub fn auto_update_disabled_by_env() -> bool {
+    if let Ok(val) = env::var("DROP_NO_AUTO_UPDATE") {
+        let v = val.trim().to_ascii_lowercase();
+        if !v.is_empty() && v != "0" && v != "false" && v != "no" {
+            return true;
+        }
+    }
+    for ci_var in ["CI", "GITHUB_ACTIONS"] {
+        if let Ok(val) = env::var(ci_var)
+            && !val.trim().is_empty()
+            && val.trim() != "0"
+            && !val.trim().eq_ignore_ascii_case("false")
+        {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn auto_update_interval_secs() -> u64 {
+    env::var("DROP_AUTO_UPDATE_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(AUTO_UPDATE_INTERVAL_SECS)
+}
+
+fn record_error_backoff(state_path: &Path, now_unix: u64, interval_secs: u64, prev: Option<&UpdateState>) {
+    // Reintentamos dentro de 1 hora (o del intervalo configurado si es menor) para no golpear
+    // GitHub en bucle cuando el equipo esta offline o bajo rate-limit.
+    let backoff = AUTO_UPDATE_RETRY_AFTER_ERROR_SECS.min(interval_secs);
+    let synthetic_last = now_unix.saturating_sub(interval_secs.saturating_sub(backoff));
+    save_update_state(
+        state_path,
+        &UpdateState {
+            last_check_unix: synthetic_last,
+            latest_version: prev.and_then(|s| s.latest_version.clone()),
+        },
+    );
+}
+
+/// Ejecuta un ciclo completo de comprobacion y, si procede, instalacion silenciosa.
+/// Siempre exige firma Minisign valida + SHA256SUMS y nunca imprime a stdout.
+pub async fn run_auto_update_once(cfg: AutoUpdateConfig) -> AutoUpdateOutcome {
+    let now = now_unix_secs();
+    let prev_state = load_update_state(&cfg.state_path);
+    if !should_check_now(prev_state.as_ref(), now, cfg.interval_secs) {
+        return AutoUpdateOutcome::Skipped;
+    }
+
+    let token = env_github_token();
+    let ua = format!("drop-cli/{}", cfg.current_version);
+    let Ok(client) = Client::builder()
+        .user_agent(ua)
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(60))
+        .build()
+    else {
+        return AutoUpdateOutcome::Skipped;
+    };
+
+    let github_api = cfg.github_api.trim_end_matches('/');
+    let latest_url = format!("{github_api}/repos/{}/releases/latest", cfg.repo);
+    let mut req = client
+        .get(&latest_url)
+        .timeout(Duration::from_secs(10))
+        .header("Accept", "application/vnd.github+json");
+    if let Some(tok) = token.as_deref() {
+        req = req.header("Authorization", format!("Bearer {tok}"));
+    }
+
+    let Ok(res) = req.send().await else {
+        record_error_backoff(&cfg.state_path, now, cfg.interval_secs, prev_state.as_ref());
+        return AutoUpdateOutcome::Skipped;
+    };
+    if !res.status().is_success() {
+        record_error_backoff(&cfg.state_path, now, cfg.interval_secs, prev_state.as_ref());
+        return AutoUpdateOutcome::Skipped;
+    }
+
+    let Ok(release) = res.json::<LatestRelease>().await else {
+        record_error_backoff(&cfg.state_path, now, cfg.interval_secs, prev_state.as_ref());
+        return AutoUpdateOutcome::Skipped;
+    };
+
+    let latest_clean = release.tag_name.trim_start_matches(['v', 'V']).to_string();
+    if !is_newer_version(&latest_clean, &cfg.current_version) {
+        save_update_state(
+            &cfg.state_path,
+            &UpdateState {
+                last_check_unix: now,
+                latest_version: Some(latest_clean),
+            },
+        );
+        return AutoUpdateOutcome::UpToDate;
+    }
+
+    // Si drop lo gestiona WinGet, Scoop o Homebrew, nunca pisamos el binario: solo avisamos.
+    if let Some(manager) = cfg.manager {
+        save_update_state(
+            &cfg.state_path,
+            &UpdateState {
+                last_check_unix: now,
+                latest_version: Some(latest_clean.clone()),
+            },
+        );
+        return AutoUpdateOutcome::ManagedAvailable {
+            version: latest_clean,
+            manager,
+        };
+    }
+
+    let suffixes = target_asset_suffixes();
+    let Some(asset) = suffixes
+        .iter()
+        .find_map(|sfx| release.assets.iter().find(|a| a.name.ends_with(sfx)))
+    else {
+        record_error_backoff(&cfg.state_path, now, cfg.interval_secs, prev_state.as_ref());
+        return AutoUpdateOutcome::Skipped;
+    };
+
+    let Ok(downloaded) = fetch_asset_bytes(&client, asset, token.as_deref(), false).await else {
+        record_error_backoff(&cfg.state_path, now, cfg.interval_secs, prev_state.as_ref());
+        return AutoUpdateOutcome::Skipped;
+    };
+
+    // Verificacion estricta (Minisign + SHA256SUMS), en silencio.
+    let strict_opts = UpdateOptions::default();
+    if verify_download_inner(
+        &client,
+        &release.assets,
+        asset,
+        &downloaded,
+        &cfg.public_key,
+        token.as_deref(),
+        &strict_opts,
+        true,
+    )
+    .await
+    .is_err()
+    {
+        record_error_backoff(&cfg.state_path, now, cfg.interval_secs, prev_state.as_ref());
+        return AutoUpdateOutcome::Skipped;
+    }
+
+    let bin_bytes = if asset.name.ends_with(".tar.gz") {
+        let Ok(b) = extract_binary_from_tar_gz(&downloaded) else {
+            record_error_backoff(&cfg.state_path, now, cfg.interval_secs, prev_state.as_ref());
+            return AutoUpdateOutcome::Skipped;
+        };
+        b
+    } else {
+        downloaded
+    };
+
+    if install_binary_bytes(&cfg.exe_path, &bin_bytes).is_err() {
+        record_error_backoff(&cfg.state_path, now, cfg.interval_secs, prev_state.as_ref());
+        return AutoUpdateOutcome::Skipped;
+    }
+
+    save_update_state(
+        &cfg.state_path,
+        &UpdateState {
+            last_check_unix: now,
+            latest_version: Some(latest_clean.clone()),
+        },
+    );
+
+    AutoUpdateOutcome::Updated {
+        from: cfg.current_version,
+        to: latest_clean,
+    }
+}
+
+pub struct AutoUpdateHandle {
+    handle: tokio::task::JoinHandle<AutoUpdateOutcome>,
+    current_version: String,
+}
+
+impl AutoUpdateHandle {
+    /// Recoge el resultado si ya termino (o en un margen minimo de 150ms) y avisa por stderr
+    /// solo si es una terminal interactiva. Nunca bloquea la salida ni escribe en stdout.
+    pub async fn finish_and_notify(self) {
+        let outcome = if self.handle.is_finished() {
+            self.handle.await.ok()
+        } else {
+            match tokio::time::timeout(Duration::from_millis(150), self.handle).await {
+                Ok(res) => res.ok(),
+                Err(_) => None,
+            }
+        };
+
+        let Some(outcome) = outcome else {
+            return;
+        };
+        if !io::stderr().is_terminal() {
+            return;
+        }
+        match outcome {
+            AutoUpdateOutcome::Updated { to, .. } => {
+                eprintln!(
+                    "\n  {GREEN}✔ drop actualizado en segundo plano a v{to}{RESET} {DIM}(se usará en el próximo comando){RESET}"
+                );
+            }
+            AutoUpdateOutcome::ManagedAvailable { version, manager } => {
+                eprintln!(
+                    "\n  {CYAN}ℹ Nueva versión disponible: v{version}{RESET} {DIM}(actual: v{}). Actualiza con:{RESET} {CYAN}{}{RESET}",
+                    self.current_version, manager.upgrade
+                );
+            }
+            AutoUpdateOutcome::UpToDate | AutoUpdateOutcome::Skipped => {}
+        }
+    }
+}
+
+/// Lanza el auto-update en segundo plano si aplica (instalado o gestor de paquetes, no en CI,
+/// no desactivado por `DROP_NO_AUTO_UPDATE`, y ha pasado el intervalo de 24h).
+pub fn spawn_auto_update(
+    exe_path: &Path,
+    manager: Option<PackageManager>,
+    repo: &str,
+    current_version: &str,
+    public_key: &str,
+) -> Option<AutoUpdateHandle> {
+    if auto_update_disabled_by_env() {
+        return None;
+    }
+    if manager.is_none() && !is_installed(exe_path) {
+        return None;
+    }
+
+    let state_path = state_file_path();
+    let interval_secs = auto_update_interval_secs();
+    let prev = load_update_state(&state_path);
+    if !should_check_now(prev.as_ref(), now_unix_secs(), interval_secs) {
+        return None;
+    }
+
+    let github_api = env::var("DROP_GITHUB_API")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://api.github.com".to_string());
+
+    let cfg = AutoUpdateConfig {
+        exe_path: exe_path.to_path_buf(),
+        state_path,
+        github_api,
+        repo: repo.to_string(),
+        current_version: current_version.to_string(),
+        public_key: public_key.to_string(),
+        manager,
+        interval_secs,
+    };
+
+    let current = current_version.to_string();
+    let handle = tokio::spawn(run_auto_update_once(cfg));
+    Some(AutoUpdateHandle {
+        handle,
+        current_version: current,
+    })
 }

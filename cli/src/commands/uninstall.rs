@@ -16,6 +16,7 @@ pub fn run_uninstall() -> i32 {
     let dir = install_dir();
     let target = dir.join(bin_name());
     cleanup_old_binary(&target);
+    crate::commands::update::cleanup_state_files();
 
     let dir_str = dir.to_string_lossy().to_string();
     let skip_sys_path = env::var_os("DROP_INSTALL_DIR").is_some_and(|v| !v.is_empty());

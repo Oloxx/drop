@@ -513,74 +513,70 @@ pub async fn run_cli(argv: Vec<String>) {
         }
     }
 
-    if clean_args.is_empty() {
-        if options.text.is_some() || options.clipboard {
-            let code = crate::commands::send::run_send(&[], options).await;
-            if code != 0 {
-                process::exit(code);
-            }
-            return;
-        }
+    if clean_args.is_empty() && options.text.is_none() && !options.clipboard {
         die_with_help("Falta la orden, archivo o código.");
     }
 
-    let command = &clean_args[0];
-    let rest = &clean_args[1..];
-    match command.as_str() {
-        "send" => {
-            if rest.is_empty() && options.text.is_none() && !options.clipboard {
-                die_with_help("Falta el archivo o carpeta a enviar (o usa --text / --clipboard).");
-            }
-            let code = crate::commands::send::run_send(rest, options).await;
-            if code != 0 {
-                process::exit(code);
-            }
-        }
-        "recv" | "get" => {
-            if rest.is_empty() {
-                die_with_help("Falta el código para recibir.");
-            }
-            let code = crate::commands::recv::run_recv(&rest.join(" "), options).await;
-            if code != 0 {
-                process::exit(code);
-            }
-        }
-        "speed" | "test" => {
-            let code = if rest.is_empty() {
-                crate::commands::speed::run_speed_host(options).await
-            } else {
-                crate::commands::speed::run_speed_guest(&rest.join(" "), options).await
-            };
-            if code != 0 {
-                process::exit(code);
-            }
-        }
-        "serve" => {
-            if !rest.is_empty() {
-                die_with_help(&format!("Argumento inesperado en serve: {}", rest.join(" ")));
-            }
-            let port = if options.port_explicit {
-                options.port
-            } else {
-                3000
-            };
-            let code = crate::commands::serve::run_serve(options.host.as_deref(), port).await;
-            if code != 0 {
-                process::exit(code);
-            }
-        }
-        _ => {
-            if Path::new(command).exists() {
-                let code = crate::commands::send::run_send(&clean_args, options).await;
-                if code != 0 {
-                    process::exit(code);
+    // Auto-actualizacion silenciosa en segundo plano (max. cada 24h, sin bloquear ni ensuciar stdout).
+    let auto_update = crate::commands::update::spawn_auto_update(
+        &exec_path,
+        manager,
+        crate::verifyweb::DEFAULT_REPO,
+        VERSION,
+        PUBLIC_KEY,
+    );
+
+    let code = if clean_args.is_empty() {
+        crate::commands::send::run_send(&[], options).await
+    } else {
+        let command = &clean_args[0];
+        let rest = &clean_args[1..];
+        match command.as_str() {
+            "send" => {
+                if rest.is_empty() && options.text.is_none() && !options.clipboard {
+                    die_with_help("Falta el archivo o carpeta a enviar (o usa --text / --clipboard).");
                 }
-            } else {
-                let code = crate::commands::recv::run_recv(&clean_args.join(" "), options).await;
-                if code != 0 {
-                    process::exit(code);
+                crate::commands::send::run_send(rest, options).await
+            }
+            "recv" | "get" => {
+                if rest.is_empty() {
+                    die_with_help("Falta el código para recibir.");
+                }
+                crate::commands::recv::run_recv(&rest.join(" "), options).await
+            }
+            "speed" | "test" => {
+                if rest.is_empty() {
+                    crate::commands::speed::run_speed_host(options).await
+                } else {
+                    crate::commands::speed::run_speed_guest(&rest.join(" "), options).await
+                }
+            }
+            "serve" => {
+                if !rest.is_empty() {
+                    die_with_help(&format!("Argumento inesperado en serve: {}", rest.join(" ")));
+                }
+                let port = if options.port_explicit {
+                    options.port
+                } else {
+                    3000
+                };
+                crate::commands::serve::run_serve(options.host.as_deref(), port).await
+            }
+            _ => {
+                if Path::new(command).exists() {
+                    crate::commands::send::run_send(&clean_args, options).await
+                } else {
+                    crate::commands::recv::run_recv(&clean_args.join(" "), options).await
                 }
             }
         }
+    };
+
+    if let Some(handle) = auto_update {
+        handle.finish_and_notify().await;
+    }
+
+    if code != 0 {
+        process::exit(code);
     }
 }

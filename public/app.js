@@ -2574,7 +2574,25 @@ function cliReleaseUrl(version, assetName) {
   return `${CLI_RELEASE_BASE}/latest`;
 }
 
-function renderCliDownload(detected, version) {
+function cliInstallOrigin() {
+  if (location.protocol === 'http:' || location.protocol === 'https:') {
+    return location.origin;
+  }
+  return 'https://drop.oloxx.dev';
+}
+
+function cliInstallCommand(platformId, shell) {
+  const origin = cliInstallOrigin();
+  if (platformId === 'windows-x64') {
+    if (shell === 'cmd') {
+      return `curl -fsSL ${origin}/install.cmd -o "%TEMP%\\drop-install.cmd" && "%TEMP%\\drop-install.cmd" && del "%TEMP%\\drop-install.cmd"`;
+    }
+    return `irm ${origin}/install.ps1 | iex`;
+  }
+  return `curl -fsSL ${origin}/install.sh | sh`;
+}
+
+function renderCliDownload(detected, version, winShell = 'ps') {
   const box = $('#cli-box');
   if (!box) return;
   const verEl = $('#cli-ver');
@@ -2584,6 +2602,9 @@ function renderCliDownload(detected, version) {
   const all = $('#cli-all');
   const list = $('#cli-list');
   const relLink = $('#cli-rel-link');
+  const cmdWrap = $('#cli-cmd-wrap');
+  const cmdTabs = $('#cli-cmd-tabs');
+  const cmdEl = $('#cli-cmd');
 
   if (version) {
     verEl.textContent = `v${version}`;
@@ -2607,10 +2628,21 @@ function renderCliDownload(detected, version) {
     note.textContent = target.hint(file, detected.arch);
     note.hidden = false;
     toggle.hidden = false;
+    if (cmdWrap && cmdEl) {
+      const isWin = target.id === 'windows-x64';
+      cmdWrap.hidden = false;
+      if (cmdTabs) cmdTabs.hidden = !isWin;
+      cmdEl.textContent = cliInstallCommand(target.id, winShell);
+      const tabPs = $('#cli-tab-ps');
+      const tabCmd = $('#cli-tab-cmd');
+      if (tabPs) tabPs.setAttribute('aria-selected', String(winShell !== 'cmd'));
+      if (tabCmd) tabCmd.setAttribute('aria-selected', String(winShell === 'cmd'));
+    }
   } else {
     dl.hidden = true;
     toggle.hidden = true;
     all.hidden = false;
+    if (cmdWrap) cmdWrap.hidden = true;
     note.textContent = detected.osName
       ? `detected ${detected.osName} · desktop cli binaries are for windows, macos and linux:`
       : 'select a platform executable below:';
@@ -2643,8 +2675,29 @@ function initCliDownload() {
   if (!box) return;
   let detected = detectCliPlatform();
   let version = null;
+  let winShell = 'ps';
 
-  renderCliDownload(detected, version);
+  renderCliDownload(detected, version, winShell);
+
+  for (const tab of [$('#cli-tab-ps'), $('#cli-tab-cmd')]) {
+    if (!tab) continue;
+    tab.onclick = () => {
+      winShell = tab.dataset.shell === 'cmd' ? 'cmd' : 'ps';
+      renderCliDownload(detected, version, winShell);
+    };
+  }
+
+  const copyBtn = $('#cli-copy');
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      const text = $('#cli-cmd')?.textContent || '';
+      if (!text) return;
+      navigator.clipboard?.writeText(text).then(() => {
+        copyBtn.textContent = 'copied';
+        setTimeout(() => { copyBtn.textContent = 'copy'; }, 1500);
+      }).catch(() => {});
+    };
+  }
 
   $('#cli-all-toggle').onclick = () => {
     const all = $('#cli-all');
@@ -2658,7 +2711,7 @@ function initCliDownload() {
     navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness', 'platform'])
       .then((he) => {
         detected = detectCliPlatform(navigator, he);
-        renderCliDownload(detected, version);
+        renderCliDownload(detected, version, winShell);
       })
       .catch(() => {});
   }
@@ -2669,7 +2722,7 @@ function initCliDownload() {
       const v = typeof data?.version === 'string' ? data.version.trim() : '';
       if (/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)) {
         version = v;
-        renderCliDownload(detected, version);
+        renderCliDownload(detected, version, winShell);
       }
     })
     .catch(() => {});

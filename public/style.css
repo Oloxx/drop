@@ -682,6 +682,58 @@ button,
   font-variant-numeric: tabular-nums;
 }
 .cli-actions { width: 100%; }
+.cli-cmd-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+  width: 100%;
+}
+.cli-cmd-wrap[hidden] { display: none; }
+.cli-cmd-tabs {
+  display: flex;
+  gap: .35rem;
+}
+.cli-cmd-tabs[hidden] { display: none; }
+.cli-tab {
+  padding: .2rem .55rem;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: .72rem;
+  cursor: pointer;
+}
+.cli-tab[aria-selected="true"] {
+  color: var(--fg);
+  background: var(--sunken);
+  border-color: var(--fg);
+}
+.cli-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  width: 100%;
+  padding: .45rem .6rem;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.cli-cmd {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  font-size: .76rem;
+  color: var(--fg);
+  background: transparent;
+  padding: 0;
+}
+.cli-copy {
+  flex: none;
+  padding: .24rem .6rem;
+  font-size: .74rem;
+}
 .cli-all {
   display: flex;
   flex-direction: column;
