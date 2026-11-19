@@ -22,9 +22,9 @@ use drop::mdns::{
     encode_dns_name, is_drop_ptr_query, listen_mdns_on, parse_mdns_response, start_mdns_on,
 };
 use drop::natpmp::{
-    NatPmpMapResponse, build_map_tcp_request, build_public_address_request,
-    parse_bsd_default_route, parse_map_tcp_response, parse_proc_net_route,
-    parse_public_address_response,
+    NatPmpMapResponse, build_map_tcp_request, build_pcp_map_tcp_request,
+    build_public_address_request, parse_bsd_default_route, parse_map_tcp_response,
+    parse_pcp_map_tcp_response, parse_proc_net_route, parse_public_address_response,
 };
 use drop::pkgmgr::package_manager_of;
 use drop::shared::protocol::FileEntry;
@@ -1037,4 +1037,124 @@ async fn test_mdns_multicast_roundtrip_and_graceful_degradation() {
         responder.stop();
     }
     srv.abort();
+}
+
+#[test]
+fn test_pcp_packet_builders_and_parsers() {
+    let nonce = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    let req = build_pcp_map_tcp_request(Ipv4Addr::new(192, 168, 1, 50), &nonce, 4444, 4444, 7200);
+    assert_eq!(req.len(), 60);
+    assert_eq!(req[0], 2); // PCP version 2
+    assert_eq!(req[1], 1); // Opcode MAP
+    assert_eq!(u32::from_be_bytes([req[4], req[5], req[6], req[7]]), 7200);
+    assert_eq!(&req[18..24], &[0xff, 0xff, 192, 168, 1, 50]);
+    assert_eq!(&req[24..36], &nonce);
+    assert_eq!(req[36], 6); // TCP
+    assert_eq!(u16::from_be_bytes([req[40], req[41]]), 4444);
+    assert_eq!(u16::from_be_bytes([req[42], req[43]]), 4444);
+
+    let mut resp = [0u8; 60];
+    resp[0] = 2;
+    resp[1] = 0x81; // Response MAP
+    resp[3] = 0; // SUCCESS
+    resp[4..8].copy_from_slice(&3600u32.to_be_bytes());
+    resp[24..36].copy_from_slice(&nonce);
+    resp[36] = 6;
+    resp[40..42].copy_from_slice(&4444u16.to_be_bytes());
+    resp[42..44].copy_from_slice(&54444u16.to_be_bytes());
+    resp[54..60].copy_from_slice(&[0xff, 0xff, 198, 51, 100, 99]);
+
+    let parsed = parse_pcp_map_tcp_response(&resp, &nonce, 4444).unwrap();
+    assert_eq!(parsed.internal_port, 4444);
+    assert_eq!(parsed.external_port, 54444);
+    assert_eq!(parsed.lifetime_sec, 3600);
+    assert_eq!(
+        parsed.external_ip,
+        std::net::IpAddr::V4(Ipv4Addr::new(198, 51, 100, 99))
+    );
+
+    // Nonce distinto o código de error deben rechazarse
+    let wrong_nonce = [9u8; 12];
+    assert!(parse_pcp_map_tcp_response(&resp, &wrong_nonce, 4444).is_err());
+    resp[3] = 7; // NO_RESOURCES
+    assert!(parse_pcp_map_tcp_response(&resp, &nonce, 4444).is_err());
+}
+
+#[tokio::test]
+async fn test_pcp_fallback_map_renew_and_unmap() {
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let gw_addr = udp.local_addr().unwrap();
+    let map_calls = Arc::new(AtomicUsize::new(0));
+    let unmap_calls = Arc::new(AtomicUsize::new(0));
+    let map_calls_srv = map_calls.clone();
+    let unmap_calls_srv = unmap_calls.clone();
+
+    let pcp_srv = tokio::spawn(async move {
+        let mut buf = [0u8; 128];
+        loop {
+            let (n, peer) = match udp.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                Err(_) => break,
+            };
+            // Rechaza NAT-PMP v0 con UNSUPP_VERSION (código 1) como un router solo-PCP.
+            if n >= 2 && buf[0] == 0 {
+                let err_resp = [0u8, buf[1] | 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+                let _ = udp.send_to(&err_resp, peer).await;
+                continue;
+            }
+            if n >= 60 && buf[0] == 2 && buf[1] == 1 {
+                let lifetime = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+                let internal = u16::from_be_bytes([buf[40], buf[41]]);
+                let suggested = u16::from_be_bytes([buf[42], buf[43]]);
+                let mut resp = [0u8; 60];
+                resp[0] = 2;
+                resp[1] = 0x81;
+                resp[3] = 0;
+                resp[24..36].copy_from_slice(&buf[24..36]);
+                resp[36] = 6;
+                resp[40..42].copy_from_slice(&internal.to_be_bytes());
+                resp[54..60].copy_from_slice(&[0xff, 0xff, 203, 0, 113, 88]);
+                if lifetime == 0 {
+                    unmap_calls_srv.fetch_add(1, Ordering::SeqCst);
+                    resp[4..8].copy_from_slice(&0u32.to_be_bytes());
+                    resp[42..44].copy_from_slice(&0u16.to_be_bytes());
+                } else {
+                    map_calls_srv.fetch_add(1, Ordering::SeqCst);
+                    let assigned = if suggested != 0 { suggested } else { 52000 };
+                    resp[4..8].copy_from_slice(&3600u32.to_be_bytes());
+                    resp[42..44].copy_from_slice(&assigned.to_be_bytes());
+                }
+                let _ = udp.send_to(&resp, peer).await;
+            }
+        }
+    });
+
+    let out = map_port(
+        6100,
+        Some(6100),
+        MapPortOptions {
+            natpmp_gateway: Some(gw_addr),
+            auto_renew: false,
+            discover_timeout_ms: 1500,
+            ..Default::default()
+        },
+    )
+    .await;
+    let mapping = match out {
+        MapOutcome::Mapped(m) => m,
+        MapOutcome::Failed(res) => panic!("PCP fallback failed: {:?}", res.reason),
+    };
+    assert_eq!(mapping.protocol_label(), "PCP");
+    assert_eq!(mapping.external_port, 6100);
+    assert_eq!(mapping.public_ip.as_deref(), Some("203.0.113.88"));
+    assert_eq!(map_calls.load(Ordering::SeqCst), 1);
+
+    assert!(mapping.renew().await);
+    assert_eq!(map_calls.load(Ordering::SeqCst), 2);
+
+    mapping.unmap().await;
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    assert_eq!(unmap_calls.load(Ordering::SeqCst), 1);
+    pcp_srv.abort();
 }

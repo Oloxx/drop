@@ -1,12 +1,13 @@
-// Cliente NAT-PMP (RFC 6886) para mapeo automático de puertos TCP cuando UPnP IGD no responde.
+// Cliente NAT-PMP (RFC 6886) y PCP (RFC 6887) para mapeo automático de puertos TCP cuando UPnP IGD no responde.
 
 use std::collections::HashSet;
 use std::env;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
 #[cfg(windows)]
 use if_addrs::{IfAddr, get_if_addrs};
+use rand::RngCore;
 use tokio::net::UdpSocket;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -21,6 +22,12 @@ const RESP_PUBLIC_ADDRESS: u8 = 128 + OP_PUBLIC_ADDRESS;
 const RESP_MAP_TCP: u8 = 128 + OP_MAP_TCP;
 const RESULT_OK: u16 = 0;
 
+const PCP_VERSION: u8 = 2;
+const PCP_OP_MAP: u8 = 1;
+const PCP_RESP_MAP: u8 = 0x80 | PCP_OP_MAP;
+const PCP_PROTO_TCP: u8 = 6;
+const PCP_RESULT_OK: u8 = 0;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NatPmpMapResponse {
     pub internal_port: u16,
@@ -33,6 +40,101 @@ pub struct NatPmpRouter {
     pub gateway: SocketAddr,
     pub public_ip: Ipv4Addr,
     pub client_lan_ip: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PcpMapResponse {
+    pub internal_port: u16,
+    pub external_port: u16,
+    pub external_ip: IpAddr,
+    pub lifetime_sec: u32,
+    pub nonce: [u8; 12],
+}
+
+#[derive(Debug, Clone)]
+pub struct PcpMapped {
+    pub gateway: SocketAddr,
+    pub client_lan_ip: Ipv4Addr,
+    pub response: PcpMapResponse,
+}
+
+fn ipv4_to_pcp_bytes(ip: Ipv4Addr) -> [u8; 16] {
+    let o = ip.octets();
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, o[0], o[1], o[2], o[3]]
+}
+
+fn pcp_bytes_to_ip(raw: &[u8]) -> Option<IpAddr> {
+    if raw.len() != 16 {
+        return None;
+    }
+    if raw[..10] == [0; 10] && raw[10] == 0xff && raw[11] == 0xff {
+        return Some(IpAddr::V4(Ipv4Addr::new(raw[12], raw[13], raw[14], raw[15])));
+    }
+    let mut octets = [0u8; 16];
+    octets.copy_from_slice(raw);
+    Some(IpAddr::V6(Ipv6Addr::from(octets)))
+}
+
+pub fn build_pcp_map_tcp_request(
+    client_ip: Ipv4Addr,
+    nonce: &[u8; 12],
+    internal_port: u16,
+    suggested_external_port: u16,
+    lifetime_sec: u32,
+) -> [u8; 60] {
+    let mut pkt = [0u8; 60];
+    pkt[0] = PCP_VERSION;
+    pkt[1] = PCP_OP_MAP;
+    pkt[4..8].copy_from_slice(&lifetime_sec.to_be_bytes());
+    pkt[8..24].copy_from_slice(&ipv4_to_pcp_bytes(client_ip));
+    pkt[24..36].copy_from_slice(nonce);
+    pkt[36] = PCP_PROTO_TCP;
+    pkt[40..42].copy_from_slice(&internal_port.to_be_bytes());
+    pkt[42..44].copy_from_slice(&suggested_external_port.to_be_bytes());
+    pkt[44..60].copy_from_slice(&ipv4_to_pcp_bytes(Ipv4Addr::UNSPECIFIED));
+    pkt
+}
+
+pub fn parse_pcp_map_tcp_response(
+    buf: &[u8],
+    expected_nonce: &[u8; 12],
+    expected_internal_port: u16,
+) -> Result<PcpMapResponse, String> {
+    if buf.len() < 60 {
+        return Err("Respuesta PCP MAP truncada".to_string());
+    }
+    if buf[0] != PCP_VERSION || buf[1] != PCP_RESP_MAP {
+        return Err("Cabecera PCP inválida en mapeo TCP".to_string());
+    }
+    let code = buf[3];
+    if code != PCP_RESULT_OK {
+        return Err(format!("PCP devolvió código de error {code}"));
+    }
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&buf[24..36]);
+    if &nonce != expected_nonce {
+        return Err("Nonce PCP no coincide con la petición".to_string());
+    }
+    if buf[36] != PCP_PROTO_TCP {
+        return Err(format!("Protocolo PCP inesperado: {}", buf[36]));
+    }
+    let internal_port = u16::from_be_bytes([buf[40], buf[41]]);
+    if internal_port != expected_internal_port {
+        return Err(format!(
+            "PCP devolvió puerto interno {internal_port} distinto de {expected_internal_port}"
+        ));
+    }
+    let external_port = u16::from_be_bytes([buf[42], buf[43]]);
+    let lifetime_sec = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    let external_ip =
+        pcp_bytes_to_ip(&buf[44..60]).ok_or_else(|| "IP externa PCP inválida".to_string())?;
+    Ok(PcpMapResponse {
+        internal_port,
+        external_port,
+        external_ip,
+        lifetime_sec,
+        nonce,
+    })
 }
 
 pub fn build_public_address_request() -> [u8; 2] {
@@ -202,6 +304,29 @@ pub fn has_explicit_gateway_override() -> bool {
         .unwrap_or(false)
 }
 
+/// Devuelve las IPs de puerta de enlace por defecto detectadas en el SO (con respaldo `.1`).
+pub fn discover_gateway_ips() -> Vec<Ipv4Addr> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for gw in os_default_gateways() {
+        if seen.insert(gw) {
+            out.push(gw);
+        }
+    }
+    if out.is_empty() {
+        for local_ip in get_local_ips() {
+            if let Ok(v4) = local_ip.parse::<Ipv4Addr>() {
+                let o = v4.octets();
+                let guess = Ipv4Addr::new(o[0], o[1], o[2], 1);
+                if guess != v4 && seen.insert(guess) {
+                    out.push(guess);
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn discover_gateway_addrs() -> Vec<SocketAddr> {
     if let Ok(raw) = env::var("DROP_NATPMP_GATEWAY")
         && !raw.trim().is_empty()
@@ -221,25 +346,10 @@ pub fn discover_gateway_addrs() -> Vec<SocketAddr> {
         return out;
     }
 
-    let mut seen = HashSet::new();
-    let mut addrs = Vec::new();
-    for gw in os_default_gateways() {
-        if seen.insert(gw) {
-            addrs.push(SocketAddr::V4(SocketAddrV4::new(gw, NATPMP_PORT)));
-        }
-    }
-    if addrs.is_empty() {
-        for local_ip in get_local_ips() {
-            if let Ok(v4) = local_ip.parse::<Ipv4Addr>() {
-                let o = v4.octets();
-                let guess = Ipv4Addr::new(o[0], o[1], o[2], 1);
-                if guess != v4 && seen.insert(guess) {
-                    addrs.push(SocketAddr::V4(SocketAddrV4::new(guess, NATPMP_PORT)));
-                }
-            }
-        }
-    }
-    addrs
+    discover_gateway_ips()
+        .into_iter()
+        .map(|gw| SocketAddr::V4(SocketAddrV4::new(gw, NATPMP_PORT)))
+        .collect()
 }
 
 async fn natpmp_exchange(
@@ -340,5 +450,156 @@ pub fn unmap_natpmp_sync(gateway: SocketAddr, internal_port: u16) -> bool {
         return false;
     }
     let pkt = build_map_tcp_request(internal_port, 0, 0);
+    sock.send(&pkt).is_ok()
+}
+
+pub async fn map_pcp_port(
+    gateway: SocketAddr,
+    client_ip: Ipv4Addr,
+    nonce: &[u8; 12],
+    internal_port: u16,
+    suggested_external_port: u16,
+    lifetime_sec: u32,
+    timeout_ms: u64,
+) -> Result<PcpMapResponse, String> {
+    let req = build_pcp_map_tcp_request(
+        client_ip,
+        nonce,
+        internal_port,
+        suggested_external_port,
+        lifetime_sec,
+    );
+    let sock = UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|e| e.to_string())?;
+    sock.connect(gateway).await.map_err(|e| e.to_string())?;
+    let per_try = (timeout_ms / 2).clamp(150, 1000);
+    let mut buf = [0u8; 128];
+
+    for _ in 0..2 {
+        sock.send(&req).await.map_err(|e| e.to_string())?;
+        match timeout(Duration::from_millis(per_try), sock.recv(&mut buf)).await {
+            Ok(Ok(n)) => return parse_pcp_map_tcp_response(&buf[..n], nonce, internal_port),
+            Ok(Err(e)) => return Err(format!("Error PCP en {gateway}: {e}")),
+            Err(_) => continue,
+        }
+    }
+    Err(format!("Sin respuesta PCP de {gateway}"))
+}
+
+async fn probe_pcp_gateways(
+    gateways: Vec<SocketAddr>,
+    internal_port: u16,
+    suggested_external_port: u16,
+    lifetime_sec: u32,
+    timeout_ms: u64,
+) -> Option<PcpMapped> {
+    if gateways.is_empty() {
+        return None;
+    }
+
+    let mut set = JoinSet::new();
+    for gw in gateways {
+        set.spawn(async move {
+            let sock = UdpSocket::bind("0.0.0.0:0").await.ok()?;
+            sock.connect(gw).await.ok()?;
+            let IpAddr::V4(client_ip) = sock.local_addr().ok()?.ip() else {
+                return None;
+            };
+            let mut nonce = [0u8; 12];
+            rand::rngs::OsRng.fill_bytes(&mut nonce);
+            let mut res = map_pcp_port(
+                gw,
+                client_ip,
+                &nonce,
+                internal_port,
+                suggested_external_port,
+                lifetime_sec,
+                timeout_ms,
+            )
+            .await;
+            if suggested_external_port != 0 && !matches!(res, Ok(ref m) if m.external_port != 0) {
+                res = map_pcp_port(gw, client_ip, &nonce, internal_port, 0, lifetime_sec, timeout_ms)
+                    .await;
+            }
+            let response = res.ok()?;
+            if response.external_port == 0 {
+                return None;
+            }
+            Some(PcpMapped {
+                gateway: gw,
+                client_lan_ip: client_ip,
+                response,
+            })
+        });
+    }
+
+    let found = timeout(Duration::from_millis(timeout_ms), async {
+        while let Some(res) = set.join_next().await {
+            if let Ok(Some(mapped)) = res {
+                return Some(mapped);
+            }
+        }
+        None
+    })
+    .await
+    .unwrap_or(None);
+
+    set.abort_all();
+    found
+}
+
+pub async fn probe_and_map_pcp_on(
+    gateway: SocketAddr,
+    internal_port: u16,
+    suggested_external_port: u16,
+    lifetime_sec: u32,
+    timeout_ms: u64,
+) -> Option<PcpMapped> {
+    probe_pcp_gateways(
+        vec![gateway],
+        internal_port,
+        suggested_external_port,
+        lifetime_sec,
+        timeout_ms,
+    )
+    .await
+}
+
+pub async fn probe_and_map_pcp(
+    internal_port: u16,
+    suggested_external_port: u16,
+    lifetime_sec: u32,
+    timeout_ms: u64,
+) -> Option<PcpMapped> {
+    if env::var_os("DROP_NO_UPNP").is_some_and(|v| !v.is_empty())
+        || env::var_os("DROP_NO_NATPMP").is_some_and(|v| !v.is_empty())
+    {
+        return None;
+    }
+    probe_pcp_gateways(
+        discover_gateway_addrs(),
+        internal_port,
+        suggested_external_port,
+        lifetime_sec,
+        timeout_ms,
+    )
+    .await
+}
+
+/// Borrado síncrono rápido de un mapeo PCP (`lifetime = 0`) para señales / Drop.
+pub fn unmap_pcp_sync(
+    gateway: SocketAddr,
+    client_ip: Ipv4Addr,
+    nonce: &[u8; 12],
+    internal_port: u16,
+) -> bool {
+    let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+        return false;
+    };
+    if sock.connect(gateway).is_err() {
+        return false;
+    }
+    let pkt = build_pcp_map_tcp_request(client_ip, nonce, internal_port, 0, 0);
     sock.send(&pkt).is_ok()
 }

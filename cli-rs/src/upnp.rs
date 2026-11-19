@@ -1,8 +1,8 @@
-// Modulo UPnP (IGD) y respaldo NAT-PMP (RFC 6886) para mapeo automatico de puertos TCP en routers residenciales.
+// Modulo UPnP (IGD) y respaldo NAT-PMP (RFC 6886) / PCP (RFC 6887) para mapeo automatico de puertos TCP en routers residenciales.
 
 use std::collections::HashSet;
 use std::env;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,13 +15,15 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::timeout;
+use tokio::time::{interval, timeout};
 use url::Url;
 
 use crate::discovery::get_local_ips;
 use crate::natpmp::{
-    NatPmpRouter, build_map_tcp_request, has_explicit_gateway_override, map_natpmp_port,
-    probe_natpmp, probe_natpmp_on, unmap_natpmp_sync,
+    NatPmpRouter, PcpMapped, build_map_tcp_request, build_pcp_map_tcp_request,
+    discover_gateway_ips, has_explicit_gateway_override, map_natpmp_port, map_pcp_port,
+    probe_and_map_pcp, probe_and_map_pcp_on, probe_natpmp, probe_natpmp_on, unmap_natpmp_sync,
+    unmap_pcp_sync,
 };
 
 #[derive(Debug, Clone)]
@@ -55,6 +57,13 @@ enum MappingBackend {
         internal_port: u16,
         lease_sec: u32,
     },
+    Pcp {
+        gateway: SocketAddr,
+        client_ip: Ipv4Addr,
+        nonce: [u8; 12],
+        internal_port: u16,
+        lease_sec: u32,
+    },
 }
 
 pub struct UpnpMapping {
@@ -72,6 +81,7 @@ impl UpnpMapping {
         match self.backend {
             MappingBackend::Upnp { .. } => "UPnP",
             MappingBackend::NatPmp { .. } => "NAT-PMP",
+            MappingBackend::Pcp { .. } => "PCP",
         }
     }
 
@@ -127,6 +137,23 @@ impl UpnpMapping {
             } => map_natpmp_port(*gateway, *internal_port, self.external_port, *lease_sec, 1500)
                 .await
                 .is_ok(),
+            MappingBackend::Pcp {
+                gateway,
+                client_ip,
+                nonce,
+                internal_port,
+                lease_sec,
+            } => map_pcp_port(
+                *gateway,
+                *client_ip,
+                nonce,
+                *internal_port,
+                self.external_port,
+                *lease_sec,
+                1500,
+            )
+            .await
+            .is_ok(),
         }
     }
 
@@ -169,6 +196,20 @@ impl UpnpMapping {
                     let _ = sock.send(&pkt).await;
                 }
             }
+            MappingBackend::Pcp {
+                gateway,
+                client_ip,
+                nonce,
+                internal_port,
+                ..
+            } => {
+                if let Ok(sock) = UdpSocket::bind("0.0.0.0:0").await
+                    && sock.connect(*gateway).await.is_ok()
+                {
+                    let pkt = build_pcp_map_tcp_request(*client_ip, nonce, *internal_port, 0, 0);
+                    let _ = sock.send(&pkt).await;
+                }
+            }
         }
     }
 
@@ -192,6 +233,15 @@ impl UpnpMapping {
                 ..
             } => {
                 unmap_natpmp_sync(*gateway, *internal_port);
+            }
+            MappingBackend::Pcp {
+                gateway,
+                client_ip,
+                nonce,
+                internal_port,
+                ..
+            } => {
+                unmap_pcp_sync(*gateway, *client_ip, nonce, *internal_port);
             }
         }
     }
@@ -370,10 +420,13 @@ pub async fn discover_router(timeout_ms: u64) -> Option<UpnpRouter> {
 
     let queries = [
         "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n",
+        "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:2\r\n\r\n",
         "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:schemas-upnp-org:service:WANIPConnection:1\r\n\r\n",
+        "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:schemas-upnp-org:service:WANPPPConnection:1\r\n\r\n",
     ];
     let loc_re = Regex::new(r"(?im)^LOCATION:\s*([^\r\n]+)").unwrap();
     let client = Client::builder().timeout(Duration::from_secs(3)).build().ok()?;
+    let os_gateways = discover_gateway_ips();
 
     let mut set = JoinSet::new();
     for iface_ip in local_ips {
@@ -382,8 +435,7 @@ pub async fn discover_router(timeout_ms: u64) -> Option<UpnpRouter> {
         };
         let loc_re = loc_re.clone();
         let client = client.clone();
-        let q0 = queries[0];
-        let q1 = queries[1];
+        let os_gws = os_gateways.clone();
 
         set.spawn(async move {
             let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).ok()?;
@@ -397,36 +449,80 @@ pub async fn discover_router(timeout_ms: u64) -> Option<UpnpRouter> {
 
             let mcast: SocketAddr = "239.255.255.250:1900".parse().unwrap();
             let octs = v4_iface.octets();
-            let gw = SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(octs[0], octs[1], octs[2], 1),
-                1900,
-            ));
-
-            for q in [q0, q1] {
-                let _ = udp.send_to(q.as_bytes(), mcast).await;
-                let _ = udp.send_to(q.as_bytes(), gw).await;
+            let mut unicast_targets: Vec<SocketAddr> = Vec::new();
+            let mut seen_gw = HashSet::new();
+            for gw_ip in os_gws {
+                // Solo enviamos unicast SSDP a gateways en el mismo /24 o si coincide el prefijo local.
+                let g = gw_ip.octets();
+                if g[0] == octs[0] && g[1] == octs[1] && g[2] == octs[2] && seen_gw.insert(gw_ip) {
+                    unicast_targets.push(SocketAddr::V4(SocketAddrV4::new(gw_ip, 1900)));
+                }
+            }
+            let guessed_gw = Ipv4Addr::new(octs[0], octs[1], octs[2], 1);
+            if guessed_gw != v4_iface && seen_gw.insert(guessed_gw) {
+                unicast_targets.push(SocketAddr::V4(SocketAddrV4::new(guessed_gw, 1900)));
             }
 
+            async fn send_ssdp_burst(
+                udp_ref: &UdpSocket,
+                queries: &[&str],
+                mcast: SocketAddr,
+                targets: &[SocketAddr],
+            ) {
+                for q in queries {
+                    let _ = udp_ref.send_to(q.as_bytes(), mcast).await;
+                    for &gw in targets {
+                        let _ = udp_ref.send_to(q.as_bytes(), gw).await;
+                    }
+                }
+            }
+
+            send_ssdp_burst(&udp, &queries, mcast, &unicast_targets).await;
+
+            // Reintentamos M-SEARCH hasta 2 veces más (750 ms / 1500 ms) para sobrevivir pérdidas UDP en Wi-Fi.
+            let mut retry_tick = interval(Duration::from_millis(750));
+            retry_tick.tick().await; // consume tick inmediato t=0
+            let mut retries_left = 2u8;
+            let mut seen_locations = HashSet::new();
             let mut buf = [0u8; 4096];
+
             loop {
-                let Ok((n, rinfo)) = udp.recv_from(&mut buf).await else {
-                    return None;
-                };
-                let text = String::from_utf8_lossy(&buf[..n]);
-                if let Some(cap) = loc_re.captures(&text) {
-                    let location = cap[1].trim().to_string();
-                    if let Ok(resp) = client.get(&location).send().await
-                        && resp.status().is_success()
-                        && let Ok(xml) = resp.text().await
-                        && let Some((service_type, control_url)) =
-                            parse_description_xml(&xml, &location)
-                    {
-                        return Some(UpnpRouter {
-                            control_url,
-                            service_type,
-                            router_ip: rinfo.ip().to_string(),
-                            client_lan_ip: iface_ip,
-                        });
+                tokio::select! {
+                    _ = retry_tick.tick(), if retries_left > 0 => {
+                        retries_left -= 1;
+                        send_ssdp_burst(&udp, &queries, mcast, &unicast_targets).await;
+                    }
+                    recv = udp.recv_from(&mut buf) => {
+                        let (n, rinfo) = match recv {
+                            Ok(v) => v,
+                            // En Windows, un ICMP Port Unreachable del unicast gw:1900 devuelve
+                            // WSAECONNRESET (ConnectionReset) en el siguiente recv_from; debemos
+                            // ignorarlo para no abortar la escucha de la respuesta multicast.
+                            Err(e) if matches!(e.kind(), ErrorKind::ConnectionReset | ErrorKind::WouldBlock | ErrorKind::Interrupted) => {
+                                continue;
+                            }
+                            Err(_) => return None,
+                        };
+                        let text = String::from_utf8_lossy(&buf[..n]);
+                        if let Some(cap) = loc_re.captures(&text) {
+                            let location = cap[1].trim().to_string();
+                            if !seen_locations.insert(location.clone()) {
+                                continue;
+                            }
+                            if let Ok(resp) = client.get(&location).send().await
+                                && resp.status().is_success()
+                                && let Ok(xml) = resp.text().await
+                                && let Some((service_type, control_url)) =
+                                    parse_description_xml(&xml, &location)
+                            {
+                                return Some(UpnpRouter {
+                                    control_url,
+                                    service_type,
+                                    router_ip: rinfo.ip().to_string(),
+                                    client_lan_ip: iface_ip,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -632,6 +728,52 @@ async fn map_natpmp_via_router(
     MapOutcome::Mapped(mapping)
 }
 
+async fn wrap_pcp_mapping(
+    mapped: PcpMapped,
+    internal_port: u16,
+    options: &MapPortOptions,
+) -> MapOutcome {
+    let requested_lease = if options.lease_sec == 0 {
+        7200
+    } else {
+        options.lease_sec
+    };
+    let effective_lease = if options.lease_sec == 0 {
+        0
+    } else if mapped.response.lifetime_sec > 0 {
+        mapped.response.lifetime_sec
+    } else {
+        requested_lease
+    };
+    let stored_lease = if effective_lease == 0 {
+        requested_lease
+    } else {
+        effective_lease
+    };
+    let public_ip = if mapped.response.external_ip.is_unspecified() {
+        None
+    } else {
+        Some(mapped.response.external_ip.to_string())
+    };
+    let mapping = Arc::new(UpnpMapping {
+        external_port: mapped.response.external_port,
+        public_ip,
+        router_ip: mapped.gateway.ip().to_string(),
+        client_lan_ip: mapped.client_lan_ip.to_string(),
+        backend: MappingBackend::Pcp {
+            gateway: mapped.gateway,
+            client_ip: mapped.client_lan_ip,
+            nonce: mapped.response.nonce,
+            internal_port,
+            lease_sec: stored_lease,
+        },
+        unmapped: Arc::new(AtomicBool::new(false)),
+        renew_task: Mutex::new(None),
+    });
+    spawn_renew_task(&mapping, options.auto_renew, effective_lease).await;
+    MapOutcome::Mapped(mapping)
+}
+
 pub async fn map_port(
     internal_port: u16,
     preferred_external_port: Option<u16>,
@@ -641,38 +783,81 @@ pub async fn map_port(
         return failed_map("UPnP disabled by environment");
     }
 
+    let pcp_lease = if options.lease_sec == 0 {
+        7200
+    } else {
+        options.lease_sec
+    };
+    let pcp_ext = preferred_external_port.unwrap_or(internal_port);
+
     if let Some(router) = options.router.clone() {
         let outcome =
             map_upnp_via_router(router, internal_port, preferred_external_port, &options).await;
         if let MapOutcome::Mapped(_) = outcome {
             return outcome;
         }
-        if let Some(gw) = options.natpmp_gateway
-            && let Some(pmp) = probe_natpmp_on(gw, options.discover_timeout_ms).await
-            && let ok @ MapOutcome::Mapped(_) =
-                map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await
-        {
-            return ok;
+        if let Some(gw) = options.natpmp_gateway {
+            if let Some(pmp) = probe_natpmp_on(gw, options.discover_timeout_ms).await
+                && let ok @ MapOutcome::Mapped(_) =
+                    map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options)
+                        .await
+            {
+                return ok;
+            }
+            if let Some(pcp) = probe_and_map_pcp_on(
+                gw,
+                internal_port,
+                pcp_ext,
+                pcp_lease,
+                options.discover_timeout_ms,
+            )
+            .await
+            {
+                return wrap_pcp_mapping(pcp, internal_port, &options).await;
+            }
         }
         return outcome;
     }
 
     if let Some(gw) = options.natpmp_gateway {
-        return match probe_natpmp_on(gw, options.discover_timeout_ms).await {
-            Some(pmp) => {
+        if let Some(pmp) = probe_natpmp_on(gw, options.discover_timeout_ms).await
+            && let ok @ MapOutcome::Mapped(_) =
                 map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await
-            }
-            None => failed_map("No NAT-PMP router found on configured gateway"),
-        };
+        {
+            return ok;
+        }
+        if let Some(pcp) = probe_and_map_pcp_on(
+            gw,
+            internal_port,
+            pcp_ext,
+            pcp_lease,
+            options.discover_timeout_ms,
+        )
+        .await
+        {
+            return wrap_pcp_mapping(pcp, internal_port, &options).await;
+        }
+        return failed_map("No NAT-PMP/PCP router found on configured gateway");
     }
 
     if has_explicit_gateway_override() {
-        return match probe_natpmp(options.discover_timeout_ms).await {
-            Some(pmp) => {
+        if let Some(pmp) = probe_natpmp(options.discover_timeout_ms).await
+            && let ok @ MapOutcome::Mapped(_) =
                 map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await
-            }
-            None => failed_map("No NAT-PMP router found on DROP_NATPMP_GATEWAY"),
-        };
+        {
+            return ok;
+        }
+        if let Some(pcp) = probe_and_map_pcp(
+            internal_port,
+            pcp_ext,
+            pcp_lease,
+            options.discover_timeout_ms,
+        )
+        .await
+        {
+            return wrap_pcp_mapping(pcp, internal_port, &options).await;
+        }
+        return failed_map("No NAT-PMP/PCP router found on DROP_NATPMP_GATEWAY");
     }
 
     let (upnp_router, mut pmp_router) =
@@ -692,16 +877,34 @@ pub async fn map_port(
                 {
                     return ok;
                 }
+                if let Some(pcp) = probe_and_map_pcp(internal_port, pcp_ext, pcp_lease, 1200).await
+                {
+                    return wrap_pcp_mapping(pcp, internal_port, &options).await;
+                }
                 return failed;
             }
         }
     }
 
-    if let Some(pmp) = pmp_router {
-        return map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await;
+    if let Some(pmp) = pmp_router
+        && let ok @ MapOutcome::Mapped(_) =
+            map_natpmp_via_router(pmp, internal_port, preferred_external_port, &options).await
+    {
+        return ok;
     }
 
-    failed_map("No UPnP or NAT-PMP router found")
+    if let Some(pcp) = probe_and_map_pcp(
+        internal_port,
+        pcp_ext,
+        pcp_lease,
+        options.discover_timeout_ms.min(1500),
+    )
+    .await
+    {
+        return wrap_pcp_mapping(pcp, internal_port, &options).await;
+    }
+
+    failed_map("No UPnP, NAT-PMP or PCP router found")
 }
 
 async fn map_upnp_via_router(

@@ -237,15 +237,37 @@ pub async fn query_stun(server: &StunServer, timeout_ms: u64, ipv6: bool) -> Opt
 
     let fut = async {
         sock.send_to(&req, target_addr).await.ok()?;
+        let mut retry_tick = tokio::time::interval(Duration::from_millis(600));
+        retry_tick.tick().await;
+        let mut retries_left = 2u8;
         let mut buf = [0u8; 1024];
         loop {
-            let (n, _) = sock.recv_from(&mut buf).await.ok()?;
-            if let Some(ep) = parse_binding_response(&buf[..n], Some(&tx_id)) {
-                return Some(StunResult {
-                    ip: ep.ip,
-                    port: ep.port,
-                    server: format!("{}:{}", server.host, server.port),
-                });
+            tokio::select! {
+                _ = retry_tick.tick(), if retries_left > 0 => {
+                    retries_left -= 1;
+                    let _ = sock.send_to(&req, target_addr).await;
+                }
+                recv = sock.recv_from(&mut buf) => {
+                    let (n, _) = match recv {
+                        Ok(v) => v,
+                        Err(e) if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::Interrupted
+                        ) => {
+                            continue;
+                        }
+                        Err(_) => return None,
+                    };
+                    if let Some(ep) = parse_binding_response(&buf[..n], Some(&tx_id)) {
+                        return Some(StunResult {
+                            ip: ep.ip,
+                            port: ep.port,
+                            server: format!("{}:{}", server.host, server.port),
+                        });
+                    }
+                }
             }
         }
     };

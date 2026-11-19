@@ -955,12 +955,25 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
 
                         tokio::spawn(async move {
                             if !force_relay {
-                                if u_slot.lock().await.is_none() {
-                                    let _ = timeout(Duration::from_millis(1500), u_done.notified()).await;
-                                }
-                                if s_slot.lock().await.is_none() {
-                                    let _ = timeout(Duration::from_millis(1500), s_done.notified()).await;
-                                }
+                                // Registramos los waiters antes de consultar los slots para evitar lost-wakeup,
+                                // y esperamos UPnP/NAT-PMP/PCP y STUN en paralelo (hasta 3.5 s).
+                                let wait_upnp = async {
+                                    let notified = u_done.notified();
+                                    tokio::pin!(notified);
+                                    notified.as_mut().enable();
+                                    if u_slot.lock().await.is_none() {
+                                        let _ = timeout(Duration::from_millis(3500), notified).await;
+                                    }
+                                };
+                                let wait_stun = async {
+                                    let notified = s_done.notified();
+                                    tokio::pin!(notified);
+                                    notified.as_mut().enable();
+                                    if s_slot.lock().await.is_none() {
+                                        let _ = timeout(Duration::from_millis(3500), notified).await;
+                                    }
+                                };
+                                tokio::join!(wait_upnp, wait_stun);
                             }
                             let u_res = u_slot.lock().await.clone();
                             let s_res = s_slot.lock().await.clone();

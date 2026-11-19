@@ -211,7 +211,7 @@ async fn attempt_receive(
     if !force_relay && offer.port > 0 && !offer.ips.is_empty() {
         let local_ips = get_candidate_ips();
         let ranked = rank_candidates(&offer.ips, &local_ips);
-        if let Some((stream, ip)) = probe_candidate_ips(&ranked, offer.port, 2500).await {
+        if let Some((stream, ip)) = probe_candidate_ips(&ranked, offer.port, 3500).await {
             client.sender.close_and_wait().await;
             log_out(
                 to_stdout,
