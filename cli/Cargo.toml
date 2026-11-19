@@ -1,6 +1,6 @@
 [package]
 name = "drop"
-version = "0.14.1"
+version = "0.15.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Cliente CLI P2P para enviar y recibir archivos cifrados de extremo a extremo."

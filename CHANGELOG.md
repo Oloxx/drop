@@ -11,6 +11,22 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.15.0] — 2026-11-20
+
+Compatible con la v0.14.x (protocolo 5 sin cambios).
+
+### Añadido
+- **Menú interactivo de configuración inicial y preferencias persistentes (`drop config`, #83):** [`cli/src/config.rs`](cli/src/config.rs) y [`cli/src/commands/config.rs`](cli/src/commands/config.rs) añaden persistencia en `config.json` (sin nuevas dependencias), menú interactivo `drop config`, asistente guiado `drop config init`, subcomandos `show`/`get`/`set`/`unset`/`reset`/`path`, precedencia `CLI > env > config > default` y flags de anulación puntual (`--no-config`, `--no-once`, `--no-yes`, `--qr`, `--no-overwrite`, `--resume`, `--no-relay`, `--no-expire`, `--no-direct-only`, `--limit 0`), además de ofrecer el asistente tras `drop install` y actualizar los autocompletados de shell.
+
+### Seguridad
+- **Verificación obligatoria de `cli-proof` y `peer_gate` antes de aceptar señales en relay (#66):** [`cli/src/commands/send.rs`](cli/src/commands/send.rs) y [`public/app.js`](public/app.js) bloquean `cli-accept`, `cli-retry`, `cli-ack`, `cli-complete` y `cli-error` mientras el invitado no haya completado `cli-proof` (y la aprobación de `peer_gate` en el CLI).
+- **Contenido `--text` y `--clipboard` mantenido exclusivamente en RAM (#67):** [`cli/src/transfer.rs`](cli/src/transfer.rs) y [`cli/src/commands/send.rs`](cli/src/commands/send.rs) sirven textos y portapapeles directamente desde memoria (`SendItem::inline_data`) sin escribir archivos temporales en disco.
+
+### Corregido
+- **Soporte de archivos `> 2 GiB` / `> 4 GiB` en Web (#65):** [`public/shared/protocol.js`](public/shared/protocol.js) y [`public/app.js`](public/app.js) eliminan el truncamiento de 32 bits (`| 0`) en `ack`/`cli-ack`/`resume` y calculan el prefijo SHA-256 por bloques de 2 MiB para evitar OOM al reanudar archivos grandes.
+- **Backpressure y fiabilidad de mensajes de control en relay (#68):** [`cli/src/commands/serve.rs`](cli/src/commands/serve.rs) sustituye la cola acotada única por una cola FIFO que limita solo tramas binarias sin descartar mensajes de control (`cli-complete`, `guest-gone`), y [`server/index.js`](server/index.js) pausa el emisor según `bufferedAmount` y corta receptores atascados al superar el tope máximo.
+- **Robustez TCP, `stdin` y `--stdout` con múltiples archivos (#69):** [`cli/src/transfer.rs`](cli/src/transfer.rs), [`cli/src/commands/send.rs`](cli/src/commands/send.rs) y [`cli/src/commands/recv.rs`](cli/src/commands/recv.rs) añaden timeouts defensivos (60 s) en el handshake/lecturas TCP inactivas, reclaman `stdin` únicamente tras recibir `ready` autenticado y rechazan `--stdout` con más de un archivo de forma uniforme en LAN, TCP directo y Relay.
+
 ## [0.14.1] — 2026-11-19
 
 Compatible con la v0.14.0 (protocolo 5 sin cambios).
