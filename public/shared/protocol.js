@@ -48,3 +48,57 @@ export function pickedFiles(files, count) {
   const valid = files.filter((i) => Number.isInteger(i) && i >= 0 && i < count);
   return [...new Set(valid)].sort((a, b) => a - b);
 }
+
+export const PREFIX_READ_BLOCK = 2 * 1024 * 1024;
+
+/**
+ * Entero seguro no negativo de 53 bits (hasta `Number.MAX_SAFE_INTEGER`).
+ * Evita el truncado a 32 bits con signo (`| 0`) en contadores > 2 GiB.
+ */
+export function safeNonNegInt(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Actualiza un acumulador de bytes confirmados (`ack` / `cli-ack`) sin
+ * truncarlo a 32 bits ni retroceder ante valores fuera de orden o invalidos.
+ */
+export function nextAckBytes(currentAcked, reportedBytes) {
+  const acked = safeNonNegInt(reportedBytes);
+  if (acked === null) return null;
+  const base = safeNonNegInt(currentAcked) ?? 0;
+  return Math.max(base, acked);
+}
+
+/**
+ * Extrae `{ index, offset }` de un mensaje `resume` validando enteros seguros
+ * de 53 bits. Devuelve `null` si el indice es invalido.
+ */
+export function parseResumePoint(msg) {
+  if (!msg || typeof msg !== 'object') return null;
+  const index = msg.index == null ? 0 : safeNonNegInt(msg.index);
+  if (index === null) return null;
+  const offset = msg.offset == null ? 0 : (safeNonNegInt(msg.offset) ?? 0);
+  return { index, offset };
+}
+
+/**
+ * Alimenta `hasher` con `[0, limit)` de `file` en bloques de `blockSize`
+ * (2 MiB por defecto) para no reservar varios GB en RAM al reanudar.
+ * Devuelve `false` si `shouldAbort()` se activa antes o durante la lectura.
+ */
+export async function hashFilePrefix(file, limit, hasher, {
+  blockSize = PREFIX_READ_BLOCK,
+  shouldAbort = null,
+  onBlock = null,
+} = {}) {
+  for (let pos = 0; pos < limit; pos += blockSize) {
+    if (shouldAbort && shouldAbort()) return false;
+    const end = Math.min(pos + blockSize, limit);
+    const buf = await file.slice(pos, end).arrayBuffer();
+    if (shouldAbort && shouldAbort()) return false;
+    hasher.update(buf);
+    if (onBlock) await onBlock(pos, end, limit);
+  }
+  return true;
+}

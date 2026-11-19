@@ -47,7 +47,15 @@
 import { parseCode, randomSecretWords, formatCode, CodeError } from './shared/codes.js';
 import { sasInput, sasWords, formatSas, dtlsFingerprints } from './shared/sas.js';
 import { Sha256, sha256Hex } from './shared/sha256.js';
-import { PROTOCOL_VERSION, pickedFiles } from './shared/protocol.js';
+import {
+  PROTOCOL_VERSION,
+  PREFIX_READ_BLOCK,
+  pickedFiles,
+  safeNonNegInt,
+  nextAckBytes,
+  parseResumePoint,
+  hashFilePrefix,
+} from './shared/protocol.js';
 import { encodeQr, qrToSvg, ECL } from './shared/qr.js';
 import { ZipWriter, zipArchiveName } from './shared/zip.js';
 import { deriveRoomKey, proofFromKey, sasFromKeyBytes, openBox, openerFor, unsealFrame, sealBox, sealFrame, timingSafeEqualStr } from './shared/e2ee.js';
@@ -746,7 +754,12 @@ function onGuestJoined(guestId, name) {
       }
       queueForStart(conn);
     }
-    else if (msg.k === 'ack') { conn.acked = msg.bytes; row.progress(msg.bytes, bytesFor(conn)); }
+    else if (msg.k === 'ack') {
+      const next = nextAckBytes(conn.acked, msg.bytes);
+      if (next === null) return;
+      conn.acked = next;
+      row.progress(conn.acked, bytesFor(conn));
+    }
     else if (msg.k === 'complete') {
       conn.acked = bytesFor(conn); row.file(''); row.finish('delivered');
       alertFinished(label + ' received the files');
@@ -757,8 +770,10 @@ function onGuestJoined(guestId, name) {
     else if (msg.k === 'linked') onLinked(conn);
     // Se le ha caido quien le reenviaba: retomamos nosotros desde donde se quedo.
     else if (msg.k === 'resume') {
+      const point = parseResumePoint(msg);
+      if (!point) return;
       conn.relayed = false;
-      sendAllFiles(conn, msg.index | 0, Math.max(0, msg.offset | 0));
+      sendAllFiles(conn, point.index, point.offset);
     }
   };
 
@@ -929,11 +944,13 @@ async function sendAllFiles(conn, fromIndex = 0, fromOffset = 0) {
 
       const hasher = (accepted && accepted.hasher) || new Sha256();
       if (from > 0 && !accepted && !file.sha256) {
-        const prefixBuf = await file.slice(0, from).arrayBuffer();
-        hasher.update(prefixBuf);
+        const ok = await hashFilePrefix(file, from, hasher, {
+          shouldAbort: () => conn.cancelled || conn.epoch !== epoch || dc.readyState !== 'open',
+        });
+        if (!ok) return;
       }
 
-      const READ_BLOCK = 2 * 1024 * 1024;
+      const READ_BLOCK = PREFIX_READ_BLOCK;
       let offset = from;
       while (offset < file.size) {
         if (conn.cancelled || conn.epoch !== epoch || dc.readyState !== 'open') return;
@@ -1128,12 +1145,15 @@ function onCliSignal(from, data) {
       }
       streamToCli(conn);
       return;
-    case 'cli-ack':
-      conn.acked = Math.max(conn.acked, data.bytes | 0);
+    case 'cli-ack': {
+      const next = nextAckBytes(conn.acked, data.bytes);
+      if (next === null) return;
+      conn.acked = next;
       conn.lastProgress = Date.now();
       wakeCli(conn);
       row.progress(Math.min(conn.acked, conn.total), conn.total);
       return;
+    }
     case 'cli-complete':
       // Solo llega con todo escrito y verificado al otro lado.
       conn.acked = conn.total;
@@ -1189,23 +1209,24 @@ function cliWindow(conn) {
  * el reloj.
  */
 async function verifyPrefixWeb(conn, file, request, keepAlive = null) {
-  const offset = request && request.offset;
-  if (!Number.isInteger(offset) || offset <= 0 || offset > file.size || typeof request.sha256 !== 'string') return null;
+  const offset = safeNonNegInt(request && request.offset);
+  if (!offset || offset > file.size || typeof request.sha256 !== 'string') return null;
   // El archivo entero y su hash ya calculado (se lo mandamos a otro antes): no
   // hay nada que leer. El hasher no hace falta, `file.sha256` manda.
   if (offset === file.size && file.sha256) return file.sha256 === request.sha256 ? { offset, hasher: null } : null;
   const hasher = new Sha256();
-  const READ_BLOCK = 2 * 1024 * 1024;
   let lastWait = Date.now();
-  for (let pos = 0; pos < offset; pos += READ_BLOCK) {
-    if (conn.cancelled) return null;
-    hasher.update(await file.slice(pos, Math.min(pos + READ_BLOCK, offset)).arrayBuffer());
-    conn.row.state('checking partial · ' + Math.floor((pos / offset) * 100) + '%');
-    if (keepAlive && Date.now() - lastWait > 5000) {
-      lastWait = Date.now();
-      await keepAlive();
-    }
-  }
+  const ok = await hashFilePrefix(file, offset, hasher, {
+    shouldAbort: () => conn.cancelled,
+    onBlock: async (pos) => {
+      conn.row.state('checking partial · ' + Math.floor((pos / offset) * 100) + '%');
+      if (keepAlive && Date.now() - lastWait > 5000) {
+        lastWait = Date.now();
+        await keepAlive();
+      }
+    },
+  });
+  if (!ok) return null;
   return hasher.copy().digest() === request.sha256 ? { offset, hasher } : null;
 }
 
@@ -1213,7 +1234,7 @@ async function verifyPrefixWeb(conn, file, request, keepAlive = null) {
 function resumeMap(list) {
   const map = new Map();
   for (const r of Array.isArray(list) ? list : []) {
-    if (r && Number.isInteger(r.index)) map.set(r.index, r);
+    if (r && safeNonNegInt(r.index) !== null) map.set(r.index, r);
   }
   return map;
 }
@@ -1253,7 +1274,7 @@ async function streamToCli(conn) {
       conn.lastProgress = Date.now();
 
       const hasher = (accepted && accepted.hasher) || new Sha256();
-      const READ_BLOCK = 2 * 1024 * 1024;
+      const READ_BLOCK = PREFIX_READ_BLOCK;
       for (let offset = startAt; offset < file.size;) {
         const blockBuf = await file.slice(offset, Math.min(offset + READ_BLOCK, file.size)).arrayBuffer();
         if (conn.cancelled) return;
@@ -2313,7 +2334,7 @@ function routeSignal(from, data) {
   if (data.type === 'cli-start') {
     // `offset` > 0 solo si lo pedimos en el `resume` del cli-accept (un archivo
     // que ya estaba en la carpeta); `start` lo trata igual que el web.
-    const from = Number.isInteger(data.offset) && data.offset > 0 ? data.offset : 0;
+    const from = safeNonNegInt(data.offset) ?? 0;
     onControl({ k: 'start', index: data.index, name: data.name, size: data.size, type: data.mime || '', from, path: data.path });
     return;
   }
