@@ -107,16 +107,16 @@ scoop install oloxx/drop
 
 Las instalaciones gestionadas se actualizan desde su gestor (`brew upgrade drop`, `winget upgrade Oloxx.drop` o `scoop update drop`) en lugar de `drop update`: `drop` detecta su ruta de instalación y te indica el comando exacto. Todos los manifiestos se generan únicamente tras comprobar `SHA256SUMS.minisig` ([homebrew-tap](https://github.com/Oloxx/homebrew-tap), [scoop-bucket](https://github.com/Oloxx/scoop-bucket), [`scripts/winget.mjs`](scripts/winget.mjs)).
 
-### Descargas Directas (`v0.13.0`)
+### Descargas Directas (`v0.14.0`)
 
-Binarios estáticos autónomos sin dependencias externas (ni Node.js ni Visual C++ Redistributable) desde la [Release v0.13.0](https://github.com/Oloxx/drop/releases/tag/v0.13.0):
+Binarios estáticos autónomos sin dependencias externas (ni Node.js ni Visual C++ Redistributable) desde la [Release v0.14.0](https://github.com/Oloxx/drop/releases/tag/v0.14.0):
 
 | Plataforma | Binario | Instalación |
 |---|---|---|
-| **Windows (x64)** | [`drop-v0.13.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe) | Doble clic o ejecutar `install` (copia a `%LOCALAPPDATA%\Programs\drop\` y añade al `PATH`) |
-| **Linux (x64)** | [`drop-v0.13.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-x64.tar.gz) | `tar -xzf drop-v0.13.0-linux-x64.tar.gz && ./drop-v0.13.0-linux-x64 install` |
-| **Linux (ARM64)** | [`drop-v0.13.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-linux-arm64.tar.gz) | `tar -xzf drop-v0.13.0-linux-arm64.tar.gz && ./drop-v0.13.0-linux-arm64 install` |
-| **macOS (Apple Silicon)** | [`drop-v0.13.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz) | `tar -xzf drop-v0.13.0-macos-arm64.tar.gz && ./drop-v0.13.0-macos-arm64 install` |
+| **Windows (x64)** | [`drop-v0.14.0-windows-x64.exe`](https://github.com/Oloxx/drop/releases/download/v0.14.0/drop-v0.14.0-windows-x64.exe) | Doble clic o ejecutar `install` (copia a `%LOCALAPPDATA%\Programs\drop\` y añade al `PATH`) |
+| **Linux (x64)** | [`drop-v0.14.0-linux-x64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.14.0/drop-v0.14.0-linux-x64.tar.gz) | `tar -xzf drop-v0.14.0-linux-x64.tar.gz && ./drop-v0.14.0-linux-x64 install` |
+| **Linux (ARM64)** | [`drop-v0.14.0-linux-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.14.0/drop-v0.14.0-linux-arm64.tar.gz) | `tar -xzf drop-v0.14.0-linux-arm64.tar.gz && ./drop-v0.14.0-linux-arm64 install` |
+| **macOS (Apple Silicon)** | [`drop-v0.14.0-macos-arm64.tar.gz`](https://github.com/Oloxx/drop/releases/download/v0.14.0/drop-v0.14.0-macos-arm64.tar.gz) | `tar -xzf drop-v0.14.0-macos-arm64.tar.gz && ./drop-v0.14.0-macos-arm64 install` |
 
 <details>
 <summary><strong>Verificar descargas con Minisign y SHA-256</strong></summary>
@@ -133,7 +133,7 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 ```powershell
 # 2. Verificar hash del binario (Windows PowerShell)
-Get-FileHash drop-v0.13.0-windows-x64.exe -Algorithm SHA256
+Get-FileHash drop-v0.14.0-windows-x64.exe -Algorithm SHA256
 ```
 
 `drop update` ejecuta automáticamente la verificación Minisign + SHA-256 antes de sustituir el ejecutable y aborta ante cualquier fallo (exige `--allow-unsigned` en versiones previas a `v0.5.2`).
@@ -147,19 +147,19 @@ Los binarios están firmados con la clave Minisign del proyecto, no con certific
 
 ```bash
 # macOS (Apple Silicon)
-curl -LO https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-macos-arm64.tar.gz
-tar -xzf drop-v0.13.0-macos-arm64.tar.gz && ./drop-v0.13.0-macos-arm64 install
+curl -LO https://github.com/Oloxx/drop/releases/download/v0.14.0/drop-v0.14.0-macos-arm64.tar.gz
+tar -xzf drop-v0.14.0-macos-arm64.tar.gz && ./drop-v0.14.0-macos-arm64 install
 ```
 
 ```powershell
 # Windows (curl.exe viene preinstalado en Windows 10 y 11)
-curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.13.0/drop-v0.13.0-windows-x64.exe
-.\drop-v0.13.0-windows-x64.exe
+curl.exe -LO https://github.com/Oloxx/drop/releases/download/v0.14.0/drop-v0.14.0-windows-x64.exe
+.\drop-v0.14.0-windows-x64.exe
 ```
 
 Si ya descargaste desde un navegador:
-- **macOS:** ejecuta `xattr -d com.apple.quarantine ./drop-v0.13.0-macos-arm64`, o abre **Ajustes del Sistema → Privacidad y seguridad → Abrir igualmente**.
-- **Windows:** pulsa **Más información → Ejecutar de todas formas** en SmartScreen, o ejecuta `Unblock-File .\drop-v0.13.0-windows-x64.exe` en PowerShell.
+- **macOS:** ejecuta `xattr -d com.apple.quarantine ./drop-v0.14.0-macos-arm64`, o abre **Ajustes del Sistema → Privacidad y seguridad → Abrir igualmente**.
+- **Windows:** pulsa **Más información → Ejecutar de todas formas** en SmartScreen, o ejecuta `Unblock-File .\drop-v0.14.0-windows-x64.exe` en PowerShell.
 
 </details>
 

@@ -11,7 +11,12 @@ Las notas de cada release, con los binarios, están en
 
 ## [Sin publicar]
 
+## [0.14.0] — 2026-11-19
+
+Compatible con la v0.13.x (protocolo 5 sin cambios).
+
 ### Añadido
+- **Respaldo automático PCP (RFC 6887):** [`cli-rs/src/natpmp.rs`](cli-rs/src/natpmp.rs) e integración en [`cli-rs/src/upnp.rs`](cli-rs/src/upnp.rs) para mapear, renovar y limpiar puertos TCP mediante PCP (v2) en el puerto `5351` cuando UPnP IGD y NAT-PMP no responden.
 - **Descarga autodetectada del CLI en la web:** [`public/index.html`](public/index.html), [`public/app.js`](public/app.js) y [`public/style.css`](public/style.css) añaden la tarjeta `#cli-box` con detección local de sistema operativo y arquitectura (`Windows x64`, `macOS ARM64`, `Linux x64`, `Linux ARM64` o lista completa en móvil), obteniendo la versión activa desde `/version` sin peticiones externas hasta la descarga.
 - **Logotipo vectorial y favicon en la web:** diseñados [`docs/assets/icon.svg`](docs/assets/icon.svg), [`docs/assets/logo-dark.svg`](docs/assets/logo-dark.svg), [`docs/assets/logo-light.svg`](docs/assets/logo-light.svg) y [`public/favicon.svg`](public/favicon.svg), integrados en el encabezado y `<head>` de [`public/index.html`](public/index.html) y [`public/speed.html`](public/speed.html), además de la cabecera adaptativa claro/oscuro de [`README.md`](README.md) y [`README.es.md`](README.es.md).
 - **Pegado desde el portapapeles en la web (`Ctrl+V` / `Cmd+V`):** [`public/app.js`](public/app.js) y [`public/index.html`](public/index.html) permiten pegar archivos, capturas de pantalla (`image.png`, numeradas si ya están en cola) o texto plano (`clipboard.txt`) directamente en la vista de envío sin interferir con campos de texto como `#code-in`.
@@ -31,6 +36,7 @@ Las notas de cada release, con los binarios, están en
 - **Requisito mínimo de Node.js (#63):** `engines.node` actualizado a `>=22.9.0` en [`package.json`](package.json) y documentación en consonancia con `--env-file-if-exists` y los runners de CI.
 
 ### Corregido
+- **Fiabilidad de UPnP/STUN y conexión directa CLI ↔ CLI en Windows y WAN:** [`cli-rs/src/upnp.rs`](cli-rs/src/upnp.rs) ignora errores `WSAECONNRESET` (`ConnectionReset`) por ICMP en SSDP, añade reintentos `M-SEARCH` y perfiles `IGD:2` / `WANPPPConnection:1`; [`cli-rs/src/stun.rs`](cli-rs/src/stun.rs) reintenta peticiones UDP; [`cli-rs/src/commands/send.rs`](cli-rs/src/commands/send.rs) evita *lost-wakeup* y espera UPnP/STUN en paralelo (3,5 s) antes de emitir `cli-offer`; [`cli-rs/src/commands/recv.rs`](cli-rs/src/commands/recv.rs) amplía el sondeo TCP directo en WAN a 3,5 s.
 - **Binario Windows autocontenido (sin `VCRUNTIME140.dll`):** [`.cargo/config.toml`](.cargo/config.toml) enlaza estáticamente el CRT en `x86_64-pc-windows-msvc` (`+crt-static`) para evitar el error `0xC0000135` en equipos Windows limpios sin *Visual C++ Redistributable*.
 
 ### Eliminado
