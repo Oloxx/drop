@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import WebSocket from 'ws';
-import { ROOT, cliSpawnTarget, open as openSocket, spawnCli } from './helpers.mjs';
+import { ROOT, cliSpawnTarget, open as openSocket, sleep, spawnCli } from './helpers.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
@@ -148,4 +148,75 @@ test('`drop serve -h` funciona independientemente de Node', () => {
   const out = execFileSync(cmd, args, { encoding: 'utf8' });
   assert.match(out, /drop serve/);
   assert.match(out, /--host/);
+});
+
+test('`drop serve` no descarta tramas JSON de control bajo contrapresion binaria', { timeout: 30_000 }, async (t) => {
+  const srv = spawnCli(['serve', '-p', '0']);
+  t.after(() => srv.kill());
+
+  const m = await srv.waitFor(/http:\/\/localhost:(\d+)/);
+  const baseWs = `ws://127.0.0.1:${m[1]}`;
+
+  const hostWs = await openSocket(baseWs);
+  const guestWs = await openSocket(baseWs);
+  t.after(() => { hostWs.close(); guestWs.close(); });
+
+  hostWs.say({ t: 'host', v: 2 });
+  const hosted = await hostWs.until((msg) => msg.t === 'hosted');
+  guestWs.say({ t: 'join', token: hosted.token, name: 'cli' });
+  const joined = await guestWs.until((msg) => msg.t === 'joined');
+  await hostWs.until((msg) => msg.t === 'guest');
+
+  // Congelar lectura del receptor para llenar la cola OUTBOUND_QUEUE_CAP (512).
+  let receivedBinary = 0;
+  const events = [];
+  guestWs.on('message', (raw, isBinary) => {
+    if (isBinary) {
+      receivedBinary++;
+      events.push(`bin:${receivedBinary}`);
+    } else {
+      const msg = JSON.parse(raw);
+      if (msg.t === 'signal') events.push(`sig:${msg.data?.type}`);
+      else events.push(`ctrl:${msg.t}`);
+    }
+  });
+  guestWs._socket.pause();
+
+  const TOTAL_FRAMES = 650;
+  const hdr = Buffer.allocUnsafe(4);
+  hdr.writeUInt32BE(joined.guestId, 0);
+  const chunk = Buffer.concat([hdr, Buffer.alloc(16 * 1024, 0xaa)]);
+
+  // Enviar >512 frames binarios y justo detras `cli-end` + `cli-done` mientras el receptor sigue pausado.
+  const sendAll = async () => {
+    for (let i = 0; i < TOTAL_FRAMES; i++) {
+      hostWs.send(chunk, { binary: true });
+    }
+    hostWs.say({ t: 'signal', to: joined.guestId, data: { type: 'cli-end', index: 0 } });
+    hostWs.say({ t: 'signal', to: joined.guestId, data: { type: 'cli-done' } });
+  };
+  const sendPromise = sendAll();
+  await sleep(300);
+
+  // Reanudar lectura en el receptor y luego cerrar el emisor para comprobar tambien `host-gone`.
+  guestWs._socket.resume();
+  await sendPromise;
+
+  const deadline = Date.now() + 15_000;
+  while (
+    (!events.includes('sig:cli-done') || receivedBinary < TOTAL_FRAMES)
+    && Date.now() < deadline
+  ) {
+    await sleep(50);
+  }
+  assert.equal(receivedBinary, TOTAL_FRAMES, `faltaron frames binarios: ${receivedBinary}/${TOTAL_FRAMES}`);
+  const endIdx = events.indexOf('sig:cli-end');
+  const doneIdx = events.indexOf('sig:cli-done');
+  const lastBinIdx = events.lastIndexOf(`bin:${TOTAL_FRAMES}`);
+  assert.ok(endIdx > lastBinIdx, `cli-end debe llegar tras todos los chunks (${endIdx} vs ${lastBinIdx})`);
+  assert.ok(doneIdx > endIdx, 'cli-done debe llegar tras cli-end');
+
+  hostWs.close();
+  const hostGone = await guestWs.until((msg) => msg.t === 'host-gone');
+  assert.equal(hostGone.t, 'host-gone');
 });

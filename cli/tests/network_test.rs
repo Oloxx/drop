@@ -541,6 +541,7 @@ async fn test_ipv6_candidates_and_loopback_transfer() {
             path: None,
         },
         fs_path: Some(src),
+        inline_data: None,
         is_stdin: false,
     };
 

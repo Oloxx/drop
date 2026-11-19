@@ -386,3 +386,110 @@ test('DROP_TRUST_PROXY lee el salto real en X-Forwarded-For e ignora prefijos fa
     srv.stop();
   }
 });
+
+test('relay WS en server/index.js frena con backpressure y aplica techo defensivo ante receptor bloqueado', { timeout: 30_000 }, async () => {
+  // 1. Backpressure suave: receptor pausado -> servidor frena lectura del emisor -> al reanudar llegan todos los frames.
+  {
+    const srv = await startServer({
+      DROP_RELAY_BUFFER_HIGH: '64K',
+      DROP_RELAY_BUFFER_MAX: '8M',
+    });
+    const sockets = [];
+    try {
+      const host = await open(srv.ws);
+      const guest = await open(srv.ws);
+      sockets.push(host, guest);
+
+      host.say({ t: 'host', v: 2 });
+      const { token } = await host.next();
+      guest.say({ t: 'join', token, name: 'cli' });
+      const { guestId } = await guest.next();
+      await host.next();
+
+      let rxBytes = 0;
+      guest.on('message', (raw, isBinary) => {
+        if (isBinary) rxBytes += raw.length;
+      });
+      guest._socket.pause();
+
+      const hdr = Buffer.allocUnsafe(4);
+      hdr.writeUInt32BE(guestId, 0);
+      const payload = Buffer.alloc(32 * 1024, 0x55);
+      const frame = Buffer.concat([hdr, payload]);
+      const COUNT = 128; // 4 MiB >> DROP_RELAY_BUFFER_HIGH (64 KiB)
+      for (let i = 0; i < COUNT; i++) host.send(frame, { binary: true });
+
+      const pauseDeadline = Date.now() + 5_000;
+      let hzWhilePaused = null;
+      while (Date.now() < pauseDeadline) {
+        hzWhilePaused = await (await fetch(`${srv.http}/healthz`)).json();
+        if (hzWhilePaused.relay.throttled > 0) break;
+        await sleep(50);
+      }
+      assert.ok(hzWhilePaused.relay.throttled > 0, `se esperaba throttled > 0: ${JSON.stringify(hzWhilePaused)}`);
+      assert.ok(hzWhilePaused.relay.bytes < COUNT * frame.length, 'el servidor no debe acumular los 4 MiB en RAM');
+
+      guest._socket.resume();
+      const deadline = Date.now() + 10_000;
+      while (rxBytes < COUNT * payload.length && Date.now() < deadline) {
+        await sleep(50);
+      }
+      assert.equal(rxBytes, COUNT * payload.length);
+    } finally {
+      for (const s of sockets) s.close();
+      srv.stop();
+    }
+  }
+
+  // 2. Techo duro: multiples emisores contra un receptor bloqueado superan DROP_RELAY_BUFFER_MAX -> corte defensivo.
+  {
+    const srv = await startServer({
+      DROP_RELAY_BUFFER_HIGH: '64K',
+      DROP_RELAY_BUFFER_MAX: '128K',
+    });
+    const sockets = [];
+    try {
+      const host = await open(srv.ws);
+      sockets.push(host);
+      host.say({ t: 'host', v: 2 });
+      const { token } = await host.next();
+
+      const guests = [];
+      for (let g = 0; g < 4; g++) {
+        const guest = await open(srv.ws);
+        sockets.push(guest);
+        guest.say({ t: 'join', token, name: 'cli' });
+        await guest.next();
+        await host.next();
+        guests.push(guest);
+      }
+
+      let hostClosed = false;
+      host.on('close', () => { hostClosed = true; });
+      host._socket.pause();
+
+      const payload = Buffer.alloc(64 * 1024, 0x77);
+      for (let round = 0; round < 32 && !hostClosed; round++) {
+        for (const guest of guests) {
+          if (guest.readyState === guest.OPEN) guest.send(payload, { binary: true });
+        }
+        await sleep(10);
+      }
+
+      const deadline = Date.now() + 5_000;
+      let hz = null;
+      while (Date.now() < deadline) {
+        hz = await (await fetch(`${srv.http}/healthz`)).json();
+        if ((hz.rejected.RELAY_BACKPRESSURE || 0) > 0) break;
+        await sleep(50);
+      }
+      // Al reanudar lectura del socket cliente, este procesa el cierre TCP del servidor.
+      host._socket.resume();
+      while (!hostClosed && Date.now() < deadline) await sleep(50);
+      assert.ok(hostClosed && (hz.rejected.RELAY_BACKPRESSURE || 0) > 0, `esperado corte por RELAY_BACKPRESSURE, healthz=${JSON.stringify(hz)}`);
+    } finally {
+      for (const s of sockets) s.close();
+      srv.stop();
+    }
+  }
+});

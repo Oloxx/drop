@@ -33,7 +33,7 @@ use crate::throttle::Throttle;
 use crate::transfer::{
     PeerGateFn, PeerInfo, ProgressFn, RELAY_IDLE_TIMEOUT_MS, ResumeNoticeFn, SendItem,
     TransferError, TransferStats, attach_sender, relay_binary_packet, send_sealed, total_of,
-    verify_prefix,
+    verify_item_prefix,
 };
 use crate::ui::{
     BOLD, CYAN, DIM, GREEN, RED, RESET, YELLOW, fmt_bytes, fmt_duration, fmt_speed,
@@ -83,34 +83,25 @@ fn read_clipboard() -> Result<String, String> {
     Err("No se pudo leer texto del portapapeles (o está vacío).".to_string())
 }
 
-fn stage_inline_content(content: &str, name: &str) -> Result<(PathBuf, SendItem), String> {
-    let pid = std::process::id();
-    let rnd = rand::thread_rng().next_u64();
-    let dir = env::temp_dir().join(format!("drop-inline-{pid}-{rnd:016x}"));
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("No se pudo crear archivo temporal: {e}"))?;
-
+fn build_inline_item(content: &str, name: &str) -> SendItem {
     let clean_name = Path::new(name)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .filter(|s| !s.is_empty() && s != "." && s != "..")
         .unwrap_or_else(|| "message.txt".to_string());
 
-    let file_path = dir.join(&clean_name);
-    std::fs::write(&file_path, content.as_bytes())
-        .map_err(|e| format!("No se pudo escribir el texto temporal: {e}"))?;
-
-    let size = content.len() as u64;
-    let item = SendItem {
+    let bytes: Arc<[u8]> = Arc::from(content.as_bytes());
+    let size = bytes.len() as u64;
+    SendItem {
         entry: FileEntry {
             name: clean_name,
             size: Some(size),
             path: None,
         },
-        fs_path: Some(file_path),
+        fs_path: None,
+        inline_data: Some(bytes),
         is_stdin: false,
-    };
-    Ok((dir, item))
+    }
 }
 
 fn walk_folder(
@@ -150,6 +141,7 @@ fn walk_folder(
                     path: Some(rel),
                 },
                 fs_path: Some(full),
+                inline_data: None,
                 is_stdin: false,
             });
         }
@@ -307,10 +299,8 @@ async fn stream_to_web_guest(params: WebGuestStreamParams) -> Result<TransferSta
         let mut offset = 0u64;
         let mut hasher = Sha256::new();
 
-        if !item.is_stdin
-            && let Some(fs_path) = &item.fs_path
-            && let Some(req) = resume_map.get(&idx)
-            && let Ok(Some(verified)) = verify_prefix(fs_path, item.entry.size, Some(req)).await
+        if let Some(req) = resume_map.get(&idx)
+            && let Ok(Some(verified)) = verify_item_prefix(item, Some(req)).await
         {
             offset = verified.offset;
             hasher = verified.hasher;
@@ -352,6 +342,24 @@ async fn stream_to_web_guest(params: WebGuestStreamParams) -> Result<TransferSta
                 let pkt = relay_binary_packet(guest_u32, &key, &buf[..n]);
                 ws_sender.send_binary(pkt)?;
                 sent_total += n as u64;
+                let secs = start_ts.elapsed().as_secs_f64().max(0.001);
+                render_progress_bar(
+                    sent_total,
+                    total_expected,
+                    (sent_total - resumed_bytes) as f64 / secs,
+                    30,
+                    Some(&selected_entries),
+                );
+            }
+        } else if let Some(inline) = &item.inline_data {
+            let start = usize::try_from(offset).unwrap_or(inline.len());
+            for chunk in inline[start..].chunks(RELAY_CHUNK_SIZE) {
+                wait_relay_window(sent_total, &stream_state, &sender_state).await?;
+                throttle.take(chunk.len()).await;
+                hasher.update(chunk);
+                let pkt = relay_binary_packet(guest_u32, &key, chunk);
+                ws_sender.send_binary(pkt)?;
+                sent_total += chunk.len() as u64;
                 let secs = start_ts.elapsed().as_secs_f64().max(0.001);
                 render_progress_bar(
                     sent_total,
@@ -497,7 +505,6 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
     }
 
     let mut items = Vec::new();
-    let mut temp_dir: Option<PathBuf> = None;
     let mut folder_count = 0usize;
 
     if has_stdin {
@@ -519,20 +526,12 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                 path: None,
             },
             fs_path: None,
+            inline_data: None,
             is_stdin: true,
         });
     } else if let Some(ref txt) = options.text {
         let name = options.name.as_deref().unwrap_or("message.txt");
-        match stage_inline_content(txt, name) {
-            Ok((dir, item)) => {
-                temp_dir = Some(dir);
-                items.push(item);
-            }
-            Err(e) => {
-                eprintln!("\n  {RED}{e}{RESET}\n");
-                return 1;
-            }
-        }
+        items.push(build_inline_item(txt, name));
     } else if options.clipboard {
         let txt = match read_clipboard() {
             Ok(t) => t,
@@ -542,16 +541,7 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
             }
         };
         let name = options.name.as_deref().unwrap_or("clipboard.txt");
-        match stage_inline_content(&txt, name) {
-            Ok((dir, item)) => {
-                temp_dir = Some(dir);
-                items.push(item);
-            }
-            Err(e) => {
-                eprintln!("\n  {RED}{e}{RESET}\n");
-                return 1;
-            }
-        }
+        items.push(build_inline_item(&txt, name));
     } else {
         for raw in args {
             let p = PathBuf::from(raw);
@@ -585,6 +575,7 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                         path: None,
                     },
                     fs_path: Some(p),
+                    inline_data: None,
                     is_stdin: false,
                 });
             }
@@ -593,9 +584,6 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
 
     if items.is_empty() {
         eprintln!("\n  {RED}No hay ningún archivo para enviar.{RESET}\n");
-        if let Some(d) = temp_dir {
-            let _ = std::fs::remove_dir_all(d);
-        }
         return 1;
     }
 
@@ -603,9 +591,6 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
         Ok(l) => l,
         Err(e) => {
             eprintln!("\n  {RED}{}{RESET}\n", e.message);
-            if let Some(d) = temp_dir {
-                let _ = std::fs::remove_dir_all(d);
-            }
             return 1;
         }
     };
@@ -823,6 +808,8 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
 
     // Estado por receptor Relay
     let mut pending_proofs: HashMap<u64, String> = HashMap::new();
+    let active_guests: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
+    let authorized_guests: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
     let mut guest_picks: HashMap<u64, Option<Vec<usize>>> = HashMap::new();
     let guest_streams: Arc<Mutex<HashMap<u64, Arc<GuestStream>>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -943,6 +930,8 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                         rand::thread_rng().fill_bytes(&mut nonce_bytes);
                         let nonce = hex::encode(nonce_bytes);
                         pending_proofs.insert(guest_id, nonce.clone());
+                        active_guests.lock().await.insert(guest_id);
+                        authorized_guests.lock().await.remove(&guest_id);
 
                         let ws = ws_sender.clone();
                         let ips_base = local_ips.clone();
@@ -1006,6 +995,8 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                     Some("guest-gone") => {
                         if let Some(guest_id) = msg.get("guestId").and_then(|v| v.as_u64()) {
                             pending_proofs.remove(&guest_id);
+                            active_guests.lock().await.remove(&guest_id);
+                            authorized_guests.lock().await.remove(&guest_id);
                             guest_picks.remove(&guest_id);
                             if let Some(gs) = guest_streams.lock().await.remove(&guest_id)
                                 && !gs.completed.load(Ordering::SeqCst)
@@ -1071,6 +1062,8 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                 let ws = ws_sender.clone();
                                 let items = Arc::clone(&items_arc);
                                 let sas_clone = sas.clone();
+                                let active = Arc::clone(&active_guests);
+                                let auth = Arc::clone(&authorized_guests);
                                 tokio::spawn(async move {
                                     let ok = gate(PeerInfo {
                                         who: format!("receptor {guest_id}"),
@@ -1087,6 +1080,10 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                         );
                                         return;
                                     }
+                                    if !active.lock().await.contains(&guest_id) {
+                                        return;
+                                    }
+                                    auth.lock().await.insert(guest_id);
                                     let manifest: Vec<Value> = items
                                         .iter()
                                         .map(|it| {
@@ -1115,7 +1112,9 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                 });
                             }
                             Some("cli-accept") => {
-                                if !sender_state.accepting_peers() {
+                                if !authorized_guests.lock().await.contains(&guest_id)
+                                    || !sender_state.accepting_peers()
+                                {
                                     continue;
                                 }
                                 let req_files: Option<Vec<i64>> = data
@@ -1152,7 +1151,9 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                 .await;
                             }
                             Some("cli-retry") => {
-                                if !sender_state.accepting_peers() {
+                                if !authorized_guests.lock().await.contains(&guest_id)
+                                    || !sender_state.accepting_peers()
+                                {
                                     continue;
                                 }
                                 let retry_idx = data
@@ -1178,6 +1179,9 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                 .await;
                             }
                             Some("cli-ack") => {
+                                if !authorized_guests.lock().await.contains(&guest_id) {
+                                    continue;
+                                }
                                 if let Some(bytes) = data.get("bytes").and_then(|v| v.as_u64())
                                     && let Some(gs) = guest_streams.lock().await.get(&guest_id).cloned()
                                 {
@@ -1189,12 +1193,18 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                 }
                             }
                             Some("cli-complete") => {
+                                if !authorized_guests.lock().await.contains(&guest_id) {
+                                    continue;
+                                }
                                 if let Some(gs) = guest_streams.lock().await.get(&guest_id).cloned() {
                                     gs.completed.store(true, Ordering::SeqCst);
                                     gs.notify.notify_waiters();
                                 }
                             }
                             Some("cli-error") => {
+                                if !authorized_guests.lock().await.contains(&guest_id) {
+                                    continue;
+                                }
                                 let m = data
                                     .get("message")
                                     .and_then(|v| v.as_str())
@@ -1224,9 +1234,6 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
     }
     if let Some(m) = upnp_mapping_slot.lock().await.take() {
         let _ = timeout(Duration::from_secs(2), m.unmap()).await;
-    }
-    if let Some(d) = temp_dir {
-        let _ = std::fs::remove_dir_all(d);
     }
 
     if sender_state.stdin_failed.load(Ordering::SeqCst) {

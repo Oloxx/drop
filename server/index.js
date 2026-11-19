@@ -202,6 +202,9 @@ function rate(name) {
 }
 const RELAY_LIMIT = rate('DROP_RELAY_LIMIT');
 const RELAY_LIMIT_TOTAL = rate('DROP_RELAY_LIMIT_TOTAL');
+const RELAY_BUFFER_HIGH = rate('DROP_RELAY_BUFFER_HIGH') || 8 * 1024 * 1024;
+const RELAY_BUFFER_LOW = Math.floor(RELAY_BUFFER_HIGH / 2);
+const RELAY_BUFFER_MAX = Math.max(RELAY_BUFFER_HIGH, rate('DROP_RELAY_BUFFER_MAX') || 32 * 1024 * 1024);
 
 function makeBucket(bytesPerSec) {
   return { rate: bytesPerSec, tokens: bytesPerSec, at: Date.now() };
@@ -219,20 +222,73 @@ function drain(bucket, bytes) {
 
 const relayTotal = RELAY_LIMIT_TOTAL ? makeBucket(RELAY_LIMIT_TOTAL) : null;
 
+function syncPause(ws) {
+  if (ws.readyState !== ws.OPEN) return;
+  const wantPaused = !!(ws.ratePaused || ws.bpPaused);
+  if (wantPaused && !ws.paused) {
+    ws.paused = true;
+    ws.pause();
+  } else if (!wantPaused && ws.paused) {
+    ws.paused = false;
+    ws.resume();
+  }
+}
+
 // Un socket pausado no dispara `message`, y `ws` deja de leer del TCP: el
 // emisor ve la ventana llena y se frena solo. Se reanuda con un timer, nunca
 // desde otro frame, porque no hay otro frame mientras esta pausado.
 function throttleRelay(ws, room, bytes) {
   const wait = Math.max(drain(room.relay, bytes), drain(relayTotal, bytes));
-  if (wait <= 0 || ws.paused) return;
-  ws.paused = true;
+  if (wait <= 0 || ws.ratePaused) return;
+  ws.ratePaused = true;
   metrics.relay.throttled++;
-  ws.pause();
+  syncPause(ws);
   const timer = setTimeout(() => {
-    ws.paused = false;
-    if (ws.readyState === ws.OPEN) ws.resume();
+    ws.ratePaused = false;
+    syncPause(ws);
   }, wait);
   timer.unref?.();
+}
+
+function flushBackpressure(target) {
+  if (!target.bpWaiters || target.bpWaiters.size === 0) return;
+  if (target.readyState !== target.OPEN || target.bufferedAmount <= RELAY_BUFFER_LOW) {
+    for (const waiter of target.bpWaiters) {
+      waiter.bpPaused = false;
+      syncPause(waiter);
+    }
+    target.bpWaiters.clear();
+  }
+}
+
+function relayBinary(ws, target, payload) {
+  if (!target || target.bpDropped || target.readyState !== target.OPEN) return;
+  // Techo duro defensivo: si un receptor queda completamente bloqueado y el
+  // buffer supera RELAY_BUFFER_MAX, cortamos al receptor en lugar de crecer sin fin.
+  if (target.bufferedAmount >= RELAY_BUFFER_MAX) {
+    target.bpDropped = true;
+    reject('RELAY_BACKPRESSURE');
+    flushBackpressure(target);
+    target.terminate();
+    return;
+  }
+  const onSend = () => flushBackpressure(target);
+  target.send(payload, { binary: true }, onSend);
+  if (target.bufferedAmount >= RELAY_BUFFER_HIGH) {
+    if (!target.bpWaiters) {
+      target.bpWaiters = new Set();
+      target.once('close', () => {
+        target.bpDropped = true;
+        flushBackpressure(target);
+      });
+    }
+    target.bpWaiters.add(ws);
+    if (!ws.bpPaused) {
+      ws.bpPaused = true;
+      metrics.relay.throttled++;
+      syncPause(ws);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- metricas
@@ -588,9 +644,9 @@ wss.on('connection', (ws, req) => {
         const toGuestId = raw.readUInt32BE(0);
         const payload = raw.subarray(4);
         const guest = room.guests.get(toGuestId);
-        if (guest && guest.readyState === 1) guest.send(payload, { binary: true });
+        relayBinary(ws, guest, payload);
       } else if (ws.role === 'guest') {
-        if (room.host && room.host.readyState === 1) room.host.send(raw, { binary: true });
+        relayBinary(ws, room.host, raw);
       }
       // Despues de reenviar, no antes: el frame ya esta en memoria y pausar
       // ahora solo retrasa el siguiente, que es lo que se quiere.

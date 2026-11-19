@@ -1069,6 +1069,7 @@ function onCliGuest(guestId) {
     acked: 0,
     sent: 0,
     total: 0,
+    verified: false,
     cancelled: false,
     started: false,
     nonce: null,
@@ -1105,37 +1106,39 @@ function wakeCli(conn) {
 
 function onCliSignal(from, data) {
   const conn = out.peers.get(from);
-  if (!conn || !conn.cli) return;
+  if (!conn || !conn.cli || !data || typeof data !== 'object') return;
   const { row } = conn;
-  switch (data.type) {
-    case 'cli-proof': {
-      if (!conn.nonce) return;
-      const nonce = conn.nonce;
-      conn.nonce = null;
-      // Otra version es otra prueba y otro cifrado: no es alguien probando
-      // codigos, asi que no se denuncia; se le dice que actualice.
-      if (data.v !== PROTOCOL_VERSION) {
-        row.fail('old drop · ask them to update');
-        wsSend({ t: 'signal', to: from, data: { type: 'cli-denied', reason: 'VERSION', v: PROTOCOL_VERSION } });
-        return;
-      }
-      if (!timingSafeEqualStr(data.proof, proofFromKey(out.key, nonce))) {
-        conn.cancelled = true;
-        conn.rejected = true;
-        row.fail('wrong code');
-        wsSend({ t: 'bad-guest', guestId: from });
-        return;
-      }
-      row.state('awaiting ack…');
-      sealedTo(conn, {
-        type: 'cli-manifest',
-        v: PROTOCOL_VERSION,
-        manifest: out.files.map((f) => ({
-          name: f.name, size: f.size, type: f.type || 'application/octet-stream',
-        })),
-      });
+  if (data.type === 'cli-proof') {
+    if (!conn.nonce || conn.verified) return;
+    const nonce = conn.nonce;
+    conn.nonce = null;
+    // Otra version es otra prueba y otro cifrado: no es alguien probando
+    // codigos, asi que no se denuncia; se le dice que actualice.
+    if (data.v !== PROTOCOL_VERSION) {
+      row.fail('old drop · ask them to update');
+      wsSend({ t: 'signal', to: from, data: { type: 'cli-denied', reason: 'VERSION', v: PROTOCOL_VERSION } });
       return;
     }
+    if (!timingSafeEqualStr(data.proof, proofFromKey(out.key, nonce))) {
+      conn.cancelled = true;
+      conn.rejected = true;
+      row.fail('wrong code');
+      wsSend({ t: 'bad-guest', guestId: from });
+      return;
+    }
+    conn.verified = true;
+    row.state('awaiting ack…');
+    sealedTo(conn, {
+      type: 'cli-manifest',
+      v: PROTOCOL_VERSION,
+      manifest: out.files.map((f) => ({
+        name: f.name, size: f.size, type: f.type || 'application/octet-stream',
+      })),
+    });
+    return;
+  }
+  if (!conn.verified) return;
+  switch (data.type) {
     case 'cli-accept':
       // `files` es lo que ha elegido con `drop recv --only`; sin el, todo.
       // `resume`, los `.part` que ya tiene: se comprueban antes de fiarse.

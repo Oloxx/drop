@@ -1,6 +1,6 @@
 // Servidor HTTP de web estática + señalización/relay WebSocket (`drop serve`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use sha1::Sha1;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -395,9 +395,120 @@ enum ClientEvent {
     Close,
 }
 
+struct QueueInner {
+    queue: VecDeque<ClientEvent>,
+    binary_len: usize,
+    closed: bool,
+}
+
+/// Cola de salida FIFO por cliente WebSocket.
+///
+/// A diferencia de un unico `mpsc` acotado, `binary_len` limita exclusivamente
+/// los frames binarios (`OUTBOUND_QUEUE_CAP`) mientras los mensajes de control y
+/// cierre se encolan sin descartes al final de la misma `VecDeque`, preservando
+/// siempre el orden estricto (`cli-start` -> datos -> `cli-end` -> `cli-done` -> `guest-gone`).
+#[derive(Clone)]
+struct ClientTx {
+    inner: Arc<Mutex<QueueInner>>,
+    notify_rx: Arc<Notify>,
+    notify_space: Arc<Notify>,
+}
+
+impl ClientTx {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(QueueInner {
+                queue: VecDeque::new(),
+                binary_len: 0,
+                closed: false,
+            })),
+            notify_rx: Arc::new(Notify::new()),
+            notify_space: Arc::new(Notify::new()),
+        }
+    }
+
+    fn send_ctrl_msg(&self, msg: Message) {
+        let mut guard = self.inner.lock().expect("queue poisoned");
+        if guard.closed {
+            return;
+        }
+        guard.queue.push_back(ClientEvent::Send(msg));
+        self.notify_rx.notify_one();
+    }
+
+    fn send_ctrl_json(&self, val: &Value) {
+        self.send_ctrl_msg(Message::Text(val.to_string().into()));
+    }
+
+    fn close(&self) {
+        let mut guard = self.inner.lock().expect("queue poisoned");
+        if guard.closed {
+            return;
+        }
+        guard.closed = true;
+        guard.queue.push_back(ClientEvent::Close);
+        self.notify_rx.notify_one();
+        self.notify_space.notify_waiters();
+    }
+
+    fn mark_dropped(&self) {
+        let mut guard = self.inner.lock().expect("queue poisoned");
+        guard.closed = true;
+        guard.queue.clear();
+        guard.binary_len = 0;
+        self.notify_rx.notify_one();
+        self.notify_space.notify_waiters();
+    }
+
+    async fn send_binary(&self, payload: Vec<u8>) {
+        loop {
+            let notified = self.notify_space.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let mut guard = self.inner.lock().expect("queue poisoned");
+                if guard.closed {
+                    return;
+                }
+                if guard.binary_len < OUTBOUND_QUEUE_CAP {
+                    guard.binary_len += 1;
+                    guard
+                        .queue
+                        .push_back(ClientEvent::Send(Message::Binary(payload.into())));
+                    self.notify_rx.notify_one();
+                    return;
+                }
+            }
+            notified.await;
+        }
+    }
+
+    async fn recv(&self) -> Option<ClientEvent> {
+        loop {
+            let notified = self.notify_rx.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let mut guard = self.inner.lock().expect("queue poisoned");
+                if let Some(ev) = guard.queue.pop_front() {
+                    if matches!(&ev, ClientEvent::Send(Message::Binary(_))) {
+                        guard.binary_len = guard.binary_len.saturating_sub(1);
+                        self.notify_space.notify_one();
+                    }
+                    return Some(ev);
+                }
+                if guard.closed {
+                    return None;
+                }
+            }
+            notified.await;
+        }
+    }
+}
+
 struct PeerHandle {
     conn_id: u64,
-    tx: mpsc::Sender<ClientEvent>,
+    tx: ClientTx,
 }
 
 struct Room {
@@ -446,7 +557,7 @@ struct ServerState {
 
 struct LiveSocket {
     is_alive: Arc<AtomicBool>,
-    tx: mpsc::Sender<ClientEvent>,
+    tx: ClientTx,
 }
 
 impl ServerState {
@@ -532,12 +643,12 @@ impl ServerState {
     }
 }
 
-fn send_json(tx: &mpsc::Sender<ClientEvent>, val: &Value) {
-    let _ = tx.try_send(ClientEvent::Send(Message::Text(val.to_string().into())));
+fn send_json(tx: &ClientTx, val: &Value) {
+    tx.send_ctrl_json(val);
 }
 
-fn close_socket(tx: &mpsc::Sender<ClientEvent>) {
-    let _ = tx.try_send(ClientEvent::Close);
+fn close_socket(tx: &ClientTx) {
+    tx.close();
 }
 
 fn close_room_in_state(
@@ -1140,7 +1251,7 @@ async fn run_ws_client(
 ) {
     let conn_id = state.next_conn_id.fetch_add(1, Ordering::Relaxed);
     let is_alive = Arc::new(AtomicBool::new(true));
-    let (tx, mut rx) = mpsc::channel::<ClientEvent>(OUTBOUND_QUEUE_CAP);
+    let tx = ClientTx::new();
 
     {
         let mut sockets = state.live_sockets.lock().expect("sockets poisoned");
@@ -1154,8 +1265,9 @@ async fn run_ws_client(
     }
 
     let (mut ws_sink, mut ws_read) = ws_stream.split();
+    let writer_tx = tx.clone();
     let writer = tokio::spawn(async move {
-        while let Some(ev) = rx.recv().await {
+        while let Some(ev) = writer_tx.recv().await {
             match ev {
                 ClientEvent::Send(msg) => {
                     if ws_sink.send(msg).await.is_err() {
@@ -1168,6 +1280,7 @@ async fn run_ws_client(
                 }
             }
         }
+        writer_tx.mark_dropped();
     });
 
     let mut role = WsRole::None;
@@ -1195,7 +1308,7 @@ async fn run_ws_client(
         match msg {
             Message::Pong(_) => {}
             Message::Ping(payload) => {
-                let _ = tx.try_send(ClientEvent::Send(Message::Pong(payload)));
+                tx.send_ctrl_msg(Message::Pong(payload));
             }
             Message::Close(_) => break,
             Message::Binary(raw) => {
@@ -1280,7 +1393,7 @@ async fn relay_binary(state: &ServerState, role: &WsRole, raw: &[u8]) -> Option<
     };
 
     if let Some(peer) = target_tx {
-        let _ = peer.send(ClientEvent::Send(Message::Binary(payload.into()))).await;
+        peer.send_binary(payload).await;
     }
     Some(wait_ms)
 }
@@ -1290,7 +1403,7 @@ fn handle_control_msg(
     state: &ServerState,
     conn_id: u64,
     client_ip: &str,
-    tx: &mpsc::Sender<ClientEvent>,
+    tx: &ClientTx,
     role: &mut WsRole,
     msg: Value,
 ) -> bool {
@@ -1577,7 +1690,7 @@ fn ping_sockets(state: &ServerState) {
         if !sock.is_alive.swap(false, Ordering::Relaxed) {
             close_socket(&sock.tx);
         } else {
-            let _ = sock.tx.try_send(ClientEvent::Send(Message::Ping(Default::default())));
+            sock.tx.send_ctrl_msg(Message::Ping(Default::default()));
         }
     }
 }

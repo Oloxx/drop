@@ -17,7 +17,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-import { startServer, findChrome, CHROME_ARGS, ROOT } from './helpers.mjs';
+import { startServer, findChrome, CHROME_ARGS, ROOT, open as openSocket, sleep } from './helpers.mjs';
 import { crc32Update } from '../public/shared/zip.js';
 
 const CHROME = findChrome();
@@ -662,4 +662,57 @@ test('web: lotes de archivos bajan en streaming como .zip', { skip: !CHROME && !
       await ctx.close();
     }
   }
+});
+
+test('web -> CLI: ignora cli-accept sin cli-proof valido', { skip: !CHROME && !REQUIRED && 'sin Chrome (CHROME_PATH)', timeout: 60_000 }, async (t) => {
+  assert.ok(CHROME, 'DROP_REQUIRE_CHROME=1 pero no hay Chrome: indicalo con CHROME_PATH');
+  const { chromium } = await import('playwright-core');
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const browser = await chromium.launch({ executablePath: CHROME, headless: true, args: CHROME_ARGS });
+  t.after(() => browser.close());
+  const context = await browser.newContext();
+  t.after(() => context.close());
+
+  const sender = await context.newPage();
+  await sender.goto(srv.http, { waitUntil: 'domcontentloaded' });
+  await sender.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array(64 * 1024)], 'privado.bin'));
+    const input = document.getElementById('file-input');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await sender.click('#create-link');
+  await sender.waitForFunction(() => document.getElementById('code-out').value.length > 10, null, { timeout: 15_000 });
+  const code = await sender.inputValue('#code-out');
+  const roomId = code.split('-')[0];
+
+  // 1. Intento directo de cli-accept antes y despues de cli-offer sin enviar cli-proof.
+  const attacker = await openSocket(srv.ws);
+  t.after(() => attacker.close());
+  let binaryCount = 0;
+  attacker.on('message', (_raw, isBinary) => {
+    if (isBinary) binaryCount++;
+  });
+  attacker.say({ t: 'join', token: roomId, name: 'cli' });
+  await attacker.until((m) => m.t === 'joined');
+  attacker.say({ t: 'signal', data: { type: 'cli-accept' } });
+  const offer = await attacker.until((m) => m.t === 'signal' && m.data?.type === 'cli-offer');
+  assert.equal(offer.data.type, 'cli-offer');
+  attacker.say({ t: 'signal', data: { type: 'cli-accept' } });
+  await sleep(400);
+  assert.equal(binaryCount, 0, 'el emisor web no debe enviar datos sin cli-proof');
+  assert.equal(
+    attacker.queue.some((m) => m.t === 'signal' && m.data?.type === 'cli-sealed'),
+    false,
+  );
+
+  // 2. cli-proof incorrecto -> rechazado; cli-accept posterior sigue ignorado.
+  attacker.say({ t: 'signal', data: { type: 'cli-proof', v: offer.data.v, proof: '0'.repeat(64) } });
+  const bad = await attacker.until((m) => m.t === 'error');
+  assert.equal(bad.reason, 'BAD_SECRET');
+  attacker.say({ t: 'signal', data: { type: 'cli-accept' } });
+  await sleep(300);
+  assert.equal(binaryCount, 0);
 });

@@ -82,6 +82,7 @@ impl std::error::Error for TransferError {}
 pub struct SendItem {
     pub entry: FileEntry,
     pub fs_path: Option<PathBuf>,
+    pub inline_data: Option<Arc<[u8]>>,
     pub is_stdin: bool,
 }
 
@@ -391,6 +392,43 @@ pub async fn hash_partial(path: &Path, limit: u64) -> std::io::Result<Option<Str
     Ok(Some(hex::encode(hasher.finalize())))
 }
 
+fn parse_prefix_request(
+    max_size: Option<u64>,
+    req: Option<&Value>,
+) -> Option<(u64, &str)> {
+    let obj = req.and_then(|v| v.as_object())?;
+    let offset = obj.get("offset").and_then(|v| v.as_u64())?;
+    if offset == 0 {
+        return None;
+    }
+    if let Some(sz) = max_size
+        && offset > sz
+    {
+        return None;
+    }
+    let expected = obj.get("sha256").and_then(|v| v.as_str())?;
+    Some((offset, expected))
+}
+
+/// Valida `{ offset, sha256 }` contra un buffer inline en memoria.
+pub fn verify_inline_prefix(bytes: &[u8], req: Option<&Value>) -> Option<VerifiedPrefix> {
+    let (offset, expected) = parse_prefix_request(Some(bytes.len() as u64), req)?;
+    let end = usize::try_from(offset).ok()?;
+    let slice = bytes.get(..end)?;
+    let mut hasher = Sha256::new();
+    hasher.update(slice);
+    let actual = hex::encode(hasher.clone().finalize());
+    if actual == expected {
+        Some(VerifiedPrefix {
+            offset,
+            sha256: actual,
+            hasher,
+        })
+    } else {
+        None
+    }
+}
+
 /// Valida `{ offset, sha256 }` de una peticion de reanudacion contra el archivo fuente.
 /// Si coincide, devuelve `VerifiedPrefix` con el hasher listo para seguir hasheando el resto.
 pub async fn verify_prefix(
@@ -398,21 +436,7 @@ pub async fn verify_prefix(
     max_size: Option<u64>,
     req: Option<&Value>,
 ) -> std::io::Result<Option<VerifiedPrefix>> {
-    let Some(obj) = req.and_then(|v| v.as_object()) else {
-        return Ok(None);
-    };
-    let Some(offset) = obj.get("offset").and_then(|v| v.as_u64()) else {
-        return Ok(None);
-    };
-    if offset == 0 {
-        return Ok(None);
-    }
-    if let Some(sz) = max_size
-        && offset > sz
-    {
-        return Ok(None);
-    }
-    let Some(expected) = obj.get("sha256").and_then(|v| v.as_str()) else {
+    let Some((offset, expected)) = parse_prefix_request(max_size, req) else {
         return Ok(None);
     };
 
@@ -441,6 +465,23 @@ pub async fn verify_prefix(
     } else {
         Ok(None)
     }
+}
+
+/// Verifica el prefijo de reanudacion de un `SendItem` (en memoria o en disco).
+pub async fn verify_item_prefix(
+    item: &SendItem,
+    req: Option<&Value>,
+) -> std::io::Result<Option<VerifiedPrefix>> {
+    if item.is_stdin {
+        return Ok(None);
+    }
+    if let Some(inline) = &item.inline_data {
+        return Ok(verify_inline_prefix(inline, req));
+    }
+    if let Some(fs_path) = &item.fs_path {
+        return verify_prefix(fs_path, item.entry.size, req).await;
+    }
+    Ok(None)
 }
 
 pub struct FileSink {
@@ -884,10 +925,8 @@ pub async fn attach_sender(
         let mut offset = 0u64;
         let mut hasher = Sha256::new();
 
-        if !item.is_stdin
-            && let Some(fs_path) = &item.fs_path
-            && let Some(req) = resume_map.get(&idx)
-            && let Ok(Some(verified)) = verify_prefix(fs_path, item.entry.size, Some(req)).await
+        if let Some(req) = resume_map.get(&idx)
+            && let Ok(Some(verified)) = verify_item_prefix(item, Some(req)).await
         {
             offset = verified.offset;
             hasher = verified.hasher;
@@ -928,6 +967,26 @@ pub async fn attach_sender(
                 if let Some(cb) = &mut on_progress {
                     let secs = start_ts.elapsed().as_secs_f64().max(0.001);
                     cb(sent_total, total_expected, (sent_total - resumed_bytes) as f64 / secs, &selected_entries);
+                }
+            }
+        } else if let Some(inline) = &item.inline_data {
+            let start = usize::try_from(offset).unwrap_or(inline.len());
+            for chunk in inline[start..].chunks(CHUNK_SIZE) {
+                throttle.take(chunk.len()).await;
+                hasher.update(chunk);
+                write_data_frame(&mut stream, &cipher, chunk)
+                    .await
+                    .map_err(|e| TransferError::new("IO", format!("Error enviando datos: {e}")))?;
+                file_bytes += chunk.len() as u64;
+                sent_total += chunk.len() as u64;
+                if let Some(cb) = &mut on_progress {
+                    let secs = start_ts.elapsed().as_secs_f64().max(0.001);
+                    cb(
+                        sent_total,
+                        total_expected,
+                        (sent_total - resumed_bytes) as f64 / secs,
+                        &selected_entries,
+                    );
                 }
             }
         } else if let Some(fs_path) = &item.fs_path {

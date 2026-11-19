@@ -17,7 +17,8 @@ use drop::shared::protocol::FileEntry;
 use drop::signaling::{SignalingSender, WsEvent};
 use drop::transfer::{
     RELAY_ACK_EVERY, ReceiveOptions, SendItem, attach_sender, hash_partial, read_tcp_frame,
-    receive_files, receive_from_relay, reserve_output_path, safe_output_path, verify_prefix,
+    receive_files, receive_from_relay, reserve_output_path, safe_output_path,
+    verify_inline_prefix, verify_prefix,
 };
 
 fn scratch(prefix: &str) -> PathBuf {
@@ -244,6 +245,7 @@ async fn test_tcp_roundtrip_folders_select_and_wrong_code() {
                 path: Some("carpeta/uno.bin".into()),
             },
             fs_path: Some(f1),
+            inline_data: None,
             is_stdin: false,
         },
         SendItem {
@@ -253,6 +255,7 @@ async fn test_tcp_roundtrip_folders_select_and_wrong_code() {
                 path: Some("carpeta/sub/dos.txt".into()),
             },
             fs_path: Some(f2),
+            inline_data: None,
             is_stdin: false,
         },
         SendItem {
@@ -262,6 +265,7 @@ async fn test_tcp_roundtrip_folders_select_and_wrong_code() {
                 path: Some("carpeta/vacio.dat".into()),
             },
             fs_path: Some(f3),
+            inline_data: None,
             is_stdin: false,
         },
     ];
@@ -377,6 +381,7 @@ async fn test_tcp_probe_and_deny_and_resume_after_cut() {
             path: None,
         },
         fs_path: Some(fpath),
+        inline_data: None,
         is_stdin: false,
     }];
 
@@ -685,4 +690,88 @@ async fn test_tcp_rejects_oversized_frame_without_oom() {
     assert_eq!(err.code, "PROTOCOL_FRAME");
 
     srv.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_inline_data_transfer_and_prefix_resume() {
+    let secret = b"super-secret-wifi-password-2026!\nsegunda linea".to_vec();
+    let prefix_len = 16usize;
+    let prefix_sha = hex::encode(Sha256::digest(&secret[..prefix_len]));
+
+    // 1. verify_inline_prefix valida prefijo en RAM y rechaza hash o offset invalidos
+    let ok = verify_inline_prefix(
+        &secret,
+        Some(&json!({ "offset": prefix_len, "sha256": prefix_sha })),
+    )
+    .expect("el prefijo valido debe aceptarse");
+    assert_eq!(ok.offset, prefix_len as u64);
+    assert!(
+        verify_inline_prefix(
+            &secret,
+            Some(&json!({ "offset": prefix_len, "sha256": "0".repeat(64) })),
+        )
+        .is_none()
+    );
+    assert!(
+        verify_inline_prefix(
+            &secret,
+            Some(&json!({ "offset": secret.len() + 1, "sha256": prefix_sha })),
+        )
+        .is_none()
+    );
+
+    // 2. Transferencia TCP completa y reanudacion desde .part usando inline_data (fs_path = None)
+    let work = scratch("inline-mem");
+    let out1 = work.join("out1");
+    let out2 = work.join("out2");
+    std::fs::create_dir_all(&out1).unwrap();
+    std::fs::create_dir_all(&out2).unwrap();
+    std::fs::write(out2.join("secret.txt.part"), &secret[..prefix_len]).unwrap();
+
+    let items = vec![SendItem {
+        entry: FileEntry {
+            name: "secret.txt".into(),
+            size: Some(secret.len() as u64),
+            path: None,
+        },
+        fs_path: None,
+        inline_data: Some(Arc::from(secret.as_slice())),
+        is_stdin: false,
+    }];
+    let code = new_code("5123");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let items_arc = Arc::new(items);
+    let c_srv = code.clone();
+    let srv = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (sock, _) = listener.accept().await.unwrap();
+            let it = Arc::clone(&items_arc);
+            let c = c_srv.clone();
+            tokio::spawn(async move {
+                attach_sender(sock, &it, &c, "5123", 0, None, None, None, None)
+                    .await
+                    .unwrap();
+            });
+        }
+    });
+
+    // Descarga completa
+    let s1 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let r1 = receive_files(s1, &code, "5123", &out1, ReceiveOptions::default(), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(r1.resumed_bytes, 0);
+    assert_eq!(std::fs::read(out1.join("secret.txt")).unwrap(), secret);
+
+    // Reanudacion desde .part contra el buffer en RAM
+    let s2 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let r2 = receive_files(s2, &code, "5123", &out2, ReceiveOptions::default(), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(r2.resumed_bytes, prefix_len as u64);
+    assert_eq!(std::fs::read(out2.join("secret.txt")).unwrap(), secret);
+
+    srv.await.unwrap();
+    let _ = std::fs::remove_dir_all(&work);
 }

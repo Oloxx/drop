@@ -103,14 +103,18 @@ test('--expire con una duración mal escrita no abre ningún canal', async () =>
 
 // ------------------------------------------------- --text / --stdout (#34)
 
-test('--text envía un fragmento y --stdout lo vuelca limpio por la tubería', { timeout: 60_000 }, async () => {
+test('--text envía un fragmento y --stdout lo vuelca limpio por la tubería sin crear archivos temporales', { timeout: 60_000 }, async () => {
   const server = await startServer();
+  const fakeTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'drop-notmp-'));
   const texto = 'la clave del wifi es: ñandú-2026 ✓\nsegunda línea';
-  const sender = runCli(['send', '--text', texto, '--server', server.http, '--relay', '--no-qr']);
+  const sender = runCli(['send', '--text', texto, '--server', server.http, '--relay', '--no-qr'], {
+    env: { TMPDIR: fakeTmp, TMP: fakeTmp, TEMP: fakeTmp },
+  });
   let receiver = null;
   try {
     const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
     assert.match(sender.output, /message\.txt|1 archivo/);
+    assert.deepEqual(fs.readdirSync(fakeTmp), [], '--text no debe escribir ningún archivo temporal en disco');
 
     const [cmd, cmdArgs] = cliSpawnTarget(['recv', code, '--server', server.http, '--relay', '--stdout']);
     receiver = spawn(cmd, cmdArgs, {
@@ -132,6 +136,7 @@ test('--text envía un fragmento y --stdout lo vuelca limpio por la tubería', {
     receiver?.kill('SIGKILL');
     sender.kill('SIGKILL');
     server.stop();
+    fs.rmSync(fakeTmp, { recursive: true, force: true });
   }
 });
 
