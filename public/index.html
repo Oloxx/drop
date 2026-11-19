@@ -88,28 +88,27 @@
     <div class="ticket cli-box" id="cli-box">
       <div class="cli-head">
         <div>
-          <p class="label" id="cli-label">cli · desktop binary</p>
+          <p class="label" id="cli-label">cli · install</p>
           <p class="hint cli-sub">Full LAN speed (100+ MB/s), folder trees, resume and no browser limits.</p>
         </div>
         <span class="cli-ver" id="cli-ver" hidden></span>
       </div>
-      <div class="cli-cmd-wrap" id="cli-cmd-wrap" hidden>
+      <div class="cli-cmd-wrap" id="cli-cmd-wrap">
         <div class="cli-cmd-tabs" id="cli-cmd-tabs" role="tablist" aria-label="Install shell" hidden>
           <button class="cli-tab" id="cli-tab-ps" type="button" role="tab" aria-selected="true" data-shell="ps">powershell</button>
           <button class="cli-tab" id="cli-tab-cmd" type="button" role="tab" aria-selected="false" data-shell="cmd">cmd</button>
+          <button class="cli-tab" id="cli-tab-sh" type="button" role="tab" aria-selected="false" data-shell="sh" hidden>macos / linux</button>
         </div>
         <div class="cli-cmd-row">
           <code class="cli-cmd" id="cli-cmd"></code>
-          <button class="ghost cli-copy" id="cli-copy" type="button">copy</button>
+          <button class="btn primary cli-copy" id="cli-copy" type="button">copy</button>
         </div>
       </div>
-      <div class="row cli-actions">
-        <a class="btn primary" id="cli-dl" href="https://github.com/Oloxx/drop/releases/latest"
-           target="_blank" rel="noopener noreferrer">download cli</a>
-        <button class="ghost" id="cli-all-toggle" type="button"
-                aria-expanded="false" aria-controls="cli-all">other platforms</button>
+      <div class="cli-foot">
+        <p class="hint" id="cli-note"></p>
+        <button class="ghost cli-manual" id="cli-all-toggle" type="button"
+                aria-expanded="false" aria-controls="cli-all">manual downloads</button>
       </div>
-      <p class="hint" id="cli-note" hidden></p>
       <div class="cli-all" id="cli-all" hidden>
         <ul class="cli-list" id="cli-list"></ul>
         <a class="cli-rel-link" id="cli-rel-link" href="https://github.com/Oloxx/drop/releases/latest"

@@ -731,6 +731,20 @@ button,
 }
 .cli-copy {
   flex: none;
+  padding: .34rem .75rem;
+  font-size: .76rem;
+}
+.cli-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.cli-foot .hint { margin: 0; }
+.cli-manual {
+  flex: none;
   padding: .24rem .6rem;
   font-size: .74rem;
 }

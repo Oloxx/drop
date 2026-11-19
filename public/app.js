@@ -2581,30 +2581,35 @@ function cliInstallOrigin() {
   return 'https://drop.oloxx.dev';
 }
 
-function cliInstallCommand(platformId, shell) {
+function cliInstallCommand(shell) {
   const origin = cliInstallOrigin();
-  if (platformId === 'windows-x64') {
-    if (shell === 'cmd') {
-      return `curl -fsSL ${origin}/install.cmd -o "%TEMP%\\drop-install.cmd" && "%TEMP%\\drop-install.cmd" && del "%TEMP%\\drop-install.cmd"`;
-    }
+  if (shell === 'cmd') {
+    return `curl -fsSL ${origin}/install.cmd -o "%TEMP%\\drop-install.cmd" && "%TEMP%\\drop-install.cmd" && del "%TEMP%\\drop-install.cmd"`;
+  }
+  if (shell === 'ps') {
     return `irm ${origin}/install.ps1 | iex`;
   }
   return `curl -fsSL ${origin}/install.sh | sh`;
 }
 
-function renderCliDownload(detected, version, winShell = 'ps') {
+function defaultCliShell(detected) {
+  if (detected.id === 'win-x64') return 'ps';
+  if (detected.id === 'mac-arm64' || detected.id === 'linux-x64' || detected.id === 'linux-arm64') return 'sh';
+  return 'ps';
+}
+
+function renderCliDownload(detected, version, selectedShell) {
   const box = $('#cli-box');
   if (!box) return;
   const verEl = $('#cli-ver');
-  const dl = $('#cli-dl');
-  const toggle = $('#cli-all-toggle');
   const note = $('#cli-note');
-  const all = $('#cli-all');
   const list = $('#cli-list');
   const relLink = $('#cli-rel-link');
-  const cmdWrap = $('#cli-cmd-wrap');
   const cmdTabs = $('#cli-cmd-tabs');
   const cmdEl = $('#cli-cmd');
+  const tabPs = $('#cli-tab-ps');
+  const tabCmd = $('#cli-tab-cmd');
+  const tabSh = $('#cli-tab-sh');
 
   if (version) {
     verEl.textContent = `v${version}`;
@@ -2615,38 +2620,40 @@ function renderCliDownload(detected, version, winShell = 'ps') {
 
   relLink.href = version ? `${CLI_RELEASE_BASE}/tag/v${version}` : `${CLI_RELEASE_BASE}/latest`;
 
-  const target = CLI_PLATFORMS.find((p) => p.id === detected.id);
-  if (target) {
-    const file = version ? target.asset(version) : `${target.id} binary`;
-    dl.hidden = false;
-    dl.href = cliReleaseUrl(version, target.asset(version || '0.0.0'));
-    // Los binarios de GitHub vienen con Content-Disposition: attachment; abrir en la
-    // misma pestaña inicia la descarga sin dejar una pestaña en blanco abierta.
-    if (version) dl.removeAttribute('target');
-    else dl.setAttribute('target', '_blank');
-    dl.textContent = target.buttonLabel;
-    note.textContent = target.hint(file, detected.arch);
-    note.hidden = false;
-    toggle.hidden = false;
-    if (cmdWrap && cmdEl) {
-      const isWin = target.id === 'windows-x64';
-      cmdWrap.hidden = false;
-      if (cmdTabs) cmdTabs.hidden = !isWin;
-      cmdEl.textContent = cliInstallCommand(target.id, winShell);
-      const tabPs = $('#cli-tab-ps');
-      const tabCmd = $('#cli-tab-cmd');
-      if (tabPs) tabPs.setAttribute('aria-selected', String(winShell !== 'cmd'));
-      if (tabCmd) tabCmd.setAttribute('aria-selected', String(winShell === 'cmd'));
+  const isWin = detected.id === 'win-x64';
+  const isUnix = detected.id === 'mac-arm64' || detected.id === 'linux-x64' || detected.id === 'linux-arm64';
+  const shell = selectedShell || defaultCliShell(detected);
+
+  if (cmdTabs) {
+    cmdTabs.hidden = isUnix;
+    if (tabPs) {
+      tabPs.hidden = isUnix;
+      tabPs.setAttribute('aria-selected', String(shell === 'ps'));
     }
+    if (tabCmd) {
+      tabCmd.hidden = isUnix;
+      tabCmd.setAttribute('aria-selected', String(shell === 'cmd'));
+    }
+    if (tabSh) {
+      tabSh.hidden = isWin || isUnix;
+      tabSh.setAttribute('aria-selected', String(shell === 'sh'));
+    }
+  }
+
+  if (cmdEl) {
+    cmdEl.textContent = cliInstallCommand(shell);
+  }
+
+  if (isWin) {
+    note.textContent = shell === 'cmd'
+      ? 'cmd · verifies sha-256 and adds drop to PATH'
+      : 'powershell · verifies sha-256 and adds drop to PATH';
+  } else if (isUnix) {
+    note.textContent = `${detected.osName || 'unix'} · verifies sha-256 and installs to PATH`;
   } else {
-    dl.hidden = true;
-    toggle.hidden = true;
-    all.hidden = false;
-    if (cmdWrap) cmdWrap.hidden = true;
     note.textContent = detected.osName
-      ? `detected ${detected.osName} · desktop cli binaries are for windows, macos and linux:`
-      : 'select a platform executable below:';
-    note.hidden = false;
+      ? `detected ${detected.osName} · run on windows, macos or linux:`
+      : 'verifies sha-256 and adds drop to PATH';
   }
 
   list.textContent = '';
@@ -2675,15 +2682,15 @@ function initCliDownload() {
   if (!box) return;
   let detected = detectCliPlatform();
   let version = null;
-  let winShell = 'ps';
+  let selectedShell = null;
 
-  renderCliDownload(detected, version, winShell);
+  renderCliDownload(detected, version, selectedShell);
 
-  for (const tab of [$('#cli-tab-ps'), $('#cli-tab-cmd')]) {
+  for (const tab of [$('#cli-tab-ps'), $('#cli-tab-cmd'), $('#cli-tab-sh')]) {
     if (!tab) continue;
     tab.onclick = () => {
-      winShell = tab.dataset.shell === 'cmd' ? 'cmd' : 'ps';
-      renderCliDownload(detected, version, winShell);
+      selectedShell = tab.dataset.shell || 'ps';
+      renderCliDownload(detected, version, selectedShell);
     };
   }
 
@@ -2704,14 +2711,14 @@ function initCliDownload() {
     const open = all.hidden;
     all.hidden = !open;
     $('#cli-all-toggle').setAttribute('aria-expanded', String(open));
-    $('#cli-all-toggle').textContent = open ? 'hide platforms' : 'other platforms';
+    $('#cli-all-toggle').textContent = open ? 'hide downloads' : 'manual downloads';
   };
 
   if (navigator.userAgentData?.getHighEntropyValues) {
     navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness', 'platform'])
       .then((he) => {
         detected = detectCliPlatform(navigator, he);
-        renderCliDownload(detected, version, winShell);
+        renderCliDownload(detected, version, selectedShell);
       })
       .catch(() => {});
   }
@@ -2722,7 +2729,7 @@ function initCliDownload() {
       const v = typeof data?.version === 'string' ? data.version.trim() : '';
       if (/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(v)) {
         version = v;
-        renderCliDownload(detected, version, winShell);
+        renderCliDownload(detected, version, selectedShell);
       }
     })
     .catch(() => {});

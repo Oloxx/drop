@@ -572,7 +572,7 @@ test('web: lotes de archivos bajan en streaming como .zip', { skip: !CHROME && !
     assert.equal(fs.readFileSync(await dl.path(), 'utf8'), 'hola1');
   }
 
-  // ------------------------------ 5. Descarga del CLI con autodeteccion de SO
+  // ------------------------------ 5. Instalacion del CLI por comando con autodeteccion de SO
   {
     const ver = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
     const cases = [
@@ -580,33 +580,42 @@ test('web: lotes de archivos bajan en streaming como .zip', { skip: !CHROME && !
         name: 'Windows x64',
         platform: 'Win32',
         ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0',
-        expectedUrl: `https://github.com/Oloxx/drop/releases/download/v${ver}/drop-v${ver}-windows-x64.exe`,
+        expectedCmd: `irm ${srv.http}/install.ps1 | iex`,
+        expectTabs: true,
+        expectShTab: false,
+        checkWinCmdTab: true,
         checkToggle: true,
       },
       {
         name: 'macOS Apple Silicon',
         platform: 'MacIntel',
         ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15',
-        expectedUrl: `https://github.com/Oloxx/drop/releases/download/v${ver}/drop-v${ver}-macos-arm64.tar.gz`,
+        expectedCmd: `curl -fsSL ${srv.http}/install.sh | sh`,
+        expectTabs: false,
       },
       {
         name: 'Linux x64',
         platform: 'Linux x86_64',
         ua: 'Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/131.0',
-        expectedUrl: `https://github.com/Oloxx/drop/releases/download/v${ver}/drop-v${ver}-linux-x64.tar.gz`,
+        expectedCmd: `curl -fsSL ${srv.http}/install.sh | sh`,
+        expectTabs: false,
       },
       {
         name: 'Linux ARM64 (userAgentData)',
         platform: 'Linux x86_64',
         ua: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0',
         uaData: { platform: 'Linux', architecture: 'arm', bitness: '64', mobile: false },
-        expectedUrl: `https://github.com/Oloxx/drop/releases/download/v${ver}/drop-v${ver}-linux-arm64.tar.gz`,
+        expectedCmd: `curl -fsSL ${srv.http}/install.sh | sh`,
+        expectTabs: false,
       },
       {
-        name: 'Android (sin binario directo)',
+        name: 'Android (muestra las 3 pestañas de comando)',
         platform: 'Linux armv8l',
         ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/130.0 Mobile',
-        expectedUrl: null,
+        expectedCmd: `irm ${srv.http}/install.ps1 | iex`,
+        expectTabs: true,
+        expectShTab: true,
+        expectAndroidNote: true,
       },
     ];
 
@@ -629,21 +638,26 @@ test('web: lotes de archivos bajan en streaming como .zip', { skip: !CHROME && !
 
       await page.goto(srv.http, { waitUntil: 'domcontentloaded' });
       await page.waitForFunction((v) => document.getElementById('cli-ver')?.textContent === `v${v}`, ver, { timeout: 10_000 });
+      await page.waitForFunction((cmd) => document.getElementById('cli-cmd')?.textContent === cmd, c.expectedCmd, { timeout: 10_000 });
 
-      if (c.expectedUrl) {
-        await page.waitForFunction((url) => document.getElementById('cli-dl')?.href === url, c.expectedUrl, { timeout: 10_000 });
-        assert.equal(await page.isVisible('#cli-dl'), true, `${c.name}: boton principal visible`);
-        if (c.checkToggle) {
-          assert.equal(await page.isVisible('#cli-all'), false, 'otras plataformas empiezan ocultas');
-          await page.click('#cli-all-toggle');
-          assert.equal(await page.isVisible('#cli-all'), true, 'al pulsar se muestran las 4 plataformas');
-          assert.equal(await page.locator('#cli-list li').count(), 4);
-        }
-      } else {
-        assert.equal(await page.isVisible('#cli-dl'), false, `${c.name}: sin boton de binario unico en movil`);
-        assert.equal(await page.isVisible('#cli-all'), true, `${c.name}: muestra la lista de escritorio`);
-        assert.match(await page.textContent('#cli-note'), /android/i);
+      assert.equal(await page.isVisible('#cli-cmd-wrap'), true, `${c.name}: bloque de comando visible`);
+      assert.equal(await page.isVisible('#cli-cmd-tabs'), c.expectTabs, `${c.name}: visibilidad de pestañas`);
+      if (c.expectTabs) {
+        assert.equal(await page.isVisible('#cli-tab-sh'), !!c.expectShTab, `${c.name}: pestaña macos/linux`);
+      }
+      if (c.checkWinCmdTab) {
+        await page.click('#cli-tab-cmd');
+        const cmdText = await page.textContent('#cli-cmd');
+        assert.match(cmdText, /install\.cmd/);
+      }
+      if (c.checkToggle) {
+        assert.equal(await page.isVisible('#cli-all'), false, 'descargas manuales empiezan ocultas');
+        await page.click('#cli-all-toggle');
+        assert.equal(await page.isVisible('#cli-all'), true, 'al pulsar se muestran las 4 plataformas');
         assert.equal(await page.locator('#cli-list li').count(), 4);
+      }
+      if (c.expectAndroidNote) {
+        assert.match(await page.textContent('#cli-note'), /android/i);
       }
       await ctx.close();
     }
