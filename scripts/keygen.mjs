@@ -8,7 +8,7 @@
 //
 //   gh secret set DROP_SIGNING_KEY < ~/.drop-signing-key
 //
-// La publica si se imprime, porque es publica: va empotrada en `cli-rs/src/cli.rs`
+// La publica si se imprime, porque es publica: va empotrada en `cli/src/cli.rs`
 // (PUBLIC_KEY) y en el README, para que cualquiera pueda comprobar una descarga
 // con `minisign -V`.
 //

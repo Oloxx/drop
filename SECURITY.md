@@ -24,6 +24,6 @@ See [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) for the full threat model, al
 
 - **Targeted malicious web server:** a compromised server could serve tampered `app.js` to a victim browser while serving clean files to `drop verify-web`.
 - **PAKE:** Drop does not implement SPAKE2/CPace; protection relies on secret entropy, `scrypt` stretching, server rate limits, and manual SAS comparison.
-- **Paid external audit:** cryptographic modules in [`public/shared/`](public/shared/) and [`cli-rs/src/`](cli-rs/src/) use standard primitives verified against official test vectors (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) in [`test/e2ee.test.mjs`](test/e2ee.test.mjs) and [`cli-rs/tests/shared_vectors_test.rs`](cli-rs/tests/shared_vectors_test.rs), without a paid third-party audit.
+- **Paid external audit:** cryptographic modules in [`public/shared/`](public/shared/) and [`cli/src/`](cli/src/) use standard primitives verified against official test vectors (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) in [`test/e2ee.test.mjs`](test/e2ee.test.mjs) and [`cli/tests/shared_vectors_test.rs`](cli/tests/shared_vectors_test.rs), without a paid third-party audit.
 - **Traffic metadata:** the server, TURN, and network observers can see timing, peer IPs, and byte volumes.
 - **Endpoint compromise:** anyone who receives the four words or compromises a sender/receiver device can access the transferred files.

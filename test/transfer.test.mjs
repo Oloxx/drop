@@ -1,6 +1,6 @@
 // Pruebas de extremo a extremo de protocolos y seguridad de transferencia contra el binario Rust:
 // traversal en nombre y subpath, colisiones (2), --overwrite, version incompatible y cortes TCP.
-// (Las pruebas unitarias de safe_output_path/reserve_output_path estan en cli-rs/tests/transfer_test.rs).
+// (Las pruebas unitarias de safe_output_path/reserve_output_path estan en cli/tests/transfer_test.rs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';

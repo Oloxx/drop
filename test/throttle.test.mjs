@@ -1,6 +1,6 @@
 // --limit: que el caudal real se ajusta al limite pedido en el emisor y en el receptor.
 // Los casos de extremo a extremo levantan su propio servidor y van por relay.
-// (Las pruebas unitarias de parseRate y Throttle estan en cli-rs/tests/).
+// (Las pruebas unitarias de parseRate y Throttle estan en cli/tests/).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

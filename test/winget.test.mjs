@@ -2,7 +2,7 @@
 //
 // Vigila tres invariantes:
 // 1. Que `scripts/winget.mjs` nunca genere un manifiesto si falta `SHA256SUMS.minisig`
-//    o si la firma no valida con la clave publica empotrada en `cli-rs/src/cli.rs`.
+//    o si la firma no valida con la clave publica empotrada en `cli/src/cli.rs`.
 // 2. Que la estructura de directorio (`manifests/o/Oloxx/drop/<ver>/`) y los campos
 //    YAML cumplan el esquema 1.12.0 (validado tambien por `winget validate` en Windows).
 // 3. Que `--submit` solo modifique los 3 ficheros del manifiesto, evite duplicados y
@@ -52,10 +52,10 @@ function startMockServer(handler) {
   });
 }
 
-test('PUBLIC_KEY de scripts/winget.mjs coincide con cli-rs/src/cli.rs', () => {
-  const cliSrc = fs.readFileSync(path.join(ROOT, 'cli-rs', 'src', 'cli.rs'), 'utf8');
+test('PUBLIC_KEY de scripts/winget.mjs coincide con cli/src/cli.rs', () => {
+  const cliSrc = fs.readFileSync(path.join(ROOT, 'cli', 'src', 'cli.rs'), 'utf8');
   const m = cliSrc.match(/pub const PUBLIC_KEY:\s*&str\s*=\s*"([^"]+)"/);
-  assert.ok(m, 'No se encontro PUBLIC_KEY en cli-rs/src/cli.rs');
+  assert.ok(m, 'No se encontro PUBLIC_KEY en cli/src/cli.rs');
   assert.equal(PUBLIC_KEY, m[1]);
 });
 

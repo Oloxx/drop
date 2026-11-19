@@ -281,7 +281,7 @@ All four CLI/Web pairs work seamlessly under frozen **Protocol 5** ([`docs/COMPA
 | `lemon-radar-tiger-orbit` | Shared secret drawn locally from BIP-39 (2048 words) | **Never** (neither plaintext nor hashed) |
 
 * **Key derivation & verification:** 4 BIP-39 words (**44 bits**) are stretched with **`scrypt`** (`N = 32768`, `r = 8`, `p = 1`, 32 MiB RAM) salted with `SHA-256("drop-code-v2|" + roomId)`. Peers verify knowledge before any metadata leaves and compute a 3-word **SAS fingerprint** (`beef-grit-two`) from DTLS fingerprints or the derived key for out-of-band MITM checks.
-* **Transport optimization:** The Rust CLI (`cli-rs/`) negotiates LAN discovery in < 10 ms and uses hardware `AES-NI` acceleration for AES-256-GCM; the web engine (`public/app.js`) uses reactive watermarks (`HIGH_WATER = 8 MB`, `LOW_WATER = 1 MB`) over ordered DataChannels.
+* **Transport optimization:** The Rust CLI (`cli/`) negotiates LAN discovery in < 10 ms and uses hardware `AES-NI` acceleration for AES-256-GCM; the web engine (`public/app.js`) uses reactive watermarks (`HIGH_WATER = 8 MB`, `LOW_WATER = 1 MB`) over ordered DataChannels.
 * **Known trade-offs:** No paid third-party cryptographic audit; no PAKE (relies on rate limiting and room burning on brute force); and a compromised web server can serve targeted malicious JS to one browser even if `drop verify-web` passes elsewhere (run the native CLI or local `drop serve` for high-assurance transfers). See [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) and [`SECURITY.md`](SECURITY.md).
 
 ---
@@ -304,10 +304,10 @@ Requires **Node.js >= 22.9** and **Rust / Cargo (stable)**:
 ```bash
 npm install
 npm run dev           # local signaling server on http://localhost:3000
-npm run build:cli     # build release CLI binary into cli-rs/target/release/drop(.exe)
+npm run build:cli     # build release CLI binary into cli/target/release/drop(.exe)
 npm run cli -- send file.bin
 
-cargo test --manifest-path cli-rs/Cargo.toml
+cargo test --manifest-path cli/Cargo.toml
 npm test              # full integration, serve, security header & Chrome E2E suite
 ```
 

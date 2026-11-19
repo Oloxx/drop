@@ -1,4 +1,4 @@
-// La version del CLI sale del package.json (via cli-rs/build.rs), y de ningun otro sitio.
+// La version del CLI sale del package.json (via cli/build.rs), y de ningun otro sitio.
 //
 // No es cosmetico: `drop update` compara la release de GitHub contra VERSION,
 // asi que una constante desincronizada deja al CLI creyendose desactualizado
@@ -15,9 +15,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { ROOT, CLI_BIN, cliSpawnTarget } from './helpers.mjs';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-const CLI_RS = path.join(ROOT, 'cli-rs', 'src', 'cli.rs');
-const CARGO_TOML = path.join(ROOT, 'cli-rs', 'Cargo.toml');
-const COMPLETION_RS = path.join(ROOT, 'cli-rs', 'src', 'completion.rs');
+const CLI_RS = path.join(ROOT, 'cli', 'src', 'cli.rs');
+const CARGO_TOML = path.join(ROOT, 'cli', 'Cargo.toml');
+const COMPLETION_RS = path.join(ROOT, 'cli', 'src', 'completion.rs');
 const SHELLS = ['bash', 'zsh', 'fish', 'powershell'];
 
 function execCli(args) {
@@ -37,7 +37,7 @@ function readCompletionMeta() {
 test('`drop --version` y Cargo.toml coinciden con package.json', () => {
   const cargoToml = fs.readFileSync(CARGO_TOML, 'utf8');
   const cargoVer = cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
-  assert.equal(cargoVer, pkg.version, 'cli-rs/Cargo.toml debe tener la misma versión que package.json');
+  assert.equal(cargoVer, pkg.version, 'cli/Cargo.toml debe tener la misma versión que package.json');
 
   const out = execCli(['--version']);
   assert.equal(out.trim(), `drop v${pkg.version}`);
@@ -89,7 +89,7 @@ test('todo flag del parser sale en --help y en el autocompletado', () => {
   assert.ok(flags.length >= 20, `el extractor no ha encontrado flags: ${flags}`);
   for (const f of flags) {
     assert.ok(help.includes(f), `${f} no aparece en drop --help`);
-    assert.ok(known.has(f), `${f} no esta en FLAGS de cli-rs/src/completion.rs`);
+    assert.ok(known.has(f), `${f} no esta en FLAGS de cli/src/completion.rs`);
   }
   for (const cmd of commands) assert.ok(help.includes(`drop ${cmd}`), `drop ${cmd} no aparece en la ayuda`);
 });

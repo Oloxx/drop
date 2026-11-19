@@ -159,7 +159,7 @@ Previously issued TURN credentials stop working immediately on `coturn` reload; 
 
 ### Rotating `DROP_SIGNING_KEY` (CLI Releases)
 
-The public key (`PUBLIC_KEY`) is **embedded in every CLI binary** in [`cli-rs/src/cli.rs`](cli-rs/src/cli.rs):
+The public key (`PUBLIC_KEY`) is **embedded in every CLI binary** in [`cli/src/cli.rs`](cli/src/cli.rs):
 
 1. Back up `~/.drop-signing-key` and generate a new pair:
 
@@ -174,7 +174,7 @@ The public key (`PUBLIC_KEY`) is **embedded in every CLI binary** in [`cli-rs/sr
    gh secret set DROP_SIGNING_KEY < ~/.drop-signing-key
    ```
 
-3. Update `PUBLIC_KEY` in [`cli-rs/src/cli.rs`](cli-rs/src/cli.rs) and the verification public key in [`README.md`](README.md) and [`README.es.md`](README.es.md).
+3. Update `PUBLIC_KEY` in [`cli/src/cli.rs`](cli/src/cli.rs) and the verification public key in [`README.md`](README.md) and [`README.es.md`](README.es.md).
 4. Run `npm test` (includes `test/minisign.test.mjs`) and publish a new release.
 
 **Important:** older binaries carry the old embedded public key, so `drop update` will reject the first release signed with the new key. Note this in the release notes so users upgrade via their package manager (`brew upgrade drop`, `winget upgrade Oloxx.drop`, `scoop update drop`) or re-download verifying the new key.

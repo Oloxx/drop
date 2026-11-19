@@ -2,7 +2,7 @@
 
 Specification of what two `drop` browser tabs send to each other and to the signaling server during a transfer. It is the canonical reference for [`public/app.js`](../public/app.js) and [`server/index.js`](../server/index.js): if code and spec disagree, the bug is whichever drifted, and this document decides.
 
-**Not covered here:** the CLI wire protocol (direct TCP and `cli-*` WebSocket relay), which is documented in one place above `receive_from_relay` in [`cli-rs/src/transfer.rs`](../cli-rs/src/transfer.rs). The two meet at a single boundary: a browser tab receiving from `drop send`, or sending to `drop recv`, switches to `cli-*` over the WebSocket (§7).
+**Not covered here:** the CLI wire protocol (direct TCP and `cli-*` WebSocket relay), which is documented in one place above `receive_from_relay` in [`cli/src/transfer.rs`](../cli/src/transfer.rs). The two meet at a single boundary: a browser tab receiving from `drop send`, or sending to `drop recv`, switches to `cli-*` over the WebSocket (§7).
 
 Everything here is frozen at `1.0` (see [`ROADMAP.md`](../ROADMAP.md)). Changing a frame shape, removing a field, or changing ordering requires a major version bump; adding optional fields or new `k` frames does not (see §8).
 
@@ -56,7 +56,7 @@ All JSON messages carry a `t` field. Unknown or malformed shapes are closed with
 | `guest-gone` | `guestId` | sender | Receiver disconnected. Arrives **immediately**, long before WebRTC notices, triggering chain repair (§6.4). |
 | `host-gone` | — | receivers | Sender closed. Room closes; in-flight chain transfers may still finish. |
 | `signal` | `from`, `data` | either | Forwarded signal (`from = 0` for sender, or another receiver's `guestId`). |
-| `error` | `reason` | either | Rejection, usually followed by close. `reason` ∈ `NOT_FOUND`, `RATE_LIMITED`, `BAD_SECRET`, `BURNED`, `ROOM_FULL`, `TOO_MANY_ROOMS`, `NO_ROOMS`, `EXPIRED`, `FLOOD`, `VERSION`. Mapped in `JOIN_ERRORS`/`HOST_ERRORS` (`public/app.js`) and `translate_error` (`cli-rs/src/signaling.rs`). |
+| `error` | `reason` | either | Rejection, usually followed by close. `reason` ∈ `NOT_FOUND`, `RATE_LIMITED`, `BAD_SECRET`, `BURNED`, `ROOM_FULL`, `TOO_MANY_ROOMS`, `NO_ROOMS`, `EXPIRED`, `FLOOD`, `VERSION`. Mapped in `JOIN_ERRORS`/`HOST_ERRORS` (`public/app.js`) and `translate_error` (`cli/src/signaling.rs`). |
 
 ### 3.3 Server Limits & Quotas
 
@@ -122,7 +122,7 @@ The sender picks chunk size with `chunkFor(pc)`: `pc.sctp.maxMessageSize` clampe
 | `k` | Dir. | Fields | Path | Notes |
 |---|---|---|---|---|
 | `challenge` | S→R | `nonce` (32 hex) | control | Unique per receiver. |
-| `proof` | R→S | `proof` (64 hex) | control | `sha256Hex("drop-proof-v2\|" + nonce + "\|" + secret)` (`secret` is hyphenated words). Same formula in `cli-rs/src/crypto.rs`. |
+| `proof` | R→S | `proof` (64 hex) | control | `sha256Hex("drop-proof-v2\|" + nonce + "\|" + secret)` (`secret` is hyphenated words). Same formula in `cli/src/crypto.rs`. |
 | `manifest` | S→R | `files: [{ name, size, type, path? }]` | control | `path` is `/`-separated relative path for folders. `size` is `null` for streams (`drop send -`, §7). |
 | `accept` | R→S | `files?`, `resume?` | control | `resume: [{ index, offset, sha256 }]` requests skipping already-present files matching prefix hash (`start {from: offset}`). `files` lists requested manifest indices; omitted means all (`pickedFiles` in `public/shared/protocol.js`). Only first `accept` is honored. |
 | `start` | S→R | `index`, `name`, `size`, `type`, `from`, `path?` | **in-band** | Opens file `index`. `from > 0` only on resume (§5): receiver appends instead of truncating. |
@@ -213,7 +213,7 @@ A `drop recv` peer joins with `join { name: 'cli' }`. The web sender switches th
 
 Conversely, a web tab receiving from `drop send` translates `cli-manifest`/`cli-start`/`cli-end`/`cli-done` into §4.3 handlers via `cliEnqueue` (a single promise queue serializing async WebCrypto decryption) and replies with `cli-ack` and `cli-accept` (including `files`).
 
-Both directions are documented frame-by-frame in [`cli-rs/src/transfer.rs`](../cli-rs/src/transfer.rs) above `receive_from_relay`.
+Both directions are documented frame-by-frame in [`cli/src/transfer.rs`](../cli/src/transfer.rs) above `receive_from_relay`.
 
 ## 8. Compatibility Rules
 

@@ -5,14 +5,14 @@ if (-not (Test-Path $binDir)) {
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
 
-$sourceExe = Join-Path $PSScriptRoot "..\cli-rs\target\release\drop.exe"
+$sourceExe = Join-Path $PSScriptRoot "..\cli\target\release\drop.exe"
 if (-not (Test-Path $sourceExe)) {
     $sourceExe = (Get-ChildItem (Join-Path $PSScriptRoot "..\dist\drop*windows-x64.exe") -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
 }
 if (-not $sourceExe -or -not (Test-Path $sourceExe)) {
     Write-Host "Compilando binario Rust de Windows primero..." -ForegroundColor Cyan
-    cargo build --release --manifest-path (Join-Path $PSScriptRoot "..\cli-rs\Cargo.toml")
-    $sourceExe = Join-Path $PSScriptRoot "..\cli-rs\target\release\drop.exe"
+    cargo build --release --manifest-path (Join-Path $PSScriptRoot "..\cli\Cargo.toml")
+    $sourceExe = Join-Path $PSScriptRoot "..\cli\target\release\drop.exe"
 }
 
 $destExe = Join-Path $binDir "drop.exe"

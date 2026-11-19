@@ -4,7 +4,7 @@ Thank you for contributing. This document covers how to set up your environment,
 
 ## Environment Setup
 
-You need **Node.js >= 22.9** (signaling server, web client, and integration test suite) and **Rust (`cargo` stable)** if you build or modify the native CLI (`cli-rs/`).
+You need **Node.js >= 22.9** (signaling server, web client, and integration test suite) and **Rust (`cargo` stable)** if you build or modify the native CLI (`cli/`).
 
 ```bash
 git clone https://github.com/Oloxx/drop.git
@@ -19,7 +19,7 @@ There is no database, external state, or required API key: rooms live in process
 To build or run the Rust CLI:
 
 ```bash
-npm run build:cli  # builds release binary at cli-rs/target/release/drop(.exe)
+npm run build:cli  # builds release binary at cli/target/release/drop(.exe)
 npm run cli -- send file.zip
 npm run cli -- recv 4271-lemon-radar-tiger-orbit
 ```
@@ -28,7 +28,7 @@ npm run cli -- recv 4271-lemon-radar-tiger-orbit
 
 ```bash
 npm test
-cargo test --manifest-path cli-rs/Cargo.toml
+cargo test --manifest-path cli/Cargo.toml
 ```
 
 `npm test` is self-contained: `test/helpers.mjs` spawns `server/index.js` on an ephemeral port per test file and terminates it afterwards (isolated because per-IP quotas are process-wide). A single test can be run with:
@@ -60,7 +60,7 @@ Benchmarks require a running server (`npm run dev`), and browser benchmarks requ
 **Languages.** Code comments, commits, issues, and PRs may be written in **Spanish** or **English** (documentation is primarily English). Each user-facing surface keeps one consistent language:
 
 - **Web UI (`public/`):** **English**, lowercase and terse (`open channel`, `transmitting…`, `delivered`).
-- **CLI (`cli-rs/`):** **Spanish**, including errors and `--help` output.
+- **CLI (`cli/`):** **Spanish**, including errors and `--help` output.
 - **Shared formatting/parsing (`public/shared/codes.js`):** takes `lang` explicitly (`parseCode(input, { lang })`) instead of hardcoding one (`'en'` on the web, `'es'` default in the CLI).
 
 **Comments.** Explain *why*, not *what*. A comment that explains why two frames must share or avoid a channel, or why an invariant exists, prevents regressions months later.
@@ -71,7 +71,7 @@ Benchmarks require a running server (`npm run dev`), and browser benchmarks requ
 
 **Dependencies.** The web app makes **zero third-party requests** (`public/fonts/` is self-hosted; no CDN, no analytics). The server has two runtime dependencies (`express` and `ws`), and the Rust CLI compiles to a static binary with zero runtime dependencies. New server dependencies require strong justification.
 
-**Before changing the protocol or relay chain**, read [`docs/PROTOCOL.md`](docs/PROTOCOL.md) and the header comments in [`public/app.js`](public/app.js) and [`cli-rs/src/transfer.rs`](cli-rs/src/transfer.rs). They document non-obvious invariants around channel ordering, chunk re-splitting, atomic `.part` commits, and `conn.epoch`.
+**Before changing the protocol or relay chain**, read [`docs/PROTOCOL.md`](docs/PROTOCOL.md) and the header comments in [`public/app.js`](public/app.js) and [`cli/src/transfer.rs`](cli/src/transfer.rs). They document non-obvious invariants around channel ordering, chunk re-splitting, atomic `.part` commits, and `conn.epoch`.
 
 ## Publishing a Release
 

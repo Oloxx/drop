@@ -25,7 +25,7 @@ Detailed security guarantees across every transfer and distribution path, what e
 
 ### Derivation (`scrypt`)
 
-Both the CLI ([`cli-rs/src/crypto.rs`](../cli-rs/src/crypto.rs)) and browser ([`public/shared/e2ee.js`](../public/shared/e2ee.js), [`public/shared/scrypt.js`](../public/shared/scrypt.js)) derive the 256-bit key via:
+Both the CLI ([`cli/src/crypto.rs`](../cli/src/crypto.rs)) and browser ([`public/shared/e2ee.js`](../public/shared/e2ee.js), [`public/shared/scrypt.js`](../public/shared/scrypt.js)) derive the 256-bit key via:
 
 ```text
 salt = SHA-256("drop-code-v2|" + roomId)
@@ -42,7 +42,7 @@ key  = scrypt(secret, salt, N=32768, r=8, p=1, dkLen=32)
 
 1. **`JOIN_FAIL_MAX = 20` per IP every 60 s (`RATE_LIMITED`):** scanning all 10,000 room IDs from one IP takes ~8 hours, while idle rooms expire in minutes (`DROP_ROOM_TTL_MS`, 30 min default).
 2. **`BAD_GUEST_MAX = 5` (`BURNED`):** five failed secret proofs reported by the sender (`bad-guest`) permanently burn and close the room.
-3. **Constant-time verification:** the CLI validates `cli-proof` (`HMAC-SHA256(key, "drop-proof-v3|" + nonce)`) in constant time via `subtle::ConstantTimeEq` (`verify_proof` in [`cli-rs/src/crypto.rs`](../cli-rs/src/crypto.rs)), and the browser uses [`timingSafeEqualStr`](../public/shared/e2ee.js).
+3. **Constant-time verification:** the CLI validates `cli-proof` (`HMAC-SHA256(key, "drop-proof-v3|" + nonce)`) in constant time via `subtle::ConstantTimeEq` (`verify_proof` in [`cli/src/crypto.rs`](../cli/src/crypto.rs)), and the browser uses [`timingSafeEqualStr`](../public/shared/e2ee.js).
 4. **Explicit sender approval:** even with the four words, a peer sees neither the manifest nor file bytes until passing the proof check and (unless `--yes`) being accepted by the sender.
 
 ---
@@ -69,8 +69,8 @@ Users compare the 3 words over an independent channel (voice, chat, in person); 
 
 ## 5. Distribution & Web Client Integrity
 
-- **CLI binaries (`drop update`):** releases ship `SHA256SUMS` and Ed25519 signature `SHA256SUMS.minisig` ([`cli-rs/src/minisign.rs`](../cli-rs/src/minisign.rs)), verified against the public key embedded in the binary. Compromising DNS or serving a fake release mirror cannot forge the signature without `DROP_SIGNING_KEY`.
-- **Web client (`drop verify-web`):** [`cli-rs/src/verifyweb.rs`](../cli-rs/src/verifyweb.rs) queries `/version` for `DROP_COMMIT` and compares served `public/` files byte-for-byte against that commit's tree on GitHub.
+- **CLI binaries (`drop update`):** releases ship `SHA256SUMS` and Ed25519 signature `SHA256SUMS.minisig` ([`cli/src/minisign.rs`](../cli/src/minisign.rs)), verified against the public key embedded in the binary. Compromising DNS or serving a fake release mirror cannot forge the signature without `DROP_SIGNING_KEY`.
+- **Web client (`drop verify-web`):** [`cli/src/verifyweb.rs`](../cli/src/verifyweb.rs) queries `/version` for `DROP_COMMIT` and compares served `public/` files byte-for-byte against that commit's tree on GitHub.
 
 ---
 
@@ -81,4 +81,4 @@ Users compare the 3 words over an independent channel (voice, chat, in person); 
 3. **Distributed botnets:** per-IP limits (`JOIN_FAIL_MAX`, `ROOM_RATE_MAX`) slow single-IP scanning, not thousands of distributed IPs (though `BAD_GUEST_MAX = 5` still burns any targeted room).
 4. **Traffic metadata:** server, TURN, and network observers see peer IPs, timestamps, and byte counts.
 5. **Compromised endpoint or leaked code:** anyone given the four words—or malware on a sender/receiver machine—can read the transferred files.
-6. **Paid external audit:** cryptography combines standard Rust, Node.js, and WebCrypto primitives verified against official vectors (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) in [`test/e2ee.test.mjs`](../test/e2ee.test.mjs) and [`cli-rs/tests/shared_vectors_test.rs`](../cli-rs/tests/shared_vectors_test.rs), without a paid third-party audit.
+6. **Paid external audit:** cryptography combines standard Rust, Node.js, and WebCrypto primitives verified against official vectors (FIPS 180-4, RFC 4231, RFC 6070, RFC 7914) in [`test/e2ee.test.mjs`](../test/e2ee.test.mjs) and [`cli/tests/shared_vectors_test.rs`](../cli/tests/shared_vectors_test.rs), without a paid third-party audit.

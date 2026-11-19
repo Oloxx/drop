@@ -281,7 +281,7 @@ Las cuatro combinaciones emisor/receptor funcionan entre sí bajo el **Protocolo
 | `lemon-radar-tiger-orbit` | Secreto compartido sorteado localmente (BIP-39, 2048 palabras) | **Nunca** (ni en claro ni hasheado) |
 
 * **Derivación y verificación:** 4 palabras BIP-39 (**44 bits**) se estiran con **`scrypt`** (`N = 32768`, `r = 8`, `p = 1`, 32 MiB RAM) con sal `SHA-256("drop-code-v2|" + roomId)`. Los extremos validan el conocimiento mutuo antes de enviar metadatos y muestran la huella **SAS** de 3 palabras (`beef-grit-two`) calculada desde los *fingerprints* DTLS o la clave derivada.
-* **Motores de transporte:** el CLI en Rust (`cli-rs/`) descubre pares LAN en < 10 ms y usa aceleración hardware `AES-NI`; el cliente web (`public/app.js`) regula el flujo por marcas de agua (`HIGH_WATER = 8 MB`, `LOW_WATER = 1 MB`) sobre DataChannels ordenados.
+* **Motores de transporte:** el CLI en Rust (`cli/`) descubre pares LAN en < 10 ms y usa aceleración hardware `AES-NI`; el cliente web (`public/app.js`) regula el flujo por marcas de agua (`HIGH_WATER = 8 MB`, `LOW_WATER = 1 MB`) sobre DataChannels ordenados.
 * **Límites conocidos:** sin auditoría criptográfica externa pagada; sin PAKE (depende de límites por IP y cierre de sala ante intentos fallidos); y un servidor web comprometido puede servir JS alterado a un navegador aunque `drop verify-web` pase en otro (usa el CLI nativo o `drop serve` local si necesitas garantía absoluta). Ver [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) y [`SECURITY.md`](SECURITY.md).
 
 ---
@@ -304,10 +304,10 @@ Requiere **Node.js >= 22.9** y **Rust / Cargo (estable)**:
 ```bash
 npm install
 npm run dev           # servidor local en http://localhost:3000
-npm run build:cli     # compila CLI release en cli-rs/target/release/drop(.exe)
+npm run build:cli     # compila CLI release en cli/target/release/drop(.exe)
 npm run cli -- send archivo.bin
 
-cargo test --manifest-path cli-rs/Cargo.toml
+cargo test --manifest-path cli/Cargo.toml
 npm test              # suite completa de integración, serve, cabeceras y E2E en Chrome
 ```
 

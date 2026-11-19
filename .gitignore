@@ -1,6 +1,6 @@
 node_modules/
 dist/
-cli-rs/target/
+cli/target/
 .env
 .env.local
 *.log

@@ -33,14 +33,14 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: cli-rs
+          workspaces: cli
 
-      # Comprueba que tag, package.json y cli-rs/Cargo.toml estan sincronizados.
+      # Comprueba que tag, package.json y cli/Cargo.toml estan sincronizados.
       - name: Comprobar que tag, package.json y Cargo.toml coinciden
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG=$(node -p "require('./package.json').version")
-          CARGO=$(grep -m1 '^version' cli-rs/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          CARGO=$(grep -m1 '^version' cli/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
           echo "tag=$TAG  package.json=$PKG  Cargo.toml=$CARGO"
           if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$CARGO" ]; then
             echo "::error::Versiones desincronizadas (tag=$TAG, package.json=$PKG, Cargo.toml=$CARGO)."
@@ -49,9 +49,9 @@ jobs:
 
       - run: npm ci
       - run: |
-          cargo clippy --manifest-path cli-rs/Cargo.toml --all-targets -- -D warnings
-          cargo test --manifest-path cli-rs/Cargo.toml
-          cargo build --release --manifest-path cli-rs/Cargo.toml
+          cargo clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path cli/Cargo.toml
+          cargo build --release --manifest-path cli/Cargo.toml
 
       # La suite levanta su propio servidor de senializacion (issue #23): aqui no
       # hay que preparar nada. Exigimos Chrome igual que en ci.yml para que
@@ -81,16 +81,16 @@ jobs:
           targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: cli-rs
+          workspaces: cli
 
-      - run: cargo build --release --manifest-path cli-rs/Cargo.toml --target ${{ matrix.rust_target }}
+      - run: cargo build --release --manifest-path cli/Cargo.toml --target ${{ matrix.rust_target }}
 
       - name: Firmar, probar y empaquetar binario
         run: |
-          VER=$(grep -m1 '^version' cli-rs/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          VER=$(grep -m1 '^version' cli/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
           NAME="drop-v${VER}-${{ matrix.target }}"
           mkdir -p dist
-          cp "cli-rs/target/${{ matrix.rust_target }}/release/drop" "dist/${NAME}"
+          cp "cli/target/${{ matrix.rust_target }}/release/drop" "dist/${NAME}"
           codesign --sign - --force "dist/${NAME}"
           codesign --verify --verbose "dist/${NAME}"
           "dist/${NAME}" --version
@@ -128,16 +128,16 @@ jobs:
           targets: ${{ matrix.rust_target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: cli-rs
+          workspaces: cli
 
-      - run: cargo build --release --manifest-path cli-rs/Cargo.toml --target ${{ matrix.rust_target }}
+      - run: cargo build --release --manifest-path cli/Cargo.toml --target ${{ matrix.rust_target }}
 
       - name: Probar y empaquetar binario
         run: |
-          VER=$(grep -m1 '^version' cli-rs/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          VER=$(grep -m1 '^version' cli/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
           NAME="drop-v${VER}-${{ matrix.target }}"
           mkdir -p dist
-          cp "cli-rs/target/${{ matrix.rust_target }}/release/drop" "dist/${NAME}"
+          cp "cli/target/${{ matrix.rust_target }}/release/drop" "dist/${NAME}"
           chmod +x "dist/${NAME}"
           "dist/${NAME}" --version
           "dist/${NAME}" --help > /dev/null
@@ -159,16 +159,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: cli-rs
+          workspaces: cli
 
-      - run: cargo build --release --manifest-path cli-rs/Cargo.toml
+      - run: cargo build --release --manifest-path cli/Cargo.toml
 
       - name: Probar y preparar binario
         run: |
-          $ver = (Select-String -Path cli-rs/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $ver = (Select-String -Path cli/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
           $name = "drop-v$ver-windows-x64.exe"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "cli-rs/target/release/drop.exe" "dist/$name"
+          Copy-Item "cli/target/release/drop.exe" "dist/$name"
           & "dist/$name" --version
           & "dist/$name" --help | Out-Null
 
@@ -241,7 +241,7 @@ jobs:
       - name: Verificar la firma con minisign
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq minisign
-          PUBKEY=$(grep -o "RW[A-Za-z0-9+/=]\{40,\}" repo/cli-rs/src/cli.rs | head -1)
+          PUBKEY=$(grep -o "RW[A-Za-z0-9+/=]\{40,\}" repo/cli/src/cli.rs | head -1)
           echo "clave publica del CLI: $PUBKEY"
           minisign -V -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig -P "$PUBKEY"
 

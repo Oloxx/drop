@@ -1,6 +1,6 @@
 // Carpetas enteras: un `drop send carpeta` llega al otro lado con su arbol.
 // El caso de extremo a extremo levanta su propio servidor y va por relay.
-// (Las pruebas unitarias de rutas seguras y reserva estan en cli-rs/tests/transfer_test.rs).
+// (Las pruebas unitarias de rutas seguras y reserva estan en cli/tests/transfer_test.rs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

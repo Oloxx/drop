@@ -23,14 +23,14 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const { existsSync } = await import('node:fs');
 const SERVER = path.join(ROOT, 'server', 'index.js');
 const BIN_EXT = process.platform === 'win32' ? '.exe' : '';
-const RELEASE_CLI = path.join(ROOT, 'cli-rs', 'target', 'release', `drop${BIN_EXT}`);
-const DEBUG_CLI = path.join(ROOT, 'cli-rs', 'target', 'debug', `drop${BIN_EXT}`);
+const RELEASE_CLI = path.join(ROOT, 'cli', 'target', 'release', `drop${BIN_EXT}`);
+const DEBUG_CLI = path.join(ROOT, 'cli', 'target', 'debug', `drop${BIN_EXT}`);
 export const CLI_BIN = process.env.DROP_CLI_BIN || (existsSync(RELEASE_CLI) ? RELEASE_CLI : DEBUG_CLI);
 
 /** Devuelve [comando, args] para ejecutar el CLI compilado en Rust. */
 export function cliSpawnTarget(args = []) {
   if (!existsSync(CLI_BIN)) {
-    throw new Error(`No se encontró el binario de drop en ${CLI_BIN}. Compila con: cargo build --release --manifest-path cli-rs/Cargo.toml`);
+    throw new Error(`No se encontró el binario de drop en ${CLI_BIN}. Compila con: cargo build --release --manifest-path cli/Cargo.toml`);
   }
   return [CLI_BIN, args];
 }
