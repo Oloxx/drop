@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod commands;
 pub mod completion;
+pub mod config;
 pub mod crypto;
 pub mod discovery;
 pub mod listen;

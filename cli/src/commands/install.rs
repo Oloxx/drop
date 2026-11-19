@@ -413,7 +413,21 @@ pub fn run_install(interactive_pause: bool) -> i32 {
     } else {
         println!("  {DIM}Ya está disponible en tu PATH.{RESET}");
     }
-    println!("  {DIM}Prueba: drop --help{RESET}\n");
+    println!("  {DIM}Prueba: drop --help  ·  Preferencias por defecto: drop config{RESET}\n");
+
+    let cfg_path = crate::config::config_file_path();
+    let offer_wizard = io::stdin().is_terminal() && !skip_sys_path && !cfg_path.exists();
+    if offer_wizard {
+        print!("  ¿Quieres configurar tus opciones por defecto ahora? (s/N): ");
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line).is_ok() {
+            let ans = line.trim().to_ascii_lowercase();
+            if matches!(ans.as_str(), "s" | "si" | "sí" | "y" | "yes") {
+                let _ = crate::commands::config::run_wizard();
+            }
+        }
+    }
 
     if interactive_pause && cfg!(windows) && io::stdin().is_terminal() {
         pause_for_enter();

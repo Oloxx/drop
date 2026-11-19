@@ -202,6 +202,7 @@ If already downloaded in a browser:
 | `drop recv <code\|url>` | Receive files with selective globs, atomic `.part` writes, and resume |
 | `drop speed [code\|url]` | Measure RTT, bidirectional speed, and path (direct vs. relay) |
 | `drop serve` | Run an offline/LAN web UI + WebSocket signaling & relay server |
+| `drop config` | Interactive setup menu & persistent default preferences (`config.json`) |
 | `drop verify-web [url]` | Verify a live Drop web server against GitHub commit blobs |
 | `drop update` | Self-update from GitHub Releases with Minisign + SHA-256 verification |
 | `drop install` / `uninstall` | Install or remove binary from user `PATH` |
@@ -236,6 +237,18 @@ drop recv 4271-lemon-radar-tiger-orbit --stdout | tar xzf -
 * **Atomic & safe:** downloads write to `<name>.part` and rename only after SHA-256 verification. Existing files are preserved as `name (2).ext` unless `--overwrite` is set.
 * **Automatic resume:** interrupted transfers verify the `.part` prefix SHA-256 against the sender (CLI or Web) and resume from that byte offset (`--no-resume` starts fresh).
 * **Piping (`--stdout` / `-o -`):** progress prints to `stderr`, and verified bytes emit to `stdout` after SHA-256 confirmation.
+
+#### Default Preferences (`drop config`)
+
+```bash
+drop config                                  # interactive menu to toggle & edit defaults
+drop config init                             # step-by-step initial setup wizard
+drop config show                             # display active settings and their origin (config / env / default)
+drop config set out ~/Downloads              # save a single preference (also: get, unset, reset, path)
+```
+
+* Saved to `%APPDATA%\drop\config.json` (Windows) or `$XDG_CONFIG_HOME/drop/config.json` / `~/.config/drop/config.json` (Linux/macOS); override path with `DROP_CONFIG` or `DROP_CONFIG_DIR`.
+* Precedence is strictly **CLI flags > environment variables (`DROP_SERVER`, `DROP_NO_AUTO_UPDATE`) > `config.json` > built-in defaults**. Override saved preferences on any command with `--no-config`, `--no-once`, `--no-yes`, `--qr`, `--no-overwrite`, `--resume`, `--no-relay`, `--no-expire`, `--no-direct-only`, or `--limit 0`.
 
 #### Standalone Server, Speed Test & Integrity Check
 

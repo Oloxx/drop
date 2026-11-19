@@ -2,6 +2,7 @@
 
 use std::env;
 use std::fs;
+use std::io::{self, IsTerminal, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
 
@@ -109,6 +110,39 @@ pub fn run_uninstall() -> i32 {
         "  {GREEN}✔ drop desinstalado ({}).{RESET}",
         target.display()
     );
+
+    let cfg_path = crate::config::config_file_path();
+    if cfg_path.exists() {
+        if io::stdin().is_terminal() && !skip_sys_path {
+            print!(
+                "  ¿Eliminar también tu archivo de configuración ({})? (s/N): ",
+                cfg_path.display()
+            );
+            let _ = io::stdout().flush();
+            let mut line = String::new();
+            if io::stdin().read_line(&mut line).is_ok()
+                && matches!(
+                    line.trim().to_ascii_lowercase().as_str(),
+                    "s" | "si" | "sí" | "y" | "yes"
+                )
+            {
+                if crate::config::delete_config_at(&cfg_path).unwrap_or(false) {
+                    println!("  {GREEN}✔ Configuración eliminada.{RESET}");
+                }
+            } else {
+                println!(
+                    "  {DIM}Configuración conservada en {}. {RESET}",
+                    cfg_path.display()
+                );
+            }
+        } else {
+            println!(
+                "  {DIM}Configuración conservada en {}. {RESET}",
+                cfg_path.display()
+            );
+        }
+    }
+
     println!("  {DIM}Puede que necesites abrir una terminal nueva para refrescar el PATH.{RESET}\n");
     0
 }

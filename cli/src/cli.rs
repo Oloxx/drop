@@ -8,6 +8,10 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::completion::{SHELLS, completion_script};
+use crate::config::{
+    Config, effective_auto_update, effective_server, expand_tilde, load_active_config,
+    validate_server_url,
+};
 use crate::pkgmgr::package_manager_of;
 use crate::select::parse_patterns;
 use crate::throttle::parse_rate;
@@ -69,6 +73,7 @@ pub fn format_help() -> String {
   drop recv <código> --stdout           Escribe lo recibido en la salida estándar
   drop speed [código-o-enlace]          Mide la velocidad de transferencia entre 2 clientes CLI
   drop serve [-p <puerto>] [-H <dir>]   Levanta el servidor web y de señalización local
+  drop config [subcomando]              Menú interactivo y gestión de preferencias por defecto
   drop verify-web [url]                 Comprueba que una web de drop sirve el código del repositorio
   drop update                           Busca e instala la última versión disponible
   drop install                          Instala drop en el sistema y lo añade al PATH
@@ -87,27 +92,27 @@ pub fn format_help() -> String {
   --clipboard            Envía el portapapeles como clipboard.txt
   --name <nombre>        Nombre con el que llega lo que entra por stdin
                          (por defecto: stdin). Solo con "drop send -"
-  --relay                Fuerza la transferencia a través del servidor de Relay
-  --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad)
+  --relay / --no-relay   Fuerza o desactiva la transferencia por el servidor de Relay
+  --direct-only          Fuerza conexión TCP directa sin relay (solo en test de velocidad;
+                         anula con --no-direct-only)
   --overwrite            Sobrescribe los archivos que ya existan en el destino
-                         (por defecto se guarda como "archivo (2).zip")
-  --no-resume            No reanuda un .part que hubiera de una descarga
-                         cortada: empieza de cero (por defecto se sigue donde
-                         se quedó si el emisor confirma que es el mismo archivo)
+                         (por defecto se guarda como "archivo (2).zip"; anula con --no-overwrite)
+  --no-resume / --resume No reanuda / reanuda un .part de una descarga cortada
+                         (por defecto se reanuda si el emisor confirma el prefijo)
   --only <patrones>      Recibe solo los archivos que casen, separados por comas:
                          "*.jpg" (por nombre, en cualquier carpeta), "fotos/*.jpg"
                          o "fotos/**" (por ruta). Sin distinguir mayúsculas
-  --limit <tasa>         Límite de ancho de banda: 500K, 10M, 1.5G (bytes/s).
+  --limit <tasa>         Límite de ancho de banda: 500K, 10M, 1.5G (bytes/s; 0 sin límite).
                          Vale para enviar y para recibir
-  --no-qr                No pinta el código QR del enlace (se omite solo si la
-                         salida no es una terminal)
-  --once                 Cierra el canal tras la primera descarga completa
+  --no-qr / --qr         Oculta o fuerza mostrar el código QR del enlace
+  --once / --no-once     Cierra o mantiene abierto el canal tras la primera descarga
   --expire <duración>    El canal caduca solo pasado ese tiempo: 90s, 10m, 2h
-                         (un número suelto son minutos)
+                         (un número suelto son minutos; anula con --no-expire)
+  --no-config            Ignora el archivo de configuración guardado (config.json)
   --update               Comprueba y actualiza a la última versión
   --force                Fuerza la reinstalación en 'drop update'
-  -y, --yes              No pide confirmación antes de servir a cada receptor
-                         (se activa solo si no hay terminal interactiva)
+  -y, --yes / --no-yes   Omite o exige confirmación antes de servir/recibir
+                         (sin terminal interactiva se acepta automáticamente)
   --allow-unsigned       Permite actualizar a una release sin firma (anteriores a la v0.5.2)
   --skip-verify          Omite firma y hash en 'drop update' (no recomendado)
   -h, --help             Muestra esta ayuda
@@ -121,6 +126,8 @@ pub fn format_help() -> String {
   4 primeras letras de cada palabra: 4271-lemo-rada-tige-orbi vale igual.{RESET}
 
 {BOLD}EJEMPLOS:{RESET}
+  drop config
+  drop config set out ~/Downloads
   drop send video.mp4
   drop send backup.tar --once --expire 10m
   drop send pelicula.mkv --limit 10M
@@ -228,6 +235,91 @@ impl Default for Options {
     }
 }
 
+impl Options {
+    /// Construye las opciones iniciales aplicando `config.json` y variables de entorno
+    /// (`DROP_SERVER` tiene precedencia sobre `config.server`).
+    pub fn from_config(cfg: &Config) -> Self {
+        let mut opts = Self::default();
+
+        let (srv, origin) = effective_server(cfg);
+        if origin == crate::config::ValueOrigin::Config {
+            match validate_server_url(&srv) {
+                Ok(clean) => opts.server = clean,
+                Err(err) => {
+                    eprintln!("  {YELLOW}Aviso en config.json (server): {err}{RESET}");
+                }
+            }
+        } else {
+            opts.server = srv;
+        }
+
+        if let Some(ref out) = cfg.out {
+            let trimmed = out.trim();
+            if !trimmed.is_empty() && trimmed != "-" {
+                opts.out = Some(expand_tilde(trimmed));
+            }
+        }
+        if let Some(secs) = cfg.speed_time
+            && secs > 0
+        {
+            opts.time = secs;
+        }
+        if let Some(port) = cfg.port {
+            opts.port = port;
+        }
+        if let Some(v) = cfg.direct_only {
+            opts.direct_only = v;
+        }
+        if let Some(v) = cfg.relay {
+            opts.relay = v;
+        }
+        if let Some(v) = cfg.overwrite {
+            opts.overwrite = v;
+        }
+        if let Some(v) = cfg.no_resume {
+            opts.no_resume = v;
+        }
+        if let Some(v) = cfg.yes {
+            opts.yes = v;
+        }
+        if let Some(v) = cfg.once {
+            opts.once = v;
+        }
+        if let Some(v) = cfg.no_qr {
+            opts.no_qr = v;
+        }
+        if let Some(ref raw_limit) = cfg.limit {
+            match parse_rate(raw_limit) {
+                Ok(rate) => opts.limit = rate,
+                Err(err) => {
+                    eprintln!("  {YELLOW}Aviso en config.json (limit): {err}{RESET}");
+                }
+            }
+        }
+        if let Some(ref raw_expire) = cfg.expire {
+            match parse_duration(raw_expire) {
+                Ok(ms) => opts.expire_ms = Some(ms),
+                Err(err) => {
+                    eprintln!("  {YELLOW}Aviso en config.json (expire): {err}{RESET}");
+                }
+            }
+        }
+        opts
+    }
+}
+
+fn has_no_config_flag(argv: &[String]) -> bool {
+    for arg in argv {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--no-config" {
+            return true;
+        }
+    }
+    false
+}
+
 fn die_msg(msg: &str) -> ! {
     eprintln!("\n{RED}{msg}{RESET}\n");
     process::exit(1);
@@ -300,16 +392,28 @@ pub async fn run_cli(argv: Vec<String>) {
         }
     }
 
+    if argv.first().map(String::as_str) == Some("config") {
+        let code = crate::commands::config::run_config(&argv[1..]);
+        if code != 0 {
+            process::exit(code);
+        }
+        return;
+    }
+
     if argv.first().map(String::as_str) == Some("verify-web") {
         let mut raw_url: Option<String> = None;
+        let mut no_config = false;
         for arg in &argv[1..] {
-            if arg.starts_with('-') {
+            if arg == "--no-config" {
+                no_config = true;
+            } else if arg.starts_with('-') {
                 die_with_help(&format!("Opción desconocida: {arg}"));
             } else if raw_url.is_none() {
                 raw_url = Some(arg.clone());
             }
         }
-        let url = raw_url.unwrap_or_else(default_server);
+        let cfg = load_active_config(no_config);
+        let url = raw_url.unwrap_or_else(|| effective_server(&cfg).0);
         let code = crate::commands::verify_web::run_verify_web(&url, VERSION).await;
         if code != 0 {
             process::exit(code);
@@ -381,7 +485,8 @@ pub async fn run_cli(argv: Vec<String>) {
         return;
     }
 
-    let mut options = Options::default();
+    let cfg = load_active_config(has_no_config_flag(&argv));
+    let mut options = Options::from_config(&cfg);
     let mut clean_args = Vec::new();
     let mut i = 0;
 
@@ -397,6 +502,8 @@ pub async fn run_cli(argv: Vec<String>) {
         if arg == "--" {
             clean_args.extend(argv[i + 1..].iter().cloned());
             break;
+        } else if arg == "--no-config" {
+            i += 1;
         } else if arg == "-s" || arg == "--server" {
             options.server = require_val(i + 1, arg);
             i += 2;
@@ -407,6 +514,7 @@ pub async fn run_cli(argv: Vec<String>) {
                 options.stdout = true;
             } else {
                 options.out = Some(val);
+                options.stdout = false;
             }
             i += 2;
         } else if arg == "--stdout" {
@@ -465,14 +573,26 @@ pub async fn run_cli(argv: Vec<String>) {
         } else if arg == "--direct-only" {
             options.direct_only = true;
             i += 1;
+        } else if arg == "--no-direct-only" {
+            options.direct_only = false;
+            i += 1;
         } else if arg == "--relay" {
             options.relay = true;
+            i += 1;
+        } else if arg == "--no-relay" {
+            options.relay = false;
             i += 1;
         } else if arg == "--overwrite" {
             options.overwrite = true;
             i += 1;
+        } else if arg == "--no-overwrite" {
+            options.overwrite = false;
+            i += 1;
         } else if arg == "--no-resume" {
             options.no_resume = true;
+            i += 1;
+        } else if arg == "--resume" {
+            options.no_resume = false;
             i += 1;
         } else if arg == "--only" {
             let raw = require_val(i + 1, arg);
@@ -485,14 +605,24 @@ pub async fn run_cli(argv: Vec<String>) {
         } else if arg == "--once" {
             options.once = true;
             i += 1;
+        } else if arg == "--no-once" {
+            options.once = false;
+            i += 1;
         } else if arg == "--no-qr" {
             options.no_qr = true;
             i += 1;
+        } else if arg == "--qr" {
+            options.no_qr = false;
+            i += 1;
         } else if arg == "--limit" {
             let raw = require_val(i + 1, arg);
-            match parse_rate(&raw) {
-                Ok(rate) => options.limit = rate,
-                Err(msg) => die_msg(&msg),
+            if raw.trim() == "0" {
+                options.limit = 0;
+            } else {
+                match parse_rate(&raw) {
+                    Ok(rate) => options.limit = rate,
+                    Err(msg) => die_msg(&msg),
+                }
             }
             i += 2;
         } else if arg == "--expire" {
@@ -502,8 +632,14 @@ pub async fn run_cli(argv: Vec<String>) {
                 Err(msg) => die_msg(&msg),
             }
             i += 2;
+        } else if arg == "--no-expire" {
+            options.expire_ms = None;
+            i += 1;
         } else if arg == "-y" || arg == "--yes" {
             options.yes = true;
+            i += 1;
+        } else if arg == "--no-yes" {
+            options.yes = false;
             i += 1;
         } else if arg.starts_with('-') && arg != "-" {
             die_with_help(&format!("Opción desconocida: {arg}"));
@@ -518,13 +654,17 @@ pub async fn run_cli(argv: Vec<String>) {
     }
 
     // Auto-actualizacion silenciosa en segundo plano (max. cada 24h, sin bloquear ni ensuciar stdout).
-    let auto_update = crate::commands::update::spawn_auto_update(
-        &exec_path,
-        manager,
-        crate::verifyweb::DEFAULT_REPO,
-        VERSION,
-        PUBLIC_KEY,
-    );
+    let auto_update = if effective_auto_update(&cfg).0 {
+        crate::commands::update::spawn_auto_update(
+            &exec_path,
+            manager,
+            crate::verifyweb::DEFAULT_REPO,
+            VERSION,
+            PUBLIC_KEY,
+        )
+    } else {
+        None
+    };
 
     let code = if clean_args.is_empty() {
         crate::commands::send::run_send(&[], options).await
@@ -558,9 +698,10 @@ pub async fn run_cli(argv: Vec<String>) {
                 let port = if options.port_explicit {
                     options.port
                 } else {
-                    3000
+                    cfg.serve_port.unwrap_or(3000)
                 };
-                crate::commands::serve::run_serve(options.host.as_deref(), port).await
+                let host = options.host.as_deref().or(cfg.serve_host.as_deref());
+                crate::commands::serve::run_serve(host, port).await
             }
             _ => {
                 if Path::new(command).exists() {

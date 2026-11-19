@@ -1,10 +1,14 @@
 // Autocompletado de shell: `drop completion bash|zsh|fish|powershell`.
 
+use crate::commands::config::CONFIG_SUBCOMMANDS;
+use crate::config::CONFIG_KEY_NAMES;
+
 pub const COMMANDS: &[(&str, &str)] = &[
     ("send", "Envía archivos, carpetas o stdin (-)"),
     ("recv", "Recibe con un código o enlace"),
     ("speed", "Mide la velocidad entre dos CLI"),
     ("serve", "Levanta el servidor web y de señalización local"),
+    ("config", "Menú interactivo y gestión de preferencias por defecto"),
     ("update", "Instala la última versión"),
     ("install", "Instala drop en el sistema"),
     ("uninstall", "Desinstala drop"),
@@ -22,27 +26,36 @@ pub struct FlagSpec {
 pub const FLAGS: &[FlagSpec] = &[
     FlagSpec { flag: "--server", cmds: &[], desc: "Servidor de señalización", arg: Some("url") },
     FlagSpec { flag: "-s", cmds: &[], desc: "Servidor de señalización", arg: Some("url") },
+    FlagSpec { flag: "--no-config", cmds: &[], desc: "Ignora config.json", arg: None },
     FlagSpec { flag: "--out", cmds: &["recv"], desc: "Carpeta de destino (- es stdout)", arg: Some("dir") },
     FlagSpec { flag: "-o", cmds: &["recv"], desc: "Carpeta de destino (- es stdout)", arg: Some("dir") },
     FlagSpec { flag: "--stdout", cmds: &["recv"], desc: "Vuelca lo recibido a stdout", arg: None },
     FlagSpec { flag: "--overwrite", cmds: &["recv"], desc: "Sobrescribe lo que ya exista", arg: None },
+    FlagSpec { flag: "--no-overwrite", cmds: &["recv"], desc: "No sobrescribe archivos existentes", arg: None },
     FlagSpec { flag: "--no-resume", cmds: &["recv"], desc: "No reanuda un .part", arg: None },
+    FlagSpec { flag: "--resume", cmds: &["recv"], desc: "Reanuda un .part si existe", arg: None },
     FlagSpec { flag: "--only", cmds: &["recv"], desc: "Solo los archivos que casen (*.jpg,fotos/**)", arg: Some("text") },
     FlagSpec { flag: "--text", cmds: &["send"], desc: "Envía ese texto como message.txt", arg: Some("text") },
     FlagSpec { flag: "--clipboard", cmds: &["send"], desc: "Envía el portapapeles", arg: None },
     FlagSpec { flag: "--name", cmds: &["send"], desc: "Nombre para lo que viene de stdin", arg: Some("text") },
     FlagSpec { flag: "--once", cmds: &["send"], desc: "Cierra tras la primera descarga", arg: None },
+    FlagSpec { flag: "--no-once", cmds: &["send"], desc: "Mantiene abierto el canal tras descargar", arg: None },
     FlagSpec { flag: "--expire", cmds: &["send"], desc: "Caduca pasado ese tiempo (90s, 10m, 2h)", arg: Some("text") },
+    FlagSpec { flag: "--no-expire", cmds: &["send"], desc: "Desactiva la caducidad configurada", arg: None },
     FlagSpec { flag: "--no-qr", cmds: &["send"], desc: "No pinta el QR", arg: None },
-    FlagSpec { flag: "--yes", cmds: &["send"], desc: "No pide confirmación por receptor", arg: None },
-    FlagSpec { flag: "-y", cmds: &["send"], desc: "No pide confirmación por receptor", arg: None },
+    FlagSpec { flag: "--qr", cmds: &["send"], desc: "Muestra el QR aunque esté oculto en config", arg: None },
+    FlagSpec { flag: "--yes", cmds: &["send", "recv", "config"], desc: "No pide confirmación", arg: None },
+    FlagSpec { flag: "-y", cmds: &["send", "recv", "config"], desc: "No pide confirmación", arg: None },
+    FlagSpec { flag: "--no-yes", cmds: &["send", "recv"], desc: "Exige confirmación aunque esté en config", arg: None },
     FlagSpec { flag: "--port", cmds: &["send", "speed", "serve"], desc: "Puerto TCP local", arg: Some("text") },
     FlagSpec { flag: "-p", cmds: &["send", "speed", "serve"], desc: "Puerto TCP local", arg: Some("text") },
     FlagSpec { flag: "--host", cmds: &["serve"], desc: "Dirección de escucha", arg: Some("text") },
     FlagSpec { flag: "-H", cmds: &["serve"], desc: "Dirección de escucha", arg: Some("text") },
-    FlagSpec { flag: "--limit", cmds: &["send", "recv"], desc: "Límite de ancho de banda (500K, 10M)", arg: Some("text") },
+    FlagSpec { flag: "--limit", cmds: &["send", "recv"], desc: "Límite de ancho de banda (500K, 10M, 0)", arg: Some("text") },
     FlagSpec { flag: "--relay", cmds: &["send", "recv", "speed"], desc: "Fuerza el relay por el servidor", arg: None },
+    FlagSpec { flag: "--no-relay", cmds: &["send", "recv", "speed"], desc: "No fuerza el relay aunque esté en config", arg: None },
     FlagSpec { flag: "--direct-only", cmds: &["speed"], desc: "Solo TCP directo", arg: None },
+    FlagSpec { flag: "--no-direct-only", cmds: &["speed"], desc: "Permite fallback a relay en speed", arg: None },
     FlagSpec { flag: "--time", cmds: &["speed"], desc: "Segundos por fase", arg: Some("text") },
     FlagSpec { flag: "-t", cmds: &["speed"], desc: "Segundos por fase", arg: Some("text") },
     FlagSpec { flag: "--force", cmds: &["update"], desc: "Reinstala aunque esté al día", arg: None },
@@ -80,6 +93,8 @@ fn bash() -> String {
         .collect::<Vec<_>>()
         .join("\n");
     let shells_w = SHELLS.join(" ");
+    let cfg_subs_w = CONFIG_SUBCOMMANDS.join(" ");
+    let cfg_keys_w = CONFIG_KEY_NAMES.join(" ");
     let root_flags = long_flags(&flags_for(""));
 
     format!(
@@ -101,6 +116,13 @@ _drop() {{
     -o|--out) COMPREPLY=( $(compgen -d -- "$cur") ); return ;;
     -s|--server|--text|--name|--expire|--limit|--only|-p|--port|-H|--host|-t|--time) return ;;
     completion) COMPREPLY=( $(compgen -W "{shells_w}" -- "$cur") ); return ;;
+    config) COMPREPLY=( $(compgen -W "{cfg_subs_w}" -- "$cur") ); return ;;
+    get|set|unset)
+      if [[ "$cmd" == "config" ]]; then
+        COMPREPLY=( $(compgen -W "{cfg_keys_w}" -- "$cur") )
+        return
+      fi
+      ;;
   esac
   if [[ -z "$cmd" ]]; then
     if [[ "$cur" == -* ]]; then
@@ -144,6 +166,8 @@ fn zsh() -> String {
         }
     };
     let shells_list = SHELLS.join(" ");
+    let cfg_subs_list = CONFIG_SUBCOMMANDS.join(" ");
+    let cfg_keys_list = CONFIG_KEY_NAMES.join(" ");
     let per_cmd = COMMANDS
         .iter()
         .map(|(c, _)| {
@@ -155,6 +179,9 @@ fn zsh() -> String {
             let extra = match *c {
                 "send" => " \\\n        '*:archivo:_files'".to_string(),
                 "completion" => format!(" \\\n        '1:shell:({shells_list})'"),
+                "config" => format!(
+                    " \\\n        '1:subcomando:({cfg_subs_list})' \\\n        '2:clave:({cfg_keys_list})'"
+                ),
                 _ => String::new(),
             };
             format!("    {c})\n      _arguments -s \\\n        {fl}{extra}\n      ;;")
@@ -204,6 +231,15 @@ fn fish() -> String {
     lines.push(format!(
         "complete -c drop -n \"__fish_seen_subcommand_from completion\" -a \"{}\"",
         SHELLS.join(" ")
+    ));
+    lines.push(format!(
+        "complete -c drop -n \"__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from {}\" -a \"{}\"",
+        CONFIG_SUBCOMMANDS.join(" "),
+        CONFIG_SUBCOMMANDS.join(" ")
+    ));
+    lines.push(format!(
+        "complete -c drop -n \"__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get set unset\" -a \"{}\"",
+        CONFIG_KEY_NAMES.join(" ")
     ));
     for f in FLAGS {
         let cond = if f.cmds.is_empty() {
@@ -256,6 +292,8 @@ fn powershell() -> String {
         .collect::<Vec<_>>()
         .join("\n");
     let shells_joined = SHELLS.join("','");
+    let cfg_subs_joined = CONFIG_SUBCOMMANDS.join("','");
+    let cfg_keys_joined = CONFIG_KEY_NAMES.join("','");
 
     format!(
         r#"# drop: autocompletado para PowerShell. Cárgalo con:
@@ -276,6 +314,21 @@ Register-ArgumentCompleter -Native -CommandName drop -ScriptBlock {{
       [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
     }}
     return
+  }}
+  if ($cmd -eq 'config' -and $wordToComplete -notlike '-*') {{
+    $nonFlags = @($words | Where-Object {{ $_ -notlike '-*' }})
+    if ($nonFlags.Count -le 2 -and ($nonFlags.Count -eq 1 -or $wordToComplete)) {{
+      '{cfg_subs_joined}' -split ',' | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+      }}
+      return
+    }}
+    if ($nonFlags.Count -ge 2 -and @('get','set','unset') -contains $nonFlags[1]) {{
+      '{cfg_keys_joined}' -split ',' | Where-Object {{ $_ -like "$wordToComplete*" }} | ForEach-Object {{
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+      }}
+      return
+    }}
   }}
   if ($wordToComplete -like '-*') {{
     $flags | Where-Object {{ $_.n -like "$wordToComplete*" -and ($_.c.Count -eq 0 -or $_.c -contains $cmd) }} | ForEach-Object {{

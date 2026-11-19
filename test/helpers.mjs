@@ -219,8 +219,17 @@ export function tcpFrames(key) {
 /** Arranca el CLI compilado en segundo plano con captura de salida sin ANSI y `waitFor`. */
 export function spawnCli(args, extraEnv = {}) {
   const [cmd, cmdArgs] = cliSpawnTarget(args);
+  const hasConfigEnv = Object.prototype.hasOwnProperty.call(extraEnv, 'DROP_CONFIG')
+    || Object.prototype.hasOwnProperty.call(extraEnv, 'DROP_CONFIG_DIR')
+    || Object.prototype.hasOwnProperty.call(extraEnv, 'DROP_NO_CONFIG');
+  const baseEnv = {
+    ...process.env,
+    DROP_NO_UPNP: '1',
+    ...(hasConfigEnv ? {} : { DROP_NO_CONFIG: '1' }),
+    ...extraEnv,
+  };
   const proc = spawn(cmd, cmdArgs, {
-    env: { ...process.env, DROP_NO_UPNP: '1', ...extraEnv },
+    env: baseEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';

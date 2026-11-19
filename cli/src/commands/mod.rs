@@ -1,5 +1,6 @@
 // Subcomandos del CLI (`send`, `recv`, `speed`, y en Fase 4 los de sistema).
 
+pub mod config;
 pub mod install;
 pub mod recv;
 pub mod send;

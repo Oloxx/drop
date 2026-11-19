@@ -202,6 +202,7 @@ Si ya descargaste desde un navegador:
 | `drop recv <código\|url>` | Recibir con filtros glob, escritura atómica `.part` y reanudación |
 | `drop speed [código\|url]` | Medir RTT, velocidad bidireccional y ruta (TCP directo vs. relay) |
 | `drop serve` | Levantar web estática + servidor WebSocket de señalización y relay |
+| `drop config` | Menú interactivo de configuración inicial y preferencias persistentes (`config.json`) |
 | `drop verify-web [url]` | Verificar una web Drop contra el árbol de GitHub del commit servido |
 | `drop update` | Autoactualizar desde GitHub Releases verificando Minisign + SHA-256 |
 | `drop install` / `uninstall` | Instalar o retirar el binario del `PATH` de usuario |
@@ -236,6 +237,18 @@ drop recv 4271-lemon-radar-tiger-orbit --stdout | tar xzf -
 * **Escritura segura y atómica:** descarga a `<nombre>.part` y solo renombra al verificar SHA-256. No sobrescribe existentes salvo con `--overwrite` (guarda `nombre (2).ext`).
 * **Reanudación automática:** tras un corte, comprueba el SHA-256 del prefijo `.part` contra el emisor (CLI o Web) y retoma desde ese byte (`--no-resume` empieza de cero).
 * **Tuberías (`--stdout` / `-o -`):** el progreso sale por `stderr` y los bytes verificados salen por `stdout`.
+
+#### Preferencias por Defecto (`drop config`)
+
+```bash
+drop config                                  # menú interactivo para editar tus opciones por defecto
+drop config init                             # asistente guiado paso a paso para la configuración inicial
+drop config show                             # ver configuración activa y origen de cada valor (config / env / defecto)
+drop config set out ~/Downloads              # fijar una preferencia rápida (también: get, unset, reset, path)
+```
+
+* Se guarda en `%APPDATA%\drop\config.json` (Windows) o `$XDG_CONFIG_HOME/drop/config.json` / `~/.config/drop/config.json` (Linux/macOS); puedes cambiar la ruta con `DROP_CONFIG` o `DROP_CONFIG_DIR`.
+* Precedencia estricta: **flags CLI > variables de entorno (`DROP_SERVER`, `DROP_NO_AUTO_UPDATE`) > `config.json` > valores por defecto**. Puedes anular cualquier preferencia puntualmente con `--no-config`, `--no-once`, `--no-yes`, `--qr`, `--no-overwrite`, `--resume`, `--no-relay`, `--no-expire`, `--no-direct-only` o `--limit 0`.
 
 #### Servidor Local, Test de Velocidad y Verificación Web
 
