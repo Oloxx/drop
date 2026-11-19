@@ -31,10 +31,30 @@ use crate::throttle::Throttle;
 pub const CHUNK_SIZE: usize = 512 * 1024;
 pub const RELAY_ACK_EVERY: u64 = 2 * 1024 * 1024;
 pub const RELAY_IDLE_TIMEOUT_MS: u64 = 60_000;
+pub const TCP_HANDSHAKE_TIMEOUT_MS: u64 = 60_000;
+pub const TCP_IDLE_TIMEOUT_MS: u64 = 60_000;
 pub const PEER_SETTLE_MS: u64 = 400;
 const MAX_FRAME_LEN: usize = 64 * 1024 * 1024;
 const FRAME_CONTROL: u8 = 0x00;
 const FRAME_DATA: u8 = 0x01;
+
+fn tcp_handshake_timeout() -> Duration {
+    std::env::var("DROP_TCP_HANDSHAKE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(TCP_HANDSHAKE_TIMEOUT_MS))
+}
+
+fn tcp_idle_timeout() -> Duration {
+    std::env::var("DROP_TCP_IDLE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(TCP_IDLE_TIMEOUT_MS))
+}
 
 #[derive(Debug, Clone)]
 pub struct TransferError {
@@ -142,12 +162,22 @@ pub type SasGateFn =
 pub type ProgressFn = Box<dyn FnMut(u64, Option<u64>, f64, &[FileEntry]) + Send>;
 pub type ResumeNoticeFn = Box<dyn FnMut(&str, u64) + Send>;
 
+/// Control de reclamacion atomica de `stdin` cuando el emisor sirve `drop send -`.
+/// Garantiza que `stdin` solo se marca como consumido tras autenticar `ready`
+/// y que a lo sumo un receptor concurrente lee de `stdin`.
+#[derive(Clone)]
+pub struct StdinClaim {
+    pub global_spent: Arc<std::sync::atomic::AtomicBool>,
+    pub peer_claimed: Arc<std::sync::atomic::AtomicBool>,
+}
+
 #[derive(Clone)]
 pub struct ReceiveOptions {
     pub overwrite: bool,
     pub resume: bool,
     pub only: Vec<String>,
     pub limit: u64,
+    pub single_file_only: bool,
 }
 
 impl Default for ReceiveOptions {
@@ -157,8 +187,26 @@ impl Default for ReceiveOptions {
             resume: true,
             only: Vec::new(),
             limit: 0,
+            single_file_only: false,
         }
     }
+}
+
+/// Comprueba que un destino de un solo archivo (`--stdout`) no reciba varios archivos.
+pub fn validate_single_file_selection(
+    manifest: &[FileEntry],
+    only: &[String],
+) -> Result<(), TransferError> {
+    let count = select_files(manifest, only)
+        .map(|p| p.len())
+        .unwrap_or(manifest.len());
+    if count > 1 {
+        return Err(TransferError::new(
+            "STDOUT_MULTI",
+            "--stdout solo admite un archivo por envío (usa --only para elegir uno).",
+        ));
+    }
+    Ok(())
 }
 
 /// Suma total de tamanos del manifiesto si todos los archivos tienen tamano conocido.
@@ -809,6 +857,36 @@ fn manifest_json(items: &[SendItem]) -> Vec<Value> {
 /// retransmite los archivos solicitados con reanudacion y verificacion SHA-256.
 #[allow(clippy::too_many_arguments)]
 pub async fn attach_sender(
+    stream: TcpStream,
+    items: &[SendItem],
+    code: &str,
+    room_id: &str,
+    limit: u64,
+    on_peer: Option<PeerGateFn>,
+    on_progress: Option<ProgressFn>,
+    on_resume: Option<ResumeNoticeFn>,
+    is_closed: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<TransferStats, TransferError> {
+    attach_sender_with_stdin_claim(
+        stream,
+        items,
+        code,
+        room_id,
+        limit,
+        on_peer,
+        on_progress,
+        on_resume,
+        is_closed,
+        None,
+    )
+    .await
+}
+
+/// Variante de `attach_sender` con reclamacion atomica diferida de `stdin` (issue #69):
+/// solo reclama `stdin` tras recibir y descifrar `ready`, evitando que pares con codigo
+/// erroneo o conexiones inactivas consuman/aborten `drop send -`.
+#[allow(clippy::too_many_arguments)]
+pub async fn attach_sender_with_stdin_claim(
     mut stream: TcpStream,
     items: &[SendItem],
     code: &str,
@@ -818,6 +896,7 @@ pub async fn attach_sender(
     mut on_progress: Option<ProgressFn>,
     mut on_resume: Option<ResumeNoticeFn>,
     is_closed: Option<Arc<std::sync::atomic::AtomicBool>>,
+    stdin_claim: Option<StdinClaim>,
 ) -> Result<TransferStats, TransferError> {
     let _ = stream.set_nodelay(true);
     let key = derive_key(code);
@@ -870,7 +949,17 @@ pub async fn attach_sender(
     .await
     .map_err(|e| TransferError::new("IO", format!("No se pudo enviar manifiesto: {e}")))?;
 
-    let ready_msg = match read_tcp_frame(&mut stream, &key).await? {
+    let ready_frame = match timeout(tcp_handshake_timeout(), read_tcp_frame(&mut stream, &key)).await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(TransferError::new(
+                "TIMEOUT",
+                "Tiempo de espera agotado esperando confirmación ('ready') del receptor",
+            ));
+        }
+    };
+    let ready_msg = match ready_frame {
         Some(DecodedFrame::Control(v)) if v.get("k").and_then(|k| k.as_str()) == Some("ready") => {
             v
         }
@@ -948,6 +1037,26 @@ pub async fn attach_sender(
 
         let mut file_bytes = offset;
         if item.is_stdin {
+            if let Some(claim) = &stdin_claim {
+                if claim
+                    .global_spent
+                    .compare_exchange(
+                        false,
+                        true,
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                    )
+                    .is_err()
+                {
+                    return Err(TransferError::new(
+                        "BUSY",
+                        "El flujo de stdin ya está siendo entregado a otro receptor.",
+                    ));
+                }
+                claim
+                    .peer_claimed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             let mut stdin = tokio::io::stdin();
             loop {
                 let n = stdin
@@ -1177,6 +1286,12 @@ async fn prepare_receive(
         Some(p) => p.clone(),
         None => (0..manifest.len()).collect(),
     };
+    if opts.single_file_only && target_indices.len() > 1 {
+        return Err(TransferError::new(
+            "STDOUT_MULTI",
+            "--stdout solo admite un archivo por envío (usa --only para elegir uno).",
+        ));
+    }
 
     let mut reserved_set = HashSet::new();
     let mut targets: HashMap<usize, ReservedPath> = HashMap::new();
@@ -1234,12 +1349,20 @@ pub async fn receive_files(
     let cipher = Aes256Gcm::new_from_slice(&key).expect("32B key");
     let sas = crate::crypto::sas_from_key(&key, room_id);
 
-    let first = read_tcp_frame(&mut stream, &key).await?.ok_or_else(|| {
-        TransferError::new(
-            "CANCELLED",
-            "El emisor cerró la conexión o rechazó la transferencia.",
-        )
-    })?;
+    let first = match timeout(tcp_handshake_timeout(), read_tcp_frame(&mut stream, &key)).await {
+        Ok(res) => res?.ok_or_else(|| {
+            TransferError::new(
+                "CANCELLED",
+                "El emisor cerró la conexión o rechazó la transferencia.",
+            )
+        })?,
+        Err(_) => {
+            return Err(TransferError::new(
+                "TIMEOUT",
+                "Tiempo de espera agotado esperando el manifiesto del emisor.",
+            ));
+        }
+    };
     let DecodedFrame::Control(manifest_msg) = first else {
         return Err(TransferError::new(
             "PROTOCOL_ERROR",
@@ -1277,6 +1400,9 @@ pub async fn receive_files(
     }
 
     let manifest = parse_manifest_entries(manifest_msg.get("files").unwrap_or(&Value::Null))?;
+    if opts.single_file_only {
+        validate_single_file_selection(&manifest, &opts.only)?;
+    }
     if let Some(gate) = on_sas
         && !gate(&manifest, &sas).await
     {
@@ -1344,7 +1470,21 @@ async fn receive_tcp_loop(
     let mut current: Option<(usize, FileSink)> = None;
 
     loop {
-        let frame = match read_tcp_frame(stream, key).await {
+        let frame_res = match timeout(tcp_idle_timeout(), read_tcp_frame(stream, key)).await {
+            Ok(res) => res,
+            Err(_) => {
+                let mut part_bytes = 0u64;
+                if let Some((_, sink)) = current.take() {
+                    part_bytes = sink.detach().await;
+                }
+                return Err(TransferError::new(
+                    "TIMEOUT",
+                    "Tiempo de espera agotado esperando datos del emisor",
+                )
+                .with_resumable(part_bytes));
+            }
+        };
+        let frame = match frame_res {
             Ok(Some(f)) => f,
             Ok(None) => {
                 let mut part_bytes = 0u64;

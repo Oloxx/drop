@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -13,7 +14,7 @@ import { Readable } from 'node:stream';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { startServer, cliSpawnTarget } from './helpers.mjs';
+import { startServer, cliSpawnTarget, freePort } from './helpers.mjs';
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
@@ -26,10 +27,10 @@ function scratch(t, prefix) {
 
 // ----------------------------------------------- extremo a extremo (CLI)
 
-function runCli(args, { stdin = 'ignore' } = {}) {
+function runCli(args, { stdin = 'ignore', env = {} } = {}) {
   const [cmd, cmdArgs] = cliSpawnTarget(args);
   const proc = spawn(cmd, cmdArgs, {
-    env: { ...process.env, DROP_NO_UPNP: '1', DROP_NO_QR: '1' },
+    env: { ...process.env, DROP_NO_UPNP: '1', DROP_NO_QR: '1', DROP_NO_CONFIG: '1', ...env },
     stdio: [stdin, 'pipe', 'pipe'],
   });
   proc.output = '';
@@ -139,4 +140,111 @@ test('si el receptor se cae a medias, el emisor de stdin sale con error en vez d
 
   assert.equal(await sender.exited, 1, sender.output);
   assert.match(sender.output, /consumido a medias/);
+});
+
+// ------------------------------------------------- robustez TCP / stdin / --stdout (#69)
+
+test('conexión TCP inactiva expira por timeout y no bloquea --once ni --expire (#69)', { timeout: 60_000 }, async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const work = scratch(t, 'drop-tcp-timeout-');
+  const src = path.join(work, 'payload.txt');
+  const outDir = path.join(work, 'out');
+  const body = Buffer.from('archivo entregado tras timeout de socket inactivo\n');
+  fs.writeFileSync(src, body);
+  fs.mkdirSync(outDir, { recursive: true });
+  const port = await freePort();
+
+  const sender = runCli(
+    ['send', src, '--server', server.http, '--yes', '--once', '--expire', '30s', '-p', String(port)],
+    { env: { DROP_TCP_HANDSHAKE_TIMEOUT_MS: '700' } },
+  );
+  t.after(() => sender.kill('SIGKILL'));
+  const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
+
+  // Abrir un socket TCP mudo que aguanta mas de PEER_SETTLE_MS (400ms) sin mandar `ready`.
+  const idleSock = net.connect(port, '127.0.0.1');
+  t.after(() => idleSock.destroy());
+  await new Promise((resolve, reject) => {
+    idleSock.once('connect', resolve);
+    idleSock.once('error', reject);
+  });
+
+  // El emisor debe expulsar el socket por timeout en ~1.1s y liberar `in_flight`.
+  await sender.waitFor(/Tiempo de espera agotado/i, 10_000);
+  idleSock.destroy();
+
+  // Ahora un receptor legitimo completa la descarga y `--once` cierra limpio.
+  const receiver = runCli(['recv', code, '--server', server.http, '-o', outDir, '--yes']);
+  t.after(() => receiver.kill('SIGKILL'));
+  assert.equal(await receiver.exited, 0, receiver.output);
+  assert.deepEqual(fs.readFileSync(path.join(outDir, 'payload.txt')), body);
+  assert.equal(await sender.exited, 0, sender.output);
+});
+
+test('un receptor con código incorrecto contra `drop send -` no consume ni aborta stdin (#69)', { timeout: 60_000 }, async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const outDir = scratch(t, 'drop-stdin-badcode-');
+  const body = crypto.randomBytes(64 * 1024 + 19);
+  const port = await freePort();
+
+  const sender = runCli(
+    ['send', '-', '--server', server.http, '--yes', '-p', String(port)],
+    { stdin: 'pipe' },
+  );
+  t.after(() => sender.kill('SIGKILL'));
+  sender.stdin.end(body);
+  const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
+
+  // Receptor con el mismo roomId pero palabras distintas (BAD_CODE)
+  const roomId = code.split('-')[0];
+  const wrongCode = `${roomId}-apple-apple-apple-apple`;
+  const badRecv = runCli(['recv', wrongCode, '--server', server.http, '-o', outDir, '--yes']);
+  t.after(() => badRecv.kill('SIGKILL'));
+  assert.notEqual(await badRecv.exited, 0, 'el receptor con código malo debe fallar');
+
+  // El emisor NO debe haber muerto ni marcado stdin como consumido a medias
+  assert.doesNotMatch(sender.output, /consumido a medias/);
+
+  // Un receptor legítimo recibe el 100% de stdin
+  const goodRecv = runCli(['recv', code, '--server', server.http, '-o', outDir, '--yes']);
+  t.after(() => goodRecv.kill('SIGKILL'));
+  assert.equal(await goodRecv.exited, 0, `receptor bueno falló:\n${goodRecv.output}\n--- emisor ---\n${sender.output}`);
+  assert.equal(sha256(fs.readFileSync(path.join(outDir, 'stdin'))), sha256(body));
+  assert.equal(await sender.exited, 0, sender.output);
+});
+
+test('`drop recv --stdout` rechaza múltiples archivos tanto en TCP directo como en Relay y funciona con --only (#69)', { timeout: 60_000 }, async (t) => {
+  const server = await startServer();
+  t.after(() => server.stop());
+  const work = scratch(t, 'drop-stdout-multi-');
+  const f1 = path.join(work, 'uno.txt');
+  const f2 = path.join(work, 'dos.txt');
+  fs.writeFileSync(f1, 'primero\n');
+  fs.writeFileSync(f2, 'segundo\n');
+
+  const sender = runCli(['send', f1, f2, '--server', server.http, '--yes']);
+  t.after(() => sender.kill('SIGKILL'));
+  const [, code] = await sender.waitFor(/Código:\s+(\d{4}(?:-[a-z]+){4})/, 20_000);
+
+  // 1. Ruta Relay: debe rechazar con código != 0 y sin volcar nada a stdout
+  const recvRelay = runCli(['recv', code, '--server', server.http, '--relay', '--stdout', '--yes']);
+  t.after(() => recvRelay.kill('SIGKILL'));
+  assert.equal(await recvRelay.exited, 1, recvRelay.output);
+  assert.match(recvRelay.output, /--stdout solo admite un archivo/);
+  assert.equal(Buffer.concat(recvRelay.stdoutChunks).length, 0);
+
+  // 2. Ruta TCP directo (LAN o señalización): también debe rechazar igual
+  const recvTcp = runCli(['recv', code, '--server', server.http, '--stdout', '--yes']);
+  t.after(() => recvTcp.kill('SIGKILL'));
+  assert.equal(await recvTcp.exited, 1, recvTcp.output);
+  assert.match(recvTcp.output, /--stdout solo admite un archivo/);
+  assert.equal(Buffer.concat(recvTcp.stdoutChunks).length, 0);
+
+  // 3. Con `--only dos.txt`, sí permite volcar ese único archivo a stdout
+  const recvOnly = runCli(['recv', code, '--server', server.http, '--relay', '--stdout', '--only', 'dos.txt', '--yes']);
+  t.after(() => recvOnly.kill('SIGKILL'));
+  assert.equal(await recvOnly.exited, 0, recvOnly.output);
+  assert.equal(Buffer.concat(recvOnly.stdoutChunks).toString('utf8'), 'segundo\n');
 });

@@ -23,7 +23,7 @@ use crate::shared::protocol::PROTOCOL_VERSION;
 use crate::signaling::{WsEvent, connect_signaling, join_room, translate_error};
 use crate::transfer::{
     ProgressFn, ReceiveOptions, ResumeNoticeFn, SasGateFn, TransferError, TransferStats,
-    parse_manifest_entries, receive_files, receive_from_relay,
+    parse_manifest_entries, receive_files, receive_from_relay, validate_single_file_selection,
 };
 use crate::ui::{
     BOLD, CYAN, DIM, GREEN, RED, RESET, YELLOW, fmt_bytes, fmt_speed, render_progress_bar,
@@ -118,6 +118,15 @@ async fn attempt_receive(
         resume: !options.no_resume && !to_stdout,
         only: options.only.clone(),
         limit: options.limit,
+        single_file_only: to_stdout,
+    };
+
+    let make_sas_gate = || -> SasGateFn {
+        let yes = options.yes;
+        Box::new(move |_manifest, sas_str| {
+            let sas_owned = sas_str.to_string();
+            Box::pin(async move { print_sas_and_wait_prompt(&sas_owned, yes, to_stdout).await })
+        })
     };
 
     let force_relay = options.relay
@@ -154,21 +163,6 @@ async fn attempt_receive(
         )
         .await
         {
-            let yes = options.yes;
-            let only_pat = options.only.clone();
-            let sas_gate: SasGateFn = Box::new(move |manifest, sas_str| {
-                let count = crate::select::select_files(manifest, &only_pat)
-                    .map(|p| p.len())
-                    .unwrap_or(manifest.len());
-                let sas_owned = sas_str.to_string();
-                Box::pin(async move {
-                    if to_stdout && count > 1 {
-                        log_out(true, &format!("\n  {RED}Error: --stdout solo admite un archivo por envío (usa --only).{RESET}\n"));
-                        return false;
-                    }
-                    print_sas_and_wait_prompt(&sas_owned, yes, to_stdout).await
-                })
-            });
             reset_file_line_state();
             return receive_files(
                 stream,
@@ -176,7 +170,7 @@ async fn attempt_receive(
                 room_id,
                 output_dir,
                 rx_opts,
-                Some(sas_gate),
+                Some(make_sas_gate()),
                 Some(make_progress(to_stdout)),
                 Some(make_resume_cb(to_stdout)),
             )
@@ -220,11 +214,6 @@ async fn attempt_receive(
                     offer.port
                 ),
             );
-            let yes = options.yes;
-            let sas_gate: SasGateFn = Box::new(move |_manifest, sas_str| {
-                let sas_owned = sas_str.to_string();
-                Box::pin(async move { print_sas_and_wait_prompt(&sas_owned, yes, to_stdout).await })
-            });
             reset_file_line_state();
             return receive_files(
                 stream,
@@ -232,7 +221,7 @@ async fn attempt_receive(
                 room_id,
                 output_dir,
                 rx_opts,
-                Some(sas_gate),
+                Some(make_sas_gate()),
                 Some(make_progress(to_stdout)),
                 Some(make_resume_cb(to_stdout)),
             )
@@ -274,6 +263,17 @@ async fn attempt_receive(
 
     let manifest_val = wait_for_relay_manifest(&mut client.events, key).await?;
     let manifest = parse_manifest_entries(&manifest_val)?;
+
+    if to_stdout
+        && let Err(err) = validate_single_file_selection(&manifest, &options.only)
+    {
+        let _ = client.sender.send_signal(
+            None,
+            &json!({ "type": "cli-error", "message": err.message }),
+        );
+        client.sender.close_and_wait().await;
+        return Err(err);
+    }
 
     if !print_sas_and_wait_prompt(sas, options.yes, to_stdout).await {
         let _ = client.sender.send_signal(

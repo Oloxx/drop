@@ -16,9 +16,9 @@ use drop::shared::codes::new_code;
 use drop::shared::protocol::FileEntry;
 use drop::signaling::{SignalingSender, WsEvent};
 use drop::transfer::{
-    RELAY_ACK_EVERY, ReceiveOptions, SendItem, attach_sender, hash_partial, read_tcp_frame,
-    receive_files, receive_from_relay, reserve_output_path, safe_output_path,
-    verify_inline_prefix, verify_prefix,
+    RELAY_ACK_EVERY, ReceiveOptions, SendItem, StdinClaim, attach_sender,
+    attach_sender_with_stdin_claim, hash_partial, read_tcp_frame, receive_files,
+    receive_from_relay, reserve_output_path, safe_output_path, verify_inline_prefix, verify_prefix,
 };
 
 fn scratch(prefix: &str) -> PathBuf {
@@ -773,5 +773,167 @@ async fn test_inline_data_transfer_and_prefix_resume() {
     assert_eq!(std::fs::read(out2.join("secret.txt")).unwrap(), secret);
 
     srv.await.unwrap();
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[tokio::test]
+async fn test_single_file_only_rejects_multi_and_wrong_code_does_not_claim_stdin() {
+    let work = scratch("issue69");
+    let out = work.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+
+    // 1. `single_file_only` rechaza >1 archivo ANTES de invocar `on_sas`, y acepta si `--only` deja 1.
+    let items = vec![
+        SendItem {
+            entry: FileEntry {
+                name: "uno.txt".into(),
+                size: Some(3),
+                path: None,
+            },
+            fs_path: None,
+            inline_data: Some(Arc::from(&b"uno"[..])),
+            is_stdin: false,
+        },
+        SendItem {
+            entry: FileEntry {
+                name: "dos.txt".into(),
+                size: Some(3),
+                path: None,
+            },
+            fs_path: None,
+            inline_data: Some(Arc::from(&b"dos"[..])),
+            is_stdin: false,
+        },
+    ];
+    let code = new_code("6901");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let items_arc = Arc::new(items);
+    let c_srv = code.clone();
+    let srv = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (sock, _) = listener.accept().await.unwrap();
+            let it = Arc::clone(&items_arc);
+            let c = c_srv.clone();
+            tokio::spawn(async move {
+                let _ = attach_sender(sock, &it, &c, "6901", 0, None, None, None, None).await;
+            });
+        }
+    });
+
+    let sas_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sas_called_cb = Arc::clone(&sas_called);
+    let gate: drop::transfer::SasGateFn = Box::new(move |_m, _sas| {
+        sas_called_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async { true })
+    });
+    let s1 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let err = receive_files(
+        s1,
+        &code,
+        "6901",
+        &out,
+        ReceiveOptions {
+            single_file_only: true,
+            ..Default::default()
+        },
+        Some(gate),
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, "STDOUT_MULTI");
+    assert!(
+        !sas_called.load(std::sync::atomic::Ordering::SeqCst),
+        "on_sas no debe ejecutarse si --stdout rechaza múltiples archivos"
+    );
+
+    // Con --only seleccionando 1 archivo sí funciona
+    let s2 = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    receive_files(
+        s2,
+        &code,
+        "6901",
+        &out,
+        ReceiveOptions {
+            single_file_only: true,
+            only: vec!["dos.txt".into()],
+            ..Default::default()
+        },
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(out.join("dos.txt")).unwrap(), b"dos");
+    srv.await.unwrap();
+
+    // 2. Un receptor con código incorrecto contra `attach_sender_with_stdin_claim` no reclama `stdin`.
+    let stdin_items = vec![SendItem {
+        entry: FileEntry {
+            name: "stdin".into(),
+            size: None,
+            path: None,
+        },
+        fs_path: None,
+        inline_data: None,
+        is_stdin: true,
+    }];
+    let good_code = new_code("6902");
+    let bad_code = new_code("6902");
+    let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port2 = listener2.local_addr().unwrap().port();
+    let global_spent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let peer_claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let claim = StdinClaim {
+        global_spent: Arc::clone(&global_spent),
+        peer_claimed: Arc::clone(&peer_claimed),
+    };
+    let good_srv = good_code.clone();
+    let srv2 = tokio::spawn(async move {
+        let (sock, _) = listener2.accept().await.unwrap();
+        attach_sender_with_stdin_claim(
+            sock,
+            &stdin_items,
+            &good_srv,
+            "6902",
+            0,
+            None,
+            None,
+            None,
+            None,
+            Some(claim),
+        )
+        .await
+    });
+
+    let s_bad = TcpStream::connect(("127.0.0.1", port2)).await.unwrap();
+    let bad_err = receive_files(
+        s_bad,
+        &bad_code,
+        "6902",
+        &out,
+        ReceiveOptions::default(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(bad_err.code, "BAD_CODE");
+
+    let srv_res = srv2.await.unwrap();
+    assert!(srv_res.is_err());
+    assert!(
+        !global_spent.load(std::sync::atomic::Ordering::SeqCst),
+        "stdin no debe marcarse consumido por un par con código erróneo"
+    );
+    assert!(
+        !peer_claimed.load(std::sync::atomic::Ordering::SeqCst),
+        "peer_claimed debe seguir en false"
+    );
+
     let _ = std::fs::remove_dir_all(&work);
 }

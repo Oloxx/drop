@@ -31,9 +31,9 @@ use crate::signaling::{SignalingSender, WsEvent, connect_signaling, create_room}
 use crate::stun::{StunResult, discover_public_ip, merge_offer_candidates};
 use crate::throttle::Throttle;
 use crate::transfer::{
-    PeerGateFn, PeerInfo, ProgressFn, RELAY_IDLE_TIMEOUT_MS, ResumeNoticeFn, SendItem,
-    TransferError, TransferStats, attach_sender, relay_binary_packet, send_sealed, total_of,
-    verify_item_prefix,
+    PeerGateFn, PeerInfo, ProgressFn, RELAY_IDLE_TIMEOUT_MS, ResumeNoticeFn, SendItem, StdinClaim,
+    TransferError, TransferStats, attach_sender_with_stdin_claim, relay_binary_packet, send_sealed,
+    total_of, verify_item_prefix,
 };
 use crate::ui::{
     BOLD, CYAN, DIM, GREEN, RED, RESET, YELLOW, fmt_bytes, fmt_duration, fmt_speed,
@@ -154,7 +154,7 @@ struct SenderState {
     expired: AtomicBool,
     once: bool,
     from_stdin: bool,
-    stdin_spent: AtomicBool,
+    stdin_spent: Arc<AtomicBool>,
     stdin_failed: AtomicBool,
     in_flight: AtomicUsize,
     delivered: AtomicUsize,
@@ -764,7 +764,7 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
         expired: AtomicBool::new(false),
         once: options.once,
         from_stdin: has_stdin,
-        stdin_spent: AtomicBool::new(false),
+        stdin_spent: Arc::new(AtomicBool::new(false)),
         stdin_failed: AtomicBool::new(false),
         in_flight: AtomicUsize::new(0),
         delivered: AtomicUsize::new(0),
@@ -845,11 +845,14 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                         let limit = options.limit;
 
                         st.in_flight.fetch_add(1, Ordering::SeqCst);
-                        let had_stdin = if st.from_stdin {
-                            st.stdin_spent.store(true, Ordering::SeqCst);
-                            true
+                        let peer_claimed = Arc::new(AtomicBool::new(false));
+                        let stdin_claim = if st.from_stdin {
+                            Some(StdinClaim {
+                                global_spent: Arc::clone(&st.stdin_spent),
+                                peer_claimed: Arc::clone(&peer_claimed),
+                            })
                         } else {
-                            false
+                            None
                         };
 
                         tokio::spawn(async move {
@@ -863,7 +866,7 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                     fmt_bytes(offset)
                                 );
                             });
-                            let res = attach_sender(
+                            let res = attach_sender_with_stdin_claim(
                                 stream,
                                 &items,
                                 &code_clone,
@@ -873,6 +876,7 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                 Some(progress),
                                 Some(resume_cb),
                                 Some(Arc::new(AtomicBool::new(false))),
+                                stdin_claim,
                             )
                             .await;
                             match res {
@@ -891,14 +895,11 @@ pub async fn run_send(args: &[String], options: Options) -> i32 {
                                     }
                                 }
                                 Err(TransferError { code: "PROBE" | "DENIED", .. }) => {
-                                    if had_stdin {
-                                        st.stdin_spent.store(false, Ordering::SeqCst);
-                                    }
-                                    st.in_flight.fetch_sub(1, Ordering::SeqCst);
+                                    st.finish_peer_err(false);
                                 }
                                 Err(e) => {
                                     println!("\n  {YELLOW}Receptor interrumpido: {e}{RESET}");
-                                    st.finish_peer_err(had_stdin);
+                                    st.finish_peer_err(peer_claimed.load(Ordering::SeqCst));
                                 }
                             }
                         });
@@ -1273,13 +1274,28 @@ async fn spawn_relay_guest_stream(
         prev.notify.notify_waiters();
     }
 
-    sender_state.in_flight.fetch_add(1, Ordering::SeqCst);
     let had_stdin = if sender_state.from_stdin {
-        sender_state.stdin_spent.store(true, Ordering::SeqCst);
+        if sender_state
+            .stdin_spent
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            let _ = send_sealed(
+                ws_sender,
+                Some(guest_id),
+                &json!({
+                    "type": "cli-error",
+                    "message": "El flujo de stdin ya está siendo entregado a otro receptor.",
+                }),
+                &key,
+            );
+            return;
+        }
         true
     } else {
         false
     };
+    sender_state.in_flight.fetch_add(1, Ordering::SeqCst);
 
     let items = Arc::clone(items_arc);
     let indices = selected_indices.to_vec();
